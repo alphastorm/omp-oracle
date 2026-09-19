@@ -98,9 +98,11 @@ mkdir -p \
 mkdir -p \
   "$TEST1_AGENT/extensions/oracle-auth-seed-profile" \
   "$TEST2_AGENT/extensions/oracle-auth-seed-profile"
-touch \
-  "$TEST1_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation" \
-  "$TEST2_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation"
+for seed in \
+  "$TEST1_AGENT/extensions/oracle-auth-seed-profile" \
+  "$TEST2_AGENT/extensions/oracle-auth-seed-profile"; do
+  printf '%s\n' 'isolated-smoke-fixture' > "$seed/.oracle-seed-generation"
+done
 
 echo 'secret' > "$OUTSIDE/secret.txt"
 ln -s "$OUTSIDE" "$FIXTURE/linked-outside"
@@ -181,8 +183,8 @@ Expected behavior:
 Notes:
 
 - this smoke test does not require `/oracle-auth`
-- the snippet creates an isolated test auth seed profile plus `.oracle-seed-generation` marker for `TEST1_AGENT` because `oracle_submit` now rejects missing or unverified seed profiles before archiving
-- with that marker-only seed profile, the worker still fails later due to missing real auth, which is useful because the archive remains on disk for inspection
+- the snippet creates an isolated test seed profile with a non-empty `.oracle-seed-generation` value; an empty file is rejected before archiving
+- this marker is fixture setup, not authenticated account access; the worker still fails later due to missing real auth, leaving the archive available for inspection
 
 ### Test 2: symlink escape rejection
 
