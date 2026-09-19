@@ -33,7 +33,7 @@ The local extension now intercepts TUI `/oracle` and `/oracle-followup` before p
 
 Do not add `https://github.com/fitchmultz/pi-oracle` to this repository's `.pi/settings.json` just to test local oracle changes. If you already keep `npm:pi-oracle` installed globally, mixing the global npm package with a project-local git package creates two distinct package identities and can trigger prompt/tool conflicts. Use the explicit CLI extension flag above instead.
 
-`oracle_submit` now preflights missing, unreadable, or unverified auth seed profiles before it creates an archive or persists a job. For archive-inspection smoke tests that intentionally run without real auth, use `oracle_preflight` for the blocker path or create a test seed only in a purpose-built fixture that includes the `.oracle-seed-generation` marker.
+`oracle_submit` now preflights missing, unreadable, or unverified auth seed profiles before it creates an archive or persists a job. For archive-inspection smoke tests that intentionally run without real auth, use `oracle_preflight` for the blocker path or create a test seed only in a purpose-built fixture with a non-empty `.oracle-seed-generation` value.
 
 ## Preset requirements
 
@@ -98,9 +98,11 @@ mkdir -p \
 mkdir -p \
   "$TEST1_AGENT/extensions/oracle-auth-seed-profile" \
   "$TEST2_AGENT/extensions/oracle-auth-seed-profile"
-touch \
-  "$TEST1_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation" \
-  "$TEST2_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation"
+for seed in \
+  "$TEST1_AGENT/extensions/oracle-auth-seed-profile" \
+  "$TEST2_AGENT/extensions/oracle-auth-seed-profile"; do
+  printf '%s\n' 'isolated-smoke-fixture' > "$seed/.oracle-seed-generation"
+done
 
 echo 'secret' > "$OUTSIDE/secret.txt"
 ln -s "$OUTSIDE" "$FIXTURE/linked-outside"
@@ -181,8 +183,8 @@ Expected behavior:
 Notes:
 
 - this smoke test does not require `/oracle-auth`
-- the snippet creates an isolated test auth seed profile plus `.oracle-seed-generation` marker for `TEST1_AGENT` because `oracle_submit` now rejects missing or unverified seed profiles before archiving
-- with that marker-only seed profile, the worker still fails later due to missing real auth, which is useful because the archive remains on disk for inspection
+- the snippet creates an isolated test seed profile with a non-empty `.oracle-seed-generation` value; an empty file is rejected before archiving
+- this marker is fixture setup, not authenticated account access; the worker still fails later due to missing real auth, leaving the archive available for inspection
 
 ### Test 2: symlink escape rejection
 
@@ -204,7 +206,7 @@ TMUX_CMD1="cd '$REPO' && env PI_CODING_AGENT_DIR='$TEST1_AGENT' PI_ORACLE_JOBS_D
 
 Use the same pattern for additional sessions, swapping the session/job directories as needed. This keeps the test on the in-repo extension and hidden in-repo command prompt without depending on `.pi/settings.json` package entries.
 
-`/oracle` now starts by calling `oracle_preflight`. If you want the command flow to proceed past that early guard in an isolated test without using your normal auth state, run `/oracle-auth` in the isolated agent dir or create a purpose-built verified seed fixture with `.oracle-seed-generation`.
+`/oracle` now starts by calling `oracle_preflight`. If you want the command flow to proceed past that early guard in an isolated test without using your normal auth state, run `/oracle-auth` in the isolated agent dir or create a purpose-built test seed fixture with a non-empty `.oracle-seed-generation` value.
 
 ## Additional failure-mode smoke tests
 
