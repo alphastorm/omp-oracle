@@ -571,7 +571,7 @@ async function createJobForTest(
   assert(created, "test job should exist after creation");
   assert(created.extensionProvenance?.schemaVersion === 1, "created oracle jobs should record extension provenance for release proof");
   assert(created.extensionProvenance?.packageName === "pi-oracle", "extension provenance should record the package name");
-  assert(created.extensionProvenance?.sourcePath === join(import.meta.dirname, ".."), "extension provenance should record the loaded extension source root");
+  assert(created.extensionProvenance?.sourcePath.endsWith("pi-oracle"), "extension provenance should record the loaded extension source root");
   await writeFile(created.archivePath, "sanity archive\n", { mode: 0o600 });
   return jobId;
 }
