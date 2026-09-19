@@ -33,7 +33,7 @@ The local extension now intercepts TUI `/oracle` and `/oracle-followup` before p
 
 Do not add `https://github.com/fitchmultz/pi-oracle` to this repository's `.pi/settings.json` just to test local oracle changes. If you already keep `npm:pi-oracle` installed globally, mixing the global npm package with a project-local git package creates two distinct package identities and can trigger prompt/tool conflicts. Use the explicit CLI extension flag above instead.
 
-`oracle_submit` now preflights missing, unreadable, or unverified auth seed profiles before it creates an archive or persists a job. For archive-inspection smoke tests that intentionally run without real auth, use `oracle_preflight` for the blocker path or create a test seed only in a purpose-built fixture that includes the `.oracle-seed-generation` marker.
+`oracle_submit` now preflights missing, unreadable, or unverified auth seed profiles before it creates an archive or persists a job. For archive-inspection smoke tests that intentionally run without real auth, use `oracle_preflight` for the blocker path or create a test seed only in a purpose-built fixture with a non-empty `.oracle-seed-generation` value.
 
 ## Preset requirements
 
@@ -206,7 +206,7 @@ TMUX_CMD1="cd '$REPO' && env PI_CODING_AGENT_DIR='$TEST1_AGENT' PI_ORACLE_JOBS_D
 
 Use the same pattern for additional sessions, swapping the session/job directories as needed. This keeps the test on the in-repo extension and hidden in-repo command prompt without depending on `.pi/settings.json` package entries.
 
-`/oracle` now starts by calling `oracle_preflight`. If you want the command flow to proceed past that early guard in an isolated test without using your normal auth state, run `/oracle-auth` in the isolated agent dir or create a purpose-built verified seed fixture with `.oracle-seed-generation`.
+`/oracle` now starts by calling `oracle_preflight`. If you want the command flow to proceed past that early guard in an isolated test without using your normal auth state, run `/oracle-auth` in the isolated agent dir or create a purpose-built test seed fixture with a non-empty `.oracle-seed-generation` value.
 
 ## Additional failure-mode smoke tests
 
