@@ -2,6 +2,8 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
+This is the AlphaStorm-maintained fork of [`fitchmultz/pi-oracle`](https://github.com/fitchmultz/pi-oracle). It preserves the upstream package name, tool APIs, durable job format, and Git history while maintaining OMP relay compatibility directly in source.
+
 > Status: experimental public beta. Current local validation baseline is pi `0.80.9`; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.9+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
@@ -68,7 +70,7 @@ pi install npm:pi-oracle
 Or from GitHub:
 
 ```bash
-pi install https://github.com/fitchmultz/pi-oracle
+pi install https://github.com/alphastorm/omp-oracle
 ```
 
 To update the package later, use `pi update --extensions`, `pi update --all`, or `pi update npm:pi-oracle`. Bare `pi update` updates pi itself only. Versioned npm/git refs stay pinned until you change the configured source.
@@ -87,7 +89,21 @@ You need:
 - a normal persisted `pi` session, not `pi --no-session`
 - on Linux, encrypted Chromium cookies may also require `secret-tool` (GNOME/libsecret) or `kwallet-query` + `dbus-send` (KDE), unless a Chrome/Brave safe-storage password override is set for the auth run
 
-### 3. Sync provider auth once
+### Existing Chrome relay for ChatGPT
+
+To use the signed-in Chrome session instead of copying cookies, set the agent-level `extensions/oracle.json` browser option:
+
+```json
+{ "browser": { "chatGptRelayEndpoint": "http://127.0.0.1:9224" } }
+```
+
+The relay must expose CDP target discovery (`Target.getTargets`), creation, attachment and closure. Older OMP relay builds without `Target.getTargets` cannot serve agent-browser. Use agent-browser 0.35.0 or newer with pinned-tab support. This option cannot be overridden by project config and applies only to ChatGPT; Grok keeps its existing isolated-profile route. Without the option, existing behavior is unchanged.
+
+Each job creates a fresh tab, persists its opaque target identity, and pins every browser command to that tab. Cleanup checks ownership, closes the pinned tab, verifies its removal, and disconnects the job driver. It never deletes a profile directory in relay mode. Follow-ups use a new owned tab for the existing conversation URL. A missing or mismatched target fails closed rather than selecting another tab.
+
+Relay preflight checks transport availability, not login. The worker checks login before uploading. Finish login or human verification in Chrome; `oracle_auth` refuses cookie import in this mode. The submit/read/follow-up APIs and durable job files are unchanged.
+
+### 3. Sync provider auth once (isolated-profile mode)
 
 ```text
 /oracle-auth

@@ -17,6 +17,18 @@ import { promoteQueuedJobs } from "./lib/queue.js";
 import { assertOracleSubmitPrerequisites, hasPersistedSessionFile } from "./lib/runtime.js";
 import { registerOracleTools } from "./lib/tools.js";
 
+const PROGRAMMATIC_API_SYMBOL = Symbol.for("omp.pi-oracle.programmatic.v1");
+type ProgrammaticToolDefinition = {
+  name: string;
+  execute(
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal: AbortSignal,
+    onUpdate: (result: unknown) => void,
+    ctx: ExtensionContext,
+  ): Promise<unknown>;
+};
+
 function readPromptTemplate(path: string): string | undefined {
   try {
     return readFileSync(path, "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
@@ -63,7 +75,55 @@ export default function oracleExtension(pi: ExtensionAPI) {
   const oracleFollowupPrompt = readPromptTemplate(join(promptDir, "oracle-followup.md"));
 
   registerOracleCommands(pi, authWorkerPath, workerPath);
-  registerOracleTools(pi, workerPath, authWorkerPath);
+  const programmaticTools = new Map<string, ProgrammaticToolDefinition>();
+  const nativeRegisterTool = pi.registerTool.bind(pi);
+  const capturingPi = new Proxy(pi, {
+    get(target, property, receiver) {
+      if (property === "registerTool") {
+        return (definition: ProgrammaticToolDefinition) => {
+          if (definition.name === "oracle_preflight" || definition.name === "oracle_submit") {
+            programmaticTools.set(definition.name, definition);
+          }
+          return Reflect.apply(nativeRegisterTool, target, [definition]);
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as ExtensionAPI;
+  registerOracleTools(capturingPi, workerPath, authWorkerPath);
+  const preflightTool = programmaticTools.get("oracle_preflight");
+  const submitTool = programmaticTools.get("oracle_submit");
+  if (!preflightTool || !submitTool) {
+    throw new Error("Pi Oracle did not register its programmatic preflight and submit tools");
+  }
+  const abortSignal = new AbortController().signal;
+  Object.defineProperty(globalThis, PROGRAMMATIC_API_SYMBOL, {
+    configurable: true,
+    enumerable: false,
+    value: Object.freeze({
+      version: 1 as const,
+      preflight: (ctx: ExtensionContext) =>
+        preflightTool.execute(
+          `oracle-shadow-preflight-${crypto.randomUUID()}`,
+          { provider: "chatgpt" },
+          abortSignal,
+          () => undefined,
+          ctx,
+        ),
+      submit: (
+        ctx: ExtensionContext,
+        params: { provider: "chatgpt"; preset: string; prompt: string; files: string[] },
+      ) =>
+        submitTool.execute(
+          `oracle-shadow-submit-${crypto.randomUUID()}`,
+          params,
+          abortSignal,
+          () => undefined,
+          ctx,
+        ),
+    }),
+  });
 
   async function runStartupMaintenance(ctx: ExtensionContext): Promise<void> {
     try {

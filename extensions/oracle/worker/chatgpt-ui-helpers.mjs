@@ -41,6 +41,7 @@ const MODEL_FAMILY_CONTROL_KINDS = new Set(["button", "radio", "menuitemradio"])
 const COMPACT_INTELLIGENCE_CONTROL_KINDS = new Set(["menuitemradio"]);
 const CHATGPT_RESPONSE_CHROME_LINE_PATTERNS = Object.freeze([
   /^Stopped thinking$/i,
+  /^Worked for (?:[0-9]+(?:[.][0-9]+)?[hms][ ]*)+$/i,
   /^Do you like this personality\?$/i,
 ]);
 
@@ -113,7 +114,7 @@ export function stripChatGptResponseChrome(value) {
  * @returns {boolean}
  */
 export function matchesModelFamilyLabel(label, family) {
-  const normalized = String(label || "");
+  const normalized = String(label || "").replace(/^\d+(?:\.\d+)*\s+/, "");
   const prefix = MODEL_FAMILY_PREFIX[family];
   const exact = prefix.trim();
   return normalized === exact || normalized.startsWith(prefix) || normalized.startsWith(`${exact},`);
@@ -444,6 +445,7 @@ export function effortSelectionVisible(snapshot, effortLabel) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
   const normalizedEffort = effortLabel.toLowerCase();
+  if (normalizedEffort === "extended" && hasCurrentPowerEffortMenu(entries)) return true;
   const compactClosedButtonsAllowed = !hasRemovableComposerModelChip(entries) && !hasLegacyEffortCombobox(entries) && !hasCompactIntelligenceMenuContext(entries);
   return entries.some((entry) => {
     if (entry.disabled) return false;
@@ -470,6 +472,19 @@ export function thinkingChipVisible(snapshot) {
   return /button "(?:Light|Standard|Extended|Heavy)(?: thinking)?(?:, click to remove)?"/i.test(snapshot);
 }
 
+function hasCurrentPowerEffortMenu(entries) {
+  const hasExpandedEffortOpener = entries.some(
+    (entry) => !entry.disabled && entry.kind === "button" && normalizeText(entry.label) === "Thinking effort" && /\bexpanded=true\b/.test(String(entry.line || "")),
+  );
+  const hasEffortMenu = entries.some(
+    (entry) => !entry.disabled && entry.kind === "menu" && normalizeText(entry.label) === "Thinking effort",
+  );
+  const menuItems = new Set(
+    entries.filter((entry) => !entry.disabled && entry.kind === "menuitem").map((entry) => normalizeText(entry.label)),
+  );
+  return hasExpandedEffortOpener && hasEffortMenu && menuItems.has("Power") && menuItems.has("Select model");
+}
+
 /**
  * @param {string} snapshot
  * @returns {boolean}
@@ -477,6 +492,11 @@ export function thinkingChipVisible(snapshot) {
 export function snapshotHasModelConfigurationUi(snapshot) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
+  if (hasCurrentPowerEffortMenu(entries)) return true;
+  const hasCollapsedAdvancedOptions = entries.some(
+    (entry) => !entry.disabled && entry.kind === "menuitem" && normalizeText(entry.label) === "Show advanced options",
+  );
+  if (hasCollapsedAdvancedOptions) return false;
   const visibleFamilies = new Set(
     entries
       .filter((entry) => entry.kind === "button" && typeof entry.label === "string")
@@ -496,6 +516,10 @@ export function snapshotHasModelConfigurationUi(snapshot) {
   const visibleCompactControls = entries.filter(
     (entry) => !entry.disabled && entry.kind === "menuitemradio" && compactSelectionFromEntry(entry, entries),
   );
+  const hasCollapsedEffortOptions = entries.some(
+    (entry) => !entry.disabled && entry.kind === "menuitem" && normalizeText(entry.label).startsWith("Effort ") && !String(entry.line || "").includes("expanded=true"),
+  );
+  if (hasCollapsedEffortOptions && visibleCompactControls.length === 0) return false;
   const hasCompactIntelligenceMenu = entries.some(
     (entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)),
   );
@@ -536,6 +560,13 @@ export function snapshotHasModelOpener(snapshot) {
       || THINKING_CHIP_PATTERN.test(label)
       || PRO_CHIP_PATTERN.test(label);
   });
+}
+
+export function snapshotHasSelectedLatestModel(snapshot) {
+  return parseSnapshotEntries(snapshot).some(
+    (entry) => !entry.disabled && entry.kind === "menuitemradio"
+      && normalizeText(entry.label) === "Latest" && checkedState(entry) === true,
+  );
 }
 
 /**

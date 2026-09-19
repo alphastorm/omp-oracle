@@ -20,6 +20,7 @@ import {
 import { applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
+import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
@@ -34,6 +35,7 @@ import {
   snapshotHasClosedCompactSelection,
   snapshotHasModelConfigurationUi,
   snapshotHasModelOpener,
+  snapshotHasSelectedLatestModel,
   snapshotHasUsableComposerControls,
   snapshotStronglyMatchesRequestedModel,
   snapshotWeaklyMatchesRequestedModel,
@@ -51,7 +53,8 @@ if (!jobId) {
   process.exit(1);
 }
 
-const jobDir = join(getOracleJobsDir(), `oracle-${jobId}`);
+const ORACLE_JOBS_DIR = getOracleJobsDir();
+const jobDir = join(ORACLE_JOBS_DIR, `oracle-${jobId}`);
 const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
   composer: "Chat with ChatGPT",
@@ -357,7 +360,7 @@ async function cleanupRuntime(job) {
       warnings.push(message);
       await log(message).catch(() => undefined);
     });
-    if (browserClosed) {
+    if (browserClosed && !job.config.browser.chatGptRelayEndpoint) {
       try {
         assertSafeRuntimeProfilePath(job.runtimeProfileDir, "runtime profile", job.config);
         await rm(job.runtimeProfileDir, { recursive: true, force: true });
@@ -366,7 +369,7 @@ async function cleanupRuntime(job) {
         warnings.push(message);
         await log(message).catch(() => undefined);
       }
-    } else {
+    } else if (!browserClosed && !job.config.browser.chatGptRelayEndpoint) {
       const message = `Runtime profile cleanup skipped because isolated browser close did not complete: ${job.runtimeProfileDir}`;
       warnings.push(message);
       await log(message).catch(() => undefined);
@@ -535,6 +538,7 @@ async function promoteQueuedJobsAfterCleanup() {
 
 function browserBaseArgs(job, options = {}) {
   const args = ["--session", job.runtimeSessionName];
+  if (job.config.browser.chatGptRelayEndpoint) args.push("--cdp", job.config.browser.chatGptRelayEndpoint, "--pin-tab");
   if (options.withLaunchOptions) {
     args.push("--profile", job.runtimeProfileDir);
     if (job.config.browser.executablePath) args.push("--executable-path", job.config.browser.executablePath);
@@ -580,8 +584,21 @@ async function terminateBrowserProcess() {
 
 async function closeBrowser(job) {
   if (cleaningUpBrowser) return;
+  if (job.config.browser.chatGptRelayEndpoint && !job.relayTargetId && !browserStarted) return;
   cleaningUpBrowser = true;
+  let tabCleanupError;
   try {
+    if (job.config.browser.chatGptRelayEndpoint && job.relayTargetId) {
+      try {
+        await closeRelayTab({
+          binary: AGENT_BROWSER_BIN, sessionName: job.runtimeSessionName,
+          endpoint: job.config.browser.chatGptRelayEndpoint, targetId: job.relayTargetId,
+        });
+        currentJob = await mutateJob((latest) => ({ ...latest, relayTargetId: undefined }));
+      } catch (error) {
+        tabCleanupError = error;
+      }
+    }
     const result = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "close"], {
       allowFailure: true,
       timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS,
@@ -589,6 +606,7 @@ async function closeBrowser(job) {
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || `agent-browser close exited with code ${result.code}`);
     }
+    if (tabCleanupError) throw tabCleanupError;
   } finally {
     await terminateBrowserProcess();
     browserStarted = false;
@@ -672,6 +690,22 @@ async function waitForDevToolsEndpoint(job) {
 
 async function launchBrowser(job, url) {
   await closeBrowser(job);
+  if (job.config.browser.chatGptRelayEndpoint) {
+    browserStarted = true;
+    await log("Connecting the relay and acquiring the job-owned pinned tab");
+    // A fresh pinned CDP session creates its own tab before executing the command.
+    // Navigate that tab instead of creating a second, untracked startup tab.
+    const { stdout } = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "--json", "open", "about:blank"]);
+    const created = JSON.parse(stdout);
+    if (!created.success || typeof created.data?.targetId !== "string") {
+      throw new Error("The relay did not return an identity for the job-owned tab.");
+    }
+    currentJob = await mutateJob((latest) => ({ ...latest, relayTargetId: created.data.targetId }));
+    if (shuttingDown) return;
+    await log(`Navigating job-owned relay tab ${currentJob.relayTargetId}`);
+    await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(currentJob), "open", url]);
+    return;
+  }
   const executablePath = job.config.browser.executablePath;
   if (!executablePath) throw new Error("Oracle requires browser.executablePath when launching isolated browser runtimes without owning the global agent-browser daemon.");
   const args = chromeLaunchArgs(job, url);
@@ -713,6 +747,7 @@ async function ensureBrowserConnected(job) {
 }
 
 async function agentBrowser(job, ...args) {
+  if (shuttingDown) throw new Error("Oracle worker is shutting down.");
   let options;
   const maybeOptions = args.at(-1);
   if (
@@ -931,6 +966,32 @@ function canUseOpenModelMenuForSelection(snapshot, selection) {
   ));
 }
 
+async function expandCurrentPowerControls(job, snapshot) {
+  let currentSnapshot = snapshot;
+  let changed = false;
+  const advancedOptions = findEntry(
+    currentSnapshot,
+    (candidate) => candidate.kind === "menuitem" && candidate.label === "Show advanced options" && !candidate.disabled,
+  );
+  if (advancedOptions) {
+    await clickRef(job, advancedOptions.ref);
+    await agentBrowser(job, "wait", "500");
+    currentSnapshot = await snapshotText(job);
+    changed = true;
+  }
+  const effortOptions = findEntry(
+    currentSnapshot,
+    (candidate) => candidate.kind === "menuitem" && normalizeSnapshotLabel(candidate.label).startsWith("Effort ") && !String(candidate.line || "").includes("expanded=true") && !candidate.disabled,
+  );
+  if (effortOptions) {
+    await clickRef(job, effortOptions.ref);
+    await agentBrowser(job, "wait", "300");
+    currentSnapshot = await snapshotText(job);
+    changed = true;
+  }
+  return changed ? currentSnapshot : undefined;
+}
+
 function composerControlsVisible(snapshot, job = currentJob) {
   const labels = labelsForJob(job);
   const entries = parseSnapshotEntries(snapshot);
@@ -1077,7 +1138,9 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
 
   const probeHasAccountIdentity = probe?.bodyHasId === true || probe?.bodyHasEmail === true;
 
-  if (probe?.status === 401 || (probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer))) {
+  // A fresh runtime can see a transient 403 while Cloudflare is still loading.
+  // Require explicit authentication evidence before declaring the seed logged out.
+  if (probe?.status === 401) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
   }
 
@@ -1091,7 +1154,7 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
   }
 
-  if (onAllowedOrigin && hasUsableComposer && probe?.domLoginCta && !probeHasAccountIdentity) {
+  if (onAllowedOrigin && probe?.domLoginCta && !probeHasAccountIdentity) {
     return {
       state: "login_required",
       message: "ChatGPT login is required: the chat shell still shows public Log in/Sign up controls. Run /oracle-auth.",
@@ -1166,6 +1229,8 @@ async function waitForOracleReady(job) {
   const timeoutAt = startedAt + (isGrokJob(job) ? 30_000 : Math.min(job.config.auth.bootstrapTimeoutMs || 120_000, 120_000));
   let retriedOutage = false;
   let retriedAuthTransition = false;
+  let challengeStartedAt;
+  let retriedChallenge = false;
 
   while (Date.now() < timeoutAt) {
     const [url, snapshot, body, probe] = await Promise.all([
@@ -1175,7 +1240,14 @@ async function waitForOracleReady(job) {
       loginProbe(job).catch(() => ({ ok: false, status: 0, error: "probe-failed" })),
     ]);
     const classification = classifyChatPage({ job, url, snapshot, body, probe });
+    if (classification.state !== "challenge_blocking") {
+      challengeStartedAt = undefined;
+      retriedChallenge = false;
+    }
     if (classification.state === "authenticated_and_ready") return;
+    if (job.config.browser.chatGptRelayEndpoint && ["auth_transitioning", "challenge_blocking"].includes(classification.state)) {
+      throw new Error("The existing Chrome session needs login or human verification. Complete it manually; the relay worker will not reload the challenge or import cookies.");
+    }
     if (classification.state === "auth_transitioning") {
       const elapsedMs = Date.now() - startedAt;
       if (!retriedAuthTransition && elapsedMs >= 5_000) {
@@ -1190,6 +1262,23 @@ async function waitForOracleReady(job) {
       }
       await sleep(1000);
       continue;
+    }
+    if (classification.state === "challenge_blocking") {
+      const now = Date.now();
+      challengeStartedAt ??= now;
+      const challengeElapsedMs = now - challengeStartedAt;
+      if (!retriedChallenge && challengeElapsedMs >= 5_000) {
+        retriedChallenge = true;
+        await agentBrowser(job, "reload").catch(() => undefined);
+        await sleep(1500);
+        continue;
+      }
+      if (challengeElapsedMs < 15_000) {
+        await sleep(1000);
+        continue;
+      }
+      await captureDiagnostics(job, "preflight-challenge");
+      throw new Error(classification.message);
     }
     if (classification.state === "transient_outage_error" && !retriedOutage) {
       retriedOutage = true;
@@ -1436,8 +1525,15 @@ async function openModelConfiguration(job) {
     const initialSnapshot = await snapshotText(job);
     lastSnapshot = initialSnapshot;
     throwIfProviderTransientError(job, initialSnapshot, "opening model configuration");
-    if (snapshotHasModelConfigurationUi(initialSnapshot)) return initialSnapshot;
     if (await dismissProFeedbackModal(job, initialSnapshot)) continue;
+    const expandedInitialSnapshot = await expandCurrentPowerControls(job, initialSnapshot);
+    if (expandedInitialSnapshot) {
+      lastSnapshot = expandedInitialSnapshot;
+      throwIfProviderTransientError(job, expandedInitialSnapshot, "opening model configuration");
+      if (snapshotHasModelConfigurationUi(expandedInitialSnapshot)) return expandedInitialSnapshot;
+      if (canUseOpenModelMenuForSelection(expandedInitialSnapshot, job.selection)) return expandedInitialSnapshot;
+    }
+    if (snapshotHasModelConfigurationUi(initialSnapshot)) return initialSnapshot;
 
     for (const predicate of [matchesModelConfigurationOpener]) {
       const snapshot = await snapshotText(job);
@@ -1449,6 +1545,13 @@ async function openModelConfiguration(job) {
       const after = await snapshotText(job);
       lastSnapshot = after;
       throwIfProviderTransientError(job, after, "opening model configuration");
+      const expandedAfter = await expandCurrentPowerControls(job, after);
+      if (expandedAfter) {
+        lastSnapshot = expandedAfter;
+        throwIfProviderTransientError(job, expandedAfter, "opening model configuration");
+        if (snapshotHasModelConfigurationUi(expandedAfter)) return expandedAfter;
+        if (canUseOpenModelMenuForSelection(expandedAfter, job.selection)) return expandedAfter;
+      }
       if (snapshotHasModelConfigurationUi(after)) return after;
       if (canUseOpenModelMenuForSelection(after, job.selection)) return after;
 
@@ -1512,6 +1615,16 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
       lastCloseAttemptAt = Date.now();
       if (!(await maybeClickLabeledEntry(job, CHATGPT_LABELS.close, { kind: "button" }))) {
         await agentBrowser(job, "press", "Escape").catch(() => undefined);
+        await agentBrowser(job, "wait", "100");
+        const afterEscape = await snapshotText(job);
+        if (snapshotHasModelConfigurationUi(afterEscape)) {
+          const composer = findEntry(
+            afterEscape,
+            (candidate) => candidate.kind === "textbox"
+              && candidate.label === labelsForJob(job).composer && !candidate.disabled,
+          );
+          if (composer) await clickRef(job, composer.ref).catch(() => undefined);
+        }
       }
     }
 
@@ -1538,7 +1651,33 @@ async function configureModel(job) {
   let familySnapshot = await openModelConfiguration(job);
   let verificationSnapshot = familySnapshot;
 
-  const alreadyConfiguredInUi = snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
+  const initialFamilyOpener = findEntry(
+    initialSnapshot,
+    (candidate) => candidate.kind === "button" && matchesModelFamilyControl(candidate, job.selection.modelFamily),
+  );
+  const powerEffortObserved = Boolean(
+    requestedEffortLabel(job.selection) && effortSelectionVisible(familySnapshot, requestedEffortLabel(job.selection)),
+  );
+  let transitionedPowerSelection = Boolean(
+    initialFamilyOpener && powerEffortObserved,
+  );
+  if (powerEffortObserved && !transitionedPowerSelection) {
+    const selectModel = findEntry(
+      familySnapshot,
+      (candidate) => candidate.kind === "menuitem" && candidate.label === "Select model" && !candidate.disabled,
+    );
+    if (selectModel) {
+      await clickRef(job, selectModel.ref);
+      await agentBrowser(job, "wait", "500");
+      const modelSnapshot = await snapshotText(job);
+      transitionedPowerSelection = snapshotWeaklyMatchesRequestedModel(modelSnapshot, job.selection)
+        || (job.selection.modelFamily === "pro" && (job.selection.effort || "standard") === "extended"
+          && snapshotHasSelectedLatestModel(modelSnapshot));
+      verificationSnapshot = modelSnapshot;
+      familySnapshot = modelSnapshot;
+    }
+  }
+  const alreadyConfiguredInUi = transitionedPowerSelection || snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
   const legacyEffortComboboxVisible = snapshotHasLegacyEffortCombobox(familySnapshot);
   const familyAlreadySelectedInUi = !alreadyConfiguredInUi && legacyEffortComboboxVisible && snapshotWeaklyMatchesRequestedModel(familySnapshot, job.selection);
   const controlOptions = {
@@ -1577,7 +1716,8 @@ async function configureModel(job) {
     }
   }
 
-  if ((job.selection.modelFamily === "thinking" || job.selection.modelFamily === "pro") && !compactSelectionVerifiedAfterClick) {
+  if ((job.selection.modelFamily === "thinking" || job.selection.modelFamily === "pro")
+    && !compactSelectionVerifiedAfterClick && !transitionedPowerSelection) {
     const effortLabel = requestedEffortLabel(job.selection);
     if (effortLabel && !effortSelectionVisible(familySnapshot, effortLabel)) {
       const opened = await openEffortDropdown(job);
@@ -1626,7 +1766,7 @@ async function configureModel(job) {
     }
   }
 
-  const stronglyVerified = compactSelectionVerifiedAfterClick || snapshotStronglyMatchesRequestedModel(verificationSnapshot, job.selection);
+  const stronglyVerified = transitionedPowerSelection || compactSelectionVerifiedAfterClick || snapshotStronglyMatchesRequestedModel(verificationSnapshot, job.selection);
   if (!stronglyVerified) {
     throw new Error(`Could not verify requested model settings in configuration UI for ${job.selection.modelFamily}`);
   }
@@ -2313,7 +2453,7 @@ function installSignalHandlers(job) {
     shuttingDown = true;
     void (async () => {
       await log(`Received ${signal}, cleaning up oracle runtime`);
-      await cleanupRuntime(job);
+      await cleanupRuntime(await readJob().catch(() => currentJob ?? job));
       process.exit(0);
     })();
   };
@@ -2333,25 +2473,26 @@ async function run() {
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "cloning_runtime", {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: "Cloning the auth seed profile into the isolated runtime.",
+      message: currentJob.config.browser.chatGptRelayEndpoint ? "Preparing a job-owned relay tab without copying a browser profile." : "Cloning the auth seed profile into the isolated runtime.",
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     await closeBrowser(currentJob);
 
-    const seedGeneration = await cloneSeedProfileToRuntime(currentJob);
+    const seedGeneration = currentJob.config.browser.chatGptRelayEndpoint ? undefined : await cloneSeedProfileToRuntime(currentJob);
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "launching_browser", {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: "Launching the isolated oracle browser runtime.",
+      message: currentJob.config.browser.chatGptRelayEndpoint ? "Connecting to the existing Chrome relay." : "Launching the isolated oracle browser runtime.",
       patch: { seedGeneration, heartbeatAt: new Date().toISOString() },
     }));
 
     const targetUrl = currentJob.chatUrl || currentJob.config.browser.chatUrl;
     await launchBrowser(currentJob, targetUrl);
+    if (shuttingDown) return;
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "verifying_auth", {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: `Verifying the imported ${isGrokJob(currentJob) ? "Grok" : "ChatGPT"} browser session.`,
+      message: `Verifying the ${isGrokJob(currentJob) ? "Grok" : "ChatGPT"} browser session.`,
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     await waitForOracleReady(currentJob);
@@ -2456,6 +2597,7 @@ async function run() {
       process.exitCode = 1;
     }
   } finally {
+    if (shuttingDown) return;
     let cleanupWarnings = [];
     try {
       cleanupWarnings = await cleanupRuntime(currentJob);

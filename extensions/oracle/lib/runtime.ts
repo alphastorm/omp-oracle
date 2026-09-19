@@ -12,6 +12,7 @@ import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
+import { assertRelayReady, closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import type { OracleConfig, OracleProvider } from "./config.js";
 import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
 import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
@@ -59,7 +60,7 @@ function requiredOracleDependencies(config: OracleConfig, provider = config.defa
   if (archivePlan.requiresZstd) {
     dependencies.push({ name: "zstd", command: "zstd" });
   }
-  if (config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
+  if (!config.browser.chatGptRelayEndpoint && config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
     dependencies.push({ name: "cp", command: cpCommand() });
   }
   return dependencies;
@@ -330,13 +331,17 @@ export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Pr
 }
 
 export async function assertOracleSubmitPrerequisites(config: OracleConfig, provider: OracleProvider = config.defaults.provider): Promise<void> {
-  assertSafeOracleProfilePath(config.browser.runtimeProfilesDir, "runtime profiles", config);
-  await assertOracleAuthSeedProfileReady(config);
-  await assertConfiguredBrowserExecutableReady(config.browser.executablePath);
+  if (config.browser.chatGptRelayEndpoint) {
+    await assertRelayReady(config.browser.chatGptRelayEndpoint);
+  } else {
+    assertSafeOracleProfilePath(config.browser.runtimeProfilesDir, "runtime profiles", config);
+    await assertOracleAuthSeedProfileReady(config);
+    await assertConfiguredBrowserExecutableReady(config.browser.executablePath);
+    await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles");
+  }
   for (const dependency of requiredOracleDependencies(config, provider)) {
     await assertRequiredLocalDependencyReady(dependency.name, dependency.command);
   }
-  await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles");
   await assertWritableDirectory(getOracleJobsDir(), "jobs");
 }
 
@@ -585,15 +590,23 @@ export async function cleanupRuntimeArtifacts(runtime: {
   runtimeProfileDir?: string;
   runtimeSessionName?: string;
   conversationId?: string;
+  relayEndpoint?: string;
+  relayTargetId?: string;
 }): Promise<OracleCleanupReport> {
   const report: OracleCleanupReport = { attempted: [], warnings: [] };
 
   if (runtime.runtimeSessionName) {
     report.attempted.push("browser");
+    if (runtime.relayEndpoint && runtime.relayTargetId) {
+      await closeRelayTab({
+        binary: AGENT_BROWSER_BIN, sessionName: runtime.runtimeSessionName,
+        endpoint: runtime.relayEndpoint, targetId: runtime.relayTargetId,
+      }).catch((error: Error) => { report.warnings.push(error.message); });
+    }
     const warning = await closeRuntimeBrowserSession(runtime.runtimeSessionName).catch((error: Error) => error.message);
     if (warning) report.warnings.push(warning);
   }
-  if (runtime.runtimeProfileDir) {
+  if (runtime.runtimeProfileDir && !runtime.relayEndpoint) {
     report.attempted.push("runtimeProfileDir");
     try {
       assertSafeOracleProfilePath(runtime.runtimeProfileDir, "runtime profile");

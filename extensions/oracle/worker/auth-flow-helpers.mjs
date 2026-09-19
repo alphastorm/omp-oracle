@@ -114,7 +114,10 @@ export function classifyChatAuthPage(args) {
 
   const probeHasAccountIdentity = args.probe?.bodyHasId === true || args.probe?.bodyHasEmail === true;
 
-  if (args.probe?.status === 401 || (args.probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer))) {
+  // Cloudflare can make /backend-api/me return 403 before its challenge body or
+  // the authenticated composer becomes observable. Only 401 is conclusive here;
+  // explicit auth-page and login-control evidence is handled below.
+  if (args.probe?.status === 401) {
     return {
       state: "login_required",
       message:
@@ -142,7 +145,7 @@ export function classifyChatAuthPage(args) {
     };
   }
 
-  if (onAllowedOrigin && hasUsableComposer && args.probe?.domLoginCta && !probeHasAccountIdentity) {
+  if (onAllowedOrigin && args.probe?.domLoginCta && !probeHasAccountIdentity) {
     return {
       state: "login_required",
       message:

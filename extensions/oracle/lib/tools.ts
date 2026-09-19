@@ -675,6 +675,7 @@ type OraclePreflightDetails = {
   auth: {
     ready: boolean;
     seedProfileDir?: string;
+    relayEndpoint?: string;
   };
   error?: OracleToolErrorDetails;
 };
@@ -692,7 +693,9 @@ function formatOraclePreflightResponse(details: OraclePreflightDetails): string 
       `Oracle preflight ready for ${providerLabel}.`,
       details.session.sessionFile ? `Persisted pi session (current run): ${details.session.sessionFile}` : undefined,
       details.auth.seedProfileDir ? `Auth seed profile (${providerLabel} login source): ${details.auth.seedProfileDir}` : undefined,
-      `Preflight validates the persisted pi session, local oracle config, and ${providerLabel} auth seed created by oracle_auth.`,
+      details.auth.relayEndpoint
+        ? `Relay transport reachable at ${details.auth.relayEndpoint}. Login is not verified by preflight; the worker checks it before uploading.`
+        : `Preflight validates the persisted pi session, local oracle config, and ${providerLabel} auth seed created by oracle_auth.`,
       "If you are dispatching an oracle job, continue with context gathering and submission.",
     ].filter(Boolean).join("\n");
   }
@@ -759,8 +762,9 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
       session: { persisted: true, sessionFile },
       config: { ready: true },
       auth: {
-        ready: !["auth_seed_profile_missing", "auth_seed_profile_unreadable", "auth_seed_profile_invalid_type", "auth_seed_profile_unauthenticated"].includes(errorDetails.code),
-        seedProfileDir: config.browser.authSeedProfileDir,
+        ready: !config.browser.chatGptRelayEndpoint && !["auth_seed_profile_missing", "auth_seed_profile_unreadable", "auth_seed_profile_invalid_type", "auth_seed_profile_unauthenticated"].includes(errorDetails.code),
+        seedProfileDir: config.browser.chatGptRelayEndpoint ? undefined : config.browser.authSeedProfileDir,
+        relayEndpoint: config.browser.chatGptRelayEndpoint,
       },
       error: errorDetails,
     };
@@ -772,8 +776,9 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
     session: { persisted: true, sessionFile },
     config: { ready: true },
     auth: {
-      ready: true,
-      seedProfileDir: config.browser.authSeedProfileDir,
+      ready: !config.browser.chatGptRelayEndpoint,
+      seedProfileDir: config.browser.chatGptRelayEndpoint ? undefined : config.browser.authSeedProfileDir,
+      relayEndpoint: config.browser.chatGptRelayEndpoint,
     },
   };
 }
@@ -815,6 +820,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     promptSnippet: "Refresh oracle auth before retrying a login-required oracle run.",
     promptGuidelines: [
       "Call oracle_auth when an oracle run failed because ChatGPT or Grok login is required, the worker said to rerun /oracle-auth, or stale auth appears to be blocking submission execution. Pass provider='grok' when refreshing Grok auth.",
+      "For relay-backed ChatGPT, finish login or human verification in the existing Chrome session instead; oracle_auth does not import cookies in relay mode.",
       "At most once per user request, refresh auth and then retry the blocked oracle submission.",
       "If oracle_auth itself fails, stop and report the failure instead of looping.",
     ],
@@ -1111,6 +1117,8 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
             runtimeProfileDir: runtimeLeaseAcquired ? runtime.runtimeProfileDir : undefined,
             runtimeSessionName: workerSpawned ? runtime.runtimeSessionName : undefined,
             conversationId: conversationLeaseAcquired ? target.conversationId : undefined,
+            relayEndpoint: config.browser.chatGptRelayEndpoint,
+            relayTargetId: latest?.relayTargetId ?? job?.relayTargetId,
           }).catch(() => ({ attempted: [], warnings: [] }));
           if (job && cleanupReport.warnings.length > 0) {
             await appendCleanupWarnings(job.id, cleanupReport.warnings).catch(() => undefined);

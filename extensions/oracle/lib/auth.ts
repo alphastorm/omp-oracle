@@ -7,10 +7,14 @@ import { spawn } from "node:child_process";
 import { formatOracleAuthConfigRemediation, formatOracleAuthConfigSummary, getOracleConfigLoadDetails, loadOracleConfig, resolveOracleConfigForProvider, type OracleConfigLoadOptions, type OracleProvider } from "./config.js";
 import { pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
+import { resolveNodeExecutable } from "../shared/process-helpers.mjs";
 
 export async function runOracleAuthBootstrap(authWorkerPath: string, cwd: string, provider?: OracleProvider, configOptions?: OracleConfigLoadOptions): Promise<string> {
   const baseConfig = loadOracleConfig(cwd, configOptions);
   const config = resolveOracleConfigForProvider(baseConfig, provider ?? baseConfig.defaults.provider);
+  if (config.browser.chatGptRelayEndpoint) {
+    throw new Error("ChatGPT relay authentication stays in your existing Chrome. Finish login or any challenge there; oracle_auth will not import cookies in relay mode.");
+  }
   const configLoad = getOracleConfigLoadDetails(cwd, configOptions);
   const authConfigGuidance = {
     ...configLoad,
@@ -28,7 +32,7 @@ export async function runOracleAuthBootstrap(authWorkerPath: string, cwd: string
   }
 
   return await new Promise<string>((resolve, reject) => {
-    const child = spawn(process.execPath, [authWorkerPath, JSON.stringify({ config, configLoad: authConfigGuidance })], {
+    const child = spawn(resolveNodeExecutable(), [authWorkerPath, JSON.stringify({ config, configLoad: authConfigGuidance })], {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });

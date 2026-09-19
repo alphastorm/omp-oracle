@@ -188,6 +188,7 @@ export interface OracleJob {
   runtimeProfileDir: string;
   seedGeneration?: string;
   config: OracleConfig;
+  relayTargetId?: string;
   cleanupWarnings?: string[];
   lastCleanupAt?: string;
   cleanupPending?: boolean;
@@ -424,7 +425,7 @@ function getTerminalCleanupStaleReason(job: Pick<OracleJob, "status" | "cleanupP
 }
 
 export async function cleanupJobResources(
-  job: Pick<OracleJob, "submittedAt" | "runtimeId" | "runtimeProfileDir" | "runtimeSessionName" | "conversationId" | "archivePath" | "archiveDeletedAfterUpload">,
+  job: Pick<OracleJob, "submittedAt" | "runtimeId" | "runtimeProfileDir" | "runtimeSessionName" | "conversationId" | "archivePath" | "archiveDeletedAfterUpload" | "config" | "relayTargetId">,
 ): Promise<OracleCleanupReport> {
   const report: OracleCleanupReport = { attempted: [], warnings: [] };
 
@@ -444,6 +445,8 @@ export async function cleanupJobResources(
     runtimeProfileDir: job.runtimeProfileDir,
     runtimeSessionName: job.runtimeSessionName,
     conversationId: job.conversationId,
+    relayEndpoint: job.config.browser.chatGptRelayEndpoint,
+    relayTargetId: job.relayTargetId,
   });
 
   return {

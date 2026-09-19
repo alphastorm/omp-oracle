@@ -242,6 +242,7 @@ export function resolveOracleConfigForProvider(config: OracleConfig, provider: O
     defaults,
     browser: {
       ...config.browser,
+      chatGptRelayEndpoint: undefined,
       authSeedProfileDir: getProviderAuthSeedProfileDir(config, provider),
       chatUrl: "https://grok.com/",
       authUrl: "https://grok.com/",
@@ -274,6 +275,7 @@ export interface OracleConfig {
     chatUrl: string;
     authUrl: string;
     runMode: OracleBrowserRunMode;
+    chatGptRelayEndpoint?: string;
     executablePath?: string;
     userAgent?: string;
     args: string[];
@@ -682,6 +684,19 @@ function validateOracleConfig(value: unknown): OracleConfig {
   const grokMode = expectEnum(defaults.grokMode, "defaults.grokMode", GROK_MODES);
 
   const browser = expectObject(root.browser, "browser");
+  const chatGptRelayEndpoint = expectOptionalString(browser.chatGptRelayEndpoint, "browser.chatGptRelayEndpoint");
+  if (chatGptRelayEndpoint !== undefined) {
+    let endpoint: URL;
+    try {
+      endpoint = new URL(chatGptRelayEndpoint);
+    } catch {
+      throw new Error("Invalid oracle config: browser.chatGptRelayEndpoint must be a loopback HTTP origin");
+    }
+    if (endpoint.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)
+      || endpoint.username || endpoint.password || endpoint.pathname !== "/" || endpoint.search || endpoint.hash) {
+      throw new Error("Invalid oracle config: browser.chatGptRelayEndpoint must be a loopback HTTP origin without credentials");
+    }
+  }
   const auth = expectObject(root.auth, "auth");
   const worker = expectObject(root.worker, "worker");
   const poller = expectObject(root.poller, "poller");
@@ -724,6 +739,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
       chatUrl: expectChatGptUrl(browser.chatUrl, "browser.chatUrl"),
       authUrl: expectChatGptUrl(browser.authUrl, "browser.authUrl"),
       runMode: expectEnum(browser.runMode, "browser.runMode", BROWSER_RUN_MODES),
+      chatGptRelayEndpoint,
       executablePath: expectOptionalAbsoluteNormalizedPath(browser.executablePath, "browser.executablePath"),
       userAgent: expectOptionalString(browser.userAgent, "browser.userAgent"),
       args: expectStringArray(browser.args, "browser.args"),

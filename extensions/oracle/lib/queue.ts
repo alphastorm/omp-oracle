@@ -131,6 +131,8 @@ export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueue
         runtimeProfileDir: runtimeLeaseAcquired ? job.runtimeProfileDir : undefined,
         runtimeSessionName: spawnedWorker ? job.runtimeSessionName : undefined,
         conversationId: conversationLeaseAcquired ? job.conversationId : undefined,
+        relayEndpoint: job.config.browser.chatGptRelayEndpoint,
+        relayTargetId: job.relayTargetId,
       }).catch(() => ({ attempted: [], warnings: [] }));
       if (cleanupReport.warnings.length > 0) {
         await appendCleanupWarnings(job.id, cleanupReport.warnings, at).catch(() => undefined);

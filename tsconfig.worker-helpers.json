@@ -17,6 +17,8 @@
     "extensions/oracle/shared/browser-profile-helpers.d.mts",
     "extensions/oracle/shared/process-helpers.mjs",
     "extensions/oracle/shared/process-helpers.d.mts",
+    "extensions/oracle/shared/relay-browser-helpers.mjs",
+    "extensions/oracle/shared/relay-browser-helpers.d.mts",
     "extensions/oracle/shared/state-coordination-helpers.mjs",
     "extensions/oracle/shared/state-coordination-helpers.d.mts",
     "extensions/oracle/shared/job-coordination-helpers.mjs",

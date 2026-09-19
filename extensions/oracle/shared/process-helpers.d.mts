@@ -8,6 +8,7 @@ export interface OracleDetachedProcessHandle {
   startedAt?: string;
 }
 
+export declare function resolveNodeExecutable(): string;
 export declare function readProcessStartedAt(pid: number | undefined): string | undefined;
 export declare function isProcessAlive(pid: number | undefined): boolean;
 export declare function isTrackedProcessAlive(pid: number | undefined, startedAt?: string): boolean;

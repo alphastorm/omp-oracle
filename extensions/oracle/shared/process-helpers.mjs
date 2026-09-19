@@ -5,6 +5,7 @@
 // Invariants/Assumptions: Process identity is validated with `ps -o lstart=` to defend against PID reuse on macOS.
 
 import { spawn, execFileSync } from "node:child_process";
+import { basename } from "node:path";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
 
 /** @typedef {import("./process-helpers.d.mts").OracleTrackedProcessOptions} OracleTrackedProcessOptions */
@@ -13,6 +14,12 @@ import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-hel
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+export function resolveNodeExecutable() {
+  const configured = process.env.PI_ORACLE_NODE_PATH?.trim();
+  if (configured) return configured;
+  return /^node(?:\.exe)?$/i.test(basename(process.execPath)) ? process.execPath : "node";
+}
+
 
 /**
  * @param {number | undefined} pid
@@ -126,7 +133,7 @@ export async function terminateTrackedProcess(pid, startedAt, options = {}) {
  * @returns {Promise<OracleDetachedProcessHandle>}
  */
 export async function spawnDetachedNodeProcess(scriptPath, args = []) {
-  const child = spawn(process.execPath, [scriptPath, ...args], {
+  const child = spawn(resolveNodeExecutable(), [scriptPath, ...args], {
     detached: true,
     env: sweetCookieSafeStoragePasswordScrubbedEnv(),
     stdio: "ignore",

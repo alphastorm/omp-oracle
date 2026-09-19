@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- added an optional agent-scoped ChatGPT relay endpoint that drives one pinned, job-owned tab in an existing signed-in Chrome without copying cookies
+- exposed the existing oracle preflight and submit contract through the OMP programmatic bridge while preserving all agent-facing tool names and durable job fields
+
+### Changed
+- moved repository, issue, and GitHub installation metadata to the AlphaStorm-maintained `omp-oracle` fork while retaining the `pi-oracle` package identity and upstream history
+
+### Fixed
+- made relay cleanup verify physical target removal and retain durable ownership when the driver omits or fails to close a live target
+- supported current versioned Pro controls and the `Power` plus checked `Latest` transition without treating a closed model label as effort proof
+- closed compact model menus by clicking the empty composer when Escape does not dismiss them on continuation pages
+- kept Node worker launch, project-trust handling, and transient ChatGPT 403 classification compatible with current OMP runtimes
+
 ## 0.7.20 - 2026-07-28
 
 ### Fixed
