@@ -6,7 +6,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { CONFIG_DIR_NAME, getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import * as codingAgent from "@earendil-works/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
 import {
   assertNotKnownBrowserUserDataPath,
@@ -386,6 +387,9 @@ function isProjectConfigTrusted(cwd: string, agentDir: string, projectConfigExis
   const trustCwd = options?.projectConfigTrustCwd ?? cwd;
   const cliOverride = getProjectTrustCliOverride();
   if (cliOverride !== undefined) return cliOverride;
+  // Older OMP hosts supply trust through the extension context, not Pi trust APIs.
+  const { hasTrustRequiringProjectResources, ProjectTrustStore } = codingAgent;
+  if (typeof hasTrustRequiringProjectResources !== "function" || typeof ProjectTrustStore !== "function") return false;
   if (!projectConfigExists && !hasTrustRequiringProjectResources(trustCwd)) return true;
   try {
     const trustStore = new ProjectTrustStore(agentDir);

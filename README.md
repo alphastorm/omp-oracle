@@ -204,6 +204,8 @@ Most users can start with defaults. Set an agent-level config only when you need
 
 Pi 0.79+ gates project-local inputs behind project trust. `pi-oracle` preserves its historical risk-on extension behavior for existing users: project-local `.pi/extensions/oracle.json` safe overrides still load by default for compatibility. They are ignored when you explicitly opt out of project-local inputs with `--no-approve` or save a “do not trust” decision for the project. Privileged browser/auth settings still come only from the agent-level config.
 
+OMP hosts without Pi’s project-trust APIs can load the extension without those exports. On those hosts, project overrides require an explicit host trust decision or approval flag; config-only callers default to agent configuration.
+
 `~/.pi/agent/extensions/oracle.json`
 
 ```json
