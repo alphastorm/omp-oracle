@@ -31,9 +31,12 @@ import {
   matchesRequestedModelControlLabel,
   requestedEffortLabel,
   effortSelectionVisible,
+  classifyDeepResearchTurn,
+  isDeepResearchMenuEntry,
   parsePowerSliderDescription,
   powerSliderStepKey,
   powerSliderTargetLabel,
+  snapshotHasDeepResearchPill,
   snapshotHasPowerSliderMenu,
   snapshotCanSafelySkipModelConfiguration,
   snapshotHasClosedCompactSelection,
@@ -98,6 +101,18 @@ const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/ag
 const CHROME_DEVTOOLS_READY_TIMEOUT_MS = 15_000;
 const CP_BIN = process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 scrubSweetCookieSafeStoragePasswordEnv();
+
+// Failures callers must tell apart carry a stable code into job.json (errorCode) and tool results.
+class OracleWorkerError extends Error {
+  /**
+   * @param {string} code
+   * @param {string} message
+   */
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
 
 let cpSupportsApfsCloneFlag;
 let currentJob;
@@ -1109,6 +1124,10 @@ async function setComposerText(job, text) {
   const labels = labelsForJob(job);
   const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === labels.composer);
   if (!entry) throw new Error("Could not find ChatGPT composer textbox");
+  // ChatGPT restores a saved draft into the composer; fill appends to it instead of replacing it.
+  await clickRef(job, entry.ref);
+  await agentBrowser(job, "press", process.platform === "darwin" ? "Meta+a" : "Control+a");
+  await agentBrowser(job, "press", "Backspace");
   await agentBrowser(job, "fill", entry.ref, text);
 }
 
@@ -1693,6 +1712,10 @@ async function configurePowerSlider(job) {
 
 async function configureModel(job) {
   if (isGrokJob(job)) return configureGrokModel(job);
+  if (job.selection.tool) {
+    await log(`Model configuration skipped: composer tool ${job.selection.tool} selects its own model`);
+    return;
+  }
   const initialSnapshot = await snapshotText(job);
   if (snapshotCanSafelySkipModelConfiguration(initialSnapshot, job.selection)) {
     await log(`Model already appears configured for family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}; skipping reconfiguration`);
@@ -1835,6 +1858,33 @@ async function configureModel(job) {
     await agentBrowser(job, "press", "Escape").catch(() => undefined);
   }
   await waitForModelConfigurationToSettle(job, { stronglyVerified });
+}
+
+// Deep Research is enabled after the prompt is in the composer: filling the textbox replaces its
+// content, and the tool is a pill that lives inside the textbox.
+async function enableDeepResearch(job) {
+  const before = await snapshotText(job);
+  if (snapshotHasDeepResearchPill(before, labelsForJob(job).composer)) {
+    await log("Deep Research tool already enabled in the composer");
+    return;
+  }
+  const opener = findEntry(before, (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.addFiles && !candidate.disabled);
+  if (!opener) throw new OracleWorkerError("deep_research_toggle_not_found", `Could not find the "${CHATGPT_LABELS.addFiles}" menu to enable Deep Research`);
+  await clickRef(job, opener.ref);
+  await agentBrowser(job, "wait", "500");
+  const menu = await snapshotText(job);
+  const entry = findEntry(menu, isDeepResearchMenuEntry);
+  if (!entry) {
+    await agentBrowser(job, "press", "Escape").catch(() => undefined);
+    throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research is not offered in the composer tools menu for this account or page");
+  }
+  await clickRef(job, entry.ref);
+  await agentBrowser(job, "wait", "800");
+  const after = await snapshotText(job);
+  if (!snapshotHasDeepResearchPill(after, labelsForJob(job).composer)) {
+    throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research did not appear in the composer after selecting it");
+  }
+  await log("Deep Research tool enabled and verified in the composer");
 }
 
 async function configureGrokModel(job) {
@@ -2073,6 +2123,22 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       else stableCount = 1;
       lastCompletionSignature = completionSignature;
       if (stableCount >= 2) {
+        if (job.selection.tool === "deep_research") {
+          // The turn is stable, but for Deep Research the assistant text is never the report: the
+          // report renders in a cross-origin App widget this worker cannot read, and any other
+          // assistant text means the model replied instead of starting research.
+          const conversation = job.chatUrl || (await currentUrl(job).catch(() => "")) || "(unknown)";
+          if (classifyDeepResearchTurn({ snapshot, text: targetText }) === "started") {
+            throw new OracleWorkerError(
+              "deep_research_report_unreadable",
+              `Deep Research started in ${conversation}. The report renders in a cross-origin App widget this worker cannot read yet; open the conversation for the finished report.`,
+            );
+          }
+          throw new OracleWorkerError(
+            "deep_research_clarification_requested",
+            `Deep Research did not start in ${conversation}; the assistant replied instead: ${targetText.slice(0, 300)}`,
+          );
+        }
         return { responseIndex: baselineAssistantCount, responseText: targetText };
       }
     } else {
@@ -2569,8 +2635,16 @@ async function run() {
       message: "Uploading the oracle context archive.",
       patch: { heartbeatAt: new Date().toISOString() },
     }));
-    await uploadArchive(currentJob);
-    await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
+    if (currentJob.selection.tool === "deep_research") {
+      // The attachment card covers the tools menu button once a file is attached, so the tool
+      // is enabled before the upload; the pill survives the upload, and fill would remove it.
+      await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
+      await enableDeepResearch(currentJob);
+      await uploadArchive(currentJob);
+    } else {
+      await uploadArchive(currentJob);
+      await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
+    }
     const baselineAssistantCount = (await assistantMessages(currentJob)).length;
     await log(`Assistant response count before send: ${baselineAssistantCount}`);
     await clickSend(currentJob, baselineAssistantCount);
@@ -2651,6 +2725,7 @@ async function run() {
         message: `Job failed: ${message}`,
         patch: {
           error: message,
+          ...(error instanceof OracleWorkerError ? { errorCode: error.code } : {}),
           cleanupPending: true,
         },
       }));

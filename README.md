@@ -247,6 +247,7 @@ Agent-facing tools:
   is optional and only for explicitly continuing an existing ChatGPT browser conversation
   id/URL; omit it for the default fresh thread.
 - `oracle_read` — Agent callers can use `oracle_read({ jobId })` to read saved output in-turn.
+  Failed jobs that callers must tell apart carry a stable `errorCode` next to `error`.
 - `oracle_cancel` — cancels a queued or active job by id.
 
 ## Example requests
@@ -326,11 +327,26 @@ Full reference, cookie sources, environment variables, retention, and troublesho
 | `thinking_heavy` | Thinking - Heavy |
 | `instant` | Instant |
 | `instant_auto_switch` | Instant - Auto-switch to Thinking Enabled |
+| `deep_research` | Deep Research |
 
 For ChatGPT, `oracle_submit` accepts canonical preset ids or a matching human-readable preset label;
 keep config values on canonical ids. Grok uploads now use `.tar.gz` archives: Grok may accept
 `.tar.zst`, but its execution environment can lack `zstd`, and manual testing found a 200 MiB
 upload accepted and 200 MiB + 1 byte rejected.
+
+### Deep Research
+
+`deep_research` is a composer-tool preset, not a model tier: the worker leaves the model picker
+alone, enables **Deep research** from the composer tools menu, verifies the pill in the composer,
+attaches the archive, and sends. The research then runs in your ChatGPT account. What the worker
+cannot do yet is read the finished report: ChatGPT renders it inside a cross-origin App widget that
+neither the page, the relay, nor the conversation API expose, so the job ends `failed` with
+`errorCode: deep_research_report_unreadable` and the conversation URL in `error` instead of a
+`response.md` that would only ever contain the placeholder text. Open the link for the report. If
+the model replies instead of starting research, the job fails with
+`deep_research_clarification_requested` and the reply text; if the tool is missing from the menu,
+`deep_research_toggle_not_found`. Reading the report needs a relay change (frame sessions); the
+worker will complete the job once that lands.
 
 ## Compatibility and known limits
 
@@ -353,6 +369,8 @@ Known limits are part of the claim:
 - **Archives are capped** at 250 MiB (ChatGPT) and 200 MiB (Grok) after default exclusions and
   automatic whole-repo pruning.
 - **Wake-up is best effort;** the job directory is the durable record.
+- **Deep Research jobs fail closed by design** until the relay exposes the report widget; see
+  [Deep Research](#deep-research). They are excluded from the release preset proof.
 
 The [compatibility matrix](docs/COMPATIBILITY.md) defines the supported boundary; the
 [release ledger](docs/RELEASE.md#evidence-ledger) holds the evidence.

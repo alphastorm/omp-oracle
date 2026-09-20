@@ -259,6 +259,26 @@ copies use Node's recursive copy.
   keyring/password environment options.
 - Re-run `/oracle-auth`.
 
+### A Deep Research job ended with `deep_research_report_unreadable`
+
+That is the designed terminal state today, not a defect in your setup. The research started in
+your ChatGPT account; `error` and `chatUrl` in `job.json` (and `oracle_read`) carry the
+conversation URL. Open it for the finished report. The worker cannot read the report because it
+renders in a cross-origin App widget; see the [compatibility known limits](COMPATIBILITY.md#known-limits).
+
+- `deep_research_clarification_requested` — the model replied (usually a question) instead of
+  starting research; the reply is quoted in `error`. Restate the request with explicit assumptions
+  and "do not ask clarifying questions".
+- `deep_research_toggle_not_found` — the composer tools menu offered no Deep research entry, or
+  the pill did not appear after selecting it. Check the account has Deep Research and that the
+  ChatGPT page is a normal chat, then retry.
+
+### The prompt arrived with unrelated text in front of it (relay mode)
+
+ChatGPT restores a saved draft into the composer of your signed-in Chrome, and filling the
+composer used to append to it. The worker now clears the composer before filling; if you still
+see a prefix, clear the draft in Chrome and rerun.
+
 ### You want more details about a failed run
 
 Inspect the job directory under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`. The worker log

@@ -485,6 +485,60 @@ function hasCurrentPowerEffortMenu(entries) {
   return hasExpandedEffortOpener && hasEffortMenu && menuItems.has("Power") && menuItems.has("Select model");
 }
 
+// Deep Research is a composer tool, not a model tier. The "Add files and more" menu lists it as a
+// role-less clickable whose label concatenates title and description ("Deep researchGet a detailed
+// report"); once selected, the composer textbox carries a "Deep research" pill. After send, the
+// assistant turn is a fixed placeholder while a cross-origin App widget renders the actual report.
+const DEEP_RESEARCH_MENU_LABEL_PATTERN = /^Deep research/i; // title and description are concatenated without a separator
+const DEEP_RESEARCH_PILL_LABEL = "deep research";
+const DEEP_RESEARCH_PLACEHOLDER_PATTERN = /^Deep Research has started working on your\b/i; // model-written; the topic varies
+
+/**
+ * @param {SnapshotEntry} entry
+ * @returns {boolean}
+ */
+export function isDeepResearchMenuEntry(entry) {
+  return !entry.disabled && entry.kind === "generic" && typeof entry.label === "string" && DEEP_RESEARCH_MENU_LABEL_PATTERN.test(normalizeText(entry.label));
+}
+
+/**
+ * True when the composer textbox carries the Deep research pill: a "Deep research" generic nested
+ * directly beneath the composer textbox line.
+ * @param {string} snapshot
+ * @param {string} [composerLabel]
+ * @returns {boolean}
+ */
+export function snapshotHasDeepResearchPill(snapshot, composerLabel = "Chat with ChatGPT") {
+  const lines = String(snapshot || "").split("\n");
+  const textboxIndex = lines.findIndex((line) => line.includes(`textbox "${composerLabel}"`));
+  if (textboxIndex < 0) return false;
+  const textboxIndent = lines[textboxIndex].search(/\S/);
+  for (let index = textboxIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+    const indent = line.search(/\S/);
+    if (line.trimStart().startsWith("- ") && indent <= textboxIndent) return false;
+    const match = line.match(/-\s+generic\s+"([^"]+)"/);
+    if (match && normalizeText(match[1]).toLowerCase() === DEEP_RESEARCH_PILL_LABEL) return true;
+  }
+  return false;
+}
+
+const DEEP_RESEARCH_WIDGET_PATTERN = /Iframe "internal:\/\/deep-research"/;
+
+/**
+ * Classify the assistant turn of a Deep Research submission. "started" means the research widget
+ * (a cross-origin App iframe titled internal://deep-research) is on the page, or the assistant
+ * text is the model-written "Deep Research has started working…" placeholder; "reply" means the
+ * model answered or asked something instead of starting research.
+ * @param {{ snapshot?: string; text?: string }} turn
+ * @returns {"started" | "reply"}
+ */
+export function classifyDeepResearchTurn(turn) {
+  if (DEEP_RESEARCH_WIDGET_PATTERN.test(String(turn.snapshot || ""))) return "started";
+  return DEEP_RESEARCH_PLACEHOLDER_PATTERN.test(normalizeText(stripChatGptResponseChrome(turn.text))) ? "started" : "reply";
+}
+
 // Current ChatGPT renders the thinking-effort tiers as a discrete slider inside the
 // "Thinking effort" menu. Only the current stop is rendered; its live description reads
 // "<Label>, <n> of <count>." and the stops step with ArrowLeft/ArrowRight.

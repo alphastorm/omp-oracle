@@ -210,7 +210,11 @@ Per job:
 9. fill prompt
 10. send
 11. wait for a stable conversation URL and persist `chatUrl` / `conversationId`
-12. wait for completion anchored to the current turn only
+12. wait for completion anchored to the current turn only; for a composer-tool preset (Deep
+    Research) the tool is enabled after the prompt is filled and before the upload, verified by
+    its pill in the composer, model configuration is skipped, and the assistant turn is classified
+    by the presence of the research widget: the job fails closed with a stable `errorCode` and the
+    conversation URL because the report renders in a cross-origin App iframe the worker cannot read
 13. persist plain-text response
 14. download any response-local artifacts directly into the job artifact directory
 15. close the isolated browser session and delete the runtime profile in `finally`

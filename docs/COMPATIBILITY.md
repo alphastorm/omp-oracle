@@ -33,6 +33,7 @@ A persisted session is required on every host. `--no-session` runs report oracle
 | --- | --- | --- | --- | --- |
 | ChatGPT | `preset` (canonical ids in `ORACLE_SUBMIT_PRESETS`; human-readable labels are normalized) | `.tar.zst` | 250 MiB | Isolated seed profile, or existing-Chrome relay |
 | Grok | `mode: "heavy"` only | `.tar.gz` | 200 MiB | Isolated seed profile |
+| ChatGPT Deep Research | `preset: "deep_research"` (composer tool; model picker untouched) | `.tar.zst` | 250 MiB | Either; the job ends `failed` with `errorCode: deep_research_report_unreadable` and the conversation URL because the report renders in a cross-origin App widget |
 
 ChatGPT presets: `pro_standard`, `pro_extended`, `thinking_light`, `thinking_standard`,
 `thinking_extended`, `thinking_heavy`, `instant`, `instant_auto_switch`. Grok uses `.tar.gz`
@@ -64,6 +65,13 @@ Known limits are part of the claim; read them before installing.
   Chromium-family browser profile.
 - **Relay mode needs a capable relay.** Relay builds without `Target.getTargets` cannot serve
   `agent-browser`; relay mode is ChatGPT-only.
+- **Deep Research reports are not readable yet (observed 2026-09-20).** The finished report and
+  the "Research completed" marker render inside a cross-origin, sandboxed ChatGPT App iframe
+  (`internal://deep-research`). The top document keeps a model-written placeholder, `Copy response`
+  copies only that placeholder, the conversation API carries the App call but no report text, and
+  the relay forwards no iframe sessions. `deep_research` jobs therefore enable and verify the tool,
+  attach, send, and fail closed with the conversation URL; they are excluded from the release
+  preset proof until the relay exposes frame sessions.
 - **Wake-up is best effort.** Completion delivery into the host session is one attempt; the saved
   job directory is the durable record.
 - **No demo media.** The README uses command-level proof and design docs; no screenshot or GIF is

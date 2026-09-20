@@ -1270,8 +1270,13 @@ async function testOracleSubmitPresetGuardrails(): Promise<void> {
         resolved.autoSwitchToThinking === preset.autoSwitchToThinking,
         `preset ${id} autoSwitchToThinking should match definition`,
       );
+    } else if ("tool" in preset) {
+      assert(resolved.tool === preset.tool, `preset ${id} should carry composer tool ${preset.tool}`);
+      assert(resolved.effort === undefined, `preset ${id} should not set effort for a composer tool`);
+      assert(resolved.autoSwitchToThinking === false, `preset ${id} should not enable auto-switch`);
     } else {
       assert(resolved.effort === preset.effort, `preset ${id} should set effort ${preset.effort}`);
+      assert(resolved.tool === undefined, `preset ${id} should not select a composer tool`);
       assert(resolved.autoSwitchToThinking === false, `preset ${id} should not enable auto-switch`);
     }
   }

@@ -4,6 +4,18 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Added
+- added the `deep_research` composer-tool preset: the worker leaves the model picker alone, enables Deep research from the composer tools menu and verifies its pill, attaches the archive, and sends. Because ChatGPT renders the report in a cross-origin App widget that neither the page, the relay, nor the conversation API expose, the job fails closed with `errorCode: deep_research_report_unreadable` and the conversation URL instead of saving the placeholder as a response; a reply instead of a research start fails with `deep_research_clarification_requested`, a missing menu entry with `deep_research_toggle_not_found`
+- recorded a stable `errorCode` on failed jobs (`job.json` and `oracle_read` details) for failures callers must distinguish
+
+### Changed
+- excluded composer-tool presets from the release preset proof, printing the exclusion, until report extraction exists
+
+### Fixed
+- cleared the ChatGPT composer before filling the prompt so a saved draft in the relay-served Chrome no longer prepends itself to the submitted prompt
+
 ## 0.1.0 - 2026-09-20
 
 ### Added

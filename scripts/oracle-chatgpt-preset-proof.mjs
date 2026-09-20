@@ -73,18 +73,26 @@ function canonicalPresets() {
   const registryMatch = configSource.match(/export const ORACLE_SUBMIT_PRESETS = \{([\s\S]*?)\n\} as const;/);
   if (!registryMatch) throw new Error("Could not locate ORACLE_SUBMIT_PRESETS registry in extensions/oracle/lib/config.ts");
   const entries = [...registryMatch[1].matchAll(
-    /^\s{2}([a-z0-9_]+):\s*\{\s*label:\s*"[^"]+",\s*modelFamily:\s*"([a-z]+)"\s+as const(?:,\s*effort:\s*"([a-z]+)"\s+as const)?,\s*autoSwitchToThinking:\s*(true|false)\s*\}/gm,
+    /^\s{2}([a-z0-9_]+):\s*\{\s*label:\s*"[^"]+",\s*modelFamily:\s*"([a-z]+)"\s+as const(?:,\s*effort:\s*"([a-z]+)"\s+as const)?(?:,\s*tool:\s*"([a-z_]+)"\s+as const)?,\s*autoSwitchToThinking:\s*(true|false)\s*\}/gm,
   )];
   if (entries.length === 0) throw new Error("Could not parse ORACLE_SUBMIT_PRESETS registry entries");
   return Object.fromEntries(entries.map((match) => [match[1], {
     modelFamily: match[2],
     effort: match[3],
-    autoSwitchToThinking: match[4] === "true",
+    tool: match[4],
+    autoSwitchToThinking: match[5] === "true",
   }]));
 }
 
+// Composer-tool presets (Deep Research) cannot complete: the report renders in a cross-origin App
+// widget the worker cannot read, so the job fails closed by design. They are excluded from the
+// live proof until report extraction exists; the exclusion is printed so it is never silent.
 function canonicalPresetIds() {
-  return Object.keys(canonicalPresets());
+  return Object.entries(canonicalPresets()).filter(([, preset]) => !preset.tool).map(([id]) => id);
+}
+
+function excludedToolPresetIds() {
+  return Object.entries(canonicalPresets()).filter(([, preset]) => preset.tool).map(([id, preset]) => `${id} (composer tool ${preset.tool})`);
 }
 
 function proofPath() {
@@ -227,7 +235,7 @@ function validateProof(proof, path) {
   const gitHeadCommittedAtMs = Date.parse(gitHeadCommittedAt);
   const gitStatus = currentGitStatus();
   const presetRegistry = canonicalPresets();
-  const requiredPresets = Object.keys(presetRegistry);
+  const requiredPresets = canonicalPresetIds();
   const allowedPresets = new Set(requiredPresets);
 
   if (gitStatus) {
@@ -285,6 +293,8 @@ function validateProof(proof, path) {
   if (errors.length === 0) {
     console.log(`ChatGPT preset release proof accepted: ${path}`);
     console.log(`Validated presets: ${requiredPresets.join(", ")}`);
+    const excluded = excludedToolPresetIds();
+    if (excluded.length > 0) console.log(`Excluded from live proof (composer tools fail closed by design): ${excluded.join(", ")}`);
   }
 
   return errors;

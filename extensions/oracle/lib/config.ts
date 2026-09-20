@@ -50,6 +50,10 @@ export type OracleEffort = (typeof EFFORTS)[number];
 export const GROK_MODES = ["heavy"] as const;
 export type OracleGrokMode = (typeof GROK_MODES)[number];
 
+/** Composer tools a ChatGPT preset can select instead of a model tier. */
+export const ORACLE_SUBMIT_TOOLS = ["deep_research"] as const;
+export type OracleSubmitTool = (typeof ORACLE_SUBMIT_TOOLS)[number];
+
 /**
  * Canonical preset registry for `oracle_submit` preset selection.
  * This is the single authored source of truth — all derived lists come from `Object.keys(...)`.
@@ -63,6 +67,7 @@ export const ORACLE_SUBMIT_PRESETS = {
   thinking_heavy: { label: "Thinking - Heavy", modelFamily: "thinking" as const, effort: "heavy" as const, autoSwitchToThinking: false },
   instant: { label: "Instant", modelFamily: "instant" as const, autoSwitchToThinking: false },
   instant_auto_switch: { label: "Instant - Auto-switch to Thinking Enabled", modelFamily: "instant" as const, autoSwitchToThinking: true },
+  deep_research: { label: "Deep Research", modelFamily: "pro" as const, tool: "deep_research" as const, autoSwitchToThinking: false },
 } as const;
 
 export type OracleSubmitPresetId = keyof typeof ORACLE_SUBMIT_PRESETS;
@@ -195,6 +200,8 @@ export type OracleResolvedSelection = {
   mode?: OracleGrokMode;
   modelFamily: OracleModelFamily;
   effort?: OracleEffort;
+  /** Composer tool selected instead of a model tier; the model picker is left untouched. */
+  tool?: OracleSubmitTool;
   autoSwitchToThinking: boolean;
 };
 
@@ -208,7 +215,8 @@ export function resolveOracleSubmitPreset(presetId: OracleSubmitPresetId): Oracl
     provider: "chatgpt",
     preset: presetId,
     modelFamily: def.modelFamily,
-    effort: def.modelFamily === "instant" ? undefined : def.effort,
+    effort: def.modelFamily === "instant" || !("effort" in def) ? undefined : def.effort,
+    tool: "tool" in def ? def.tool : undefined,
     autoSwitchToThinking: def.modelFamily === "instant" ? def.autoSwitchToThinking : false,
   };
 }

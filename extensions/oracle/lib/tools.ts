@@ -389,6 +389,7 @@ function redactJobDetails(
     terminalEvent: terminalEvent ? { ...terminalEvent } : undefined,
     lastEvent: lastEvent ? { ...lastEvent } : undefined,
     error: job.error,
+    errorCode: job.errorCode,
     lifecycleEvents: job.lifecycleEvents,
   };
 }

@@ -176,6 +176,8 @@ export interface OracleJob {
   notifyClaimedBy?: string;
   artifactFailureCount?: number;
   error?: string;
+  /** Stable machine-readable code for worker failures that callers must distinguish. */
+  errorCode?: string;
   promptPath: string;
   reasoningPath?: string;
   logsDir: string;
