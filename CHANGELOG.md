@@ -7,11 +7,11 @@ history is kept below the divider.
 ## Unreleased
 
 ### Added
-- added the `deep_research` composer-tool preset: the worker leaves the model picker alone, enables Deep research from the composer tools menu and verifies its pill, attaches the archive, and sends. Because ChatGPT renders the report in a cross-origin App widget that neither the page, the relay, nor the conversation API expose, the job fails closed with `errorCode: deep_research_report_unreadable` and the conversation URL instead of saving the placeholder as a response; a reply instead of a research start fails with `deep_research_clarification_requested`, a missing menu entry with `deep_research_toggle_not_found`
+- added the `deep_research` composer-tool preset: the worker leaves the model picker alone, enables Deep research from the composer tools menu and verifies its pill, attaches the archive, sends, and reads the finished report out of ChatGPT's research widget. The widget is a cross-origin App iframe, so the worker arms CDP frame capture (`Target.setAutoAttach`, which is not retroactive) on its pinned relay tab before sending and polls the attached frame until `Research completed in` appears; relay transport only. Failures are named: `deep_research_clarification_requested` (the model replied instead of starting), `deep_research_toggle_not_found`, and `deep_research_report_unreadable` (isolated profile, frame never attached, or timeout), each with the conversation URL where one exists
 - recorded a stable `errorCode` on failed jobs (`job.json` and `oracle_read` details) for failures callers must distinguish
 
 ### Changed
-- excluded composer-tool presets from the release preset proof, printing the exclusion, until report extraction exists
+- excluded composer-tool presets from the release preset proof, printing the exclusion, because each Deep Research run consumes a research task on the account
 
 ### Fixed
 - cleared the ChatGPT composer before filling the prompt so a saved draft in the relay-served Chrome no longer prepends itself to the submitted prompt

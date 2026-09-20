@@ -539,6 +539,33 @@ export function classifyDeepResearchTurn(turn) {
   return DEEP_RESEARCH_PLACEHOLDER_PATTERN.test(normalizeText(stripChatGptResponseChrome(turn.text))) ? "started" : "reply";
 }
 
+// The finished Deep Research widget renders "Research completed in <t> · <n> citations · <m>
+// searches" followed by the report. The header's counts are animated tabular-nums counters that
+// innerText serializes as one 0–9 digit per line, repeated per digit column, before the
+// " citations · … searches" suffix. Single-digit lines inside the body are citation markers and
+// must be kept.
+const DEEP_RESEARCH_COMPLETED_PATTERN = /^Research completed in\b/i;
+
+/**
+ * @param {string | undefined} text innerText of the widget's report frame
+ * @returns {{ completed: boolean; report: string }}
+ */
+export function parseDeepResearchWidgetText(text) {
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  const headerIndex = lines.findIndex((line) => DEEP_RESEARCH_COMPLETED_PATTERN.test(line.trim()));
+  if (headerIndex < 0) return { completed: false, report: "" };
+  // Header region after the marker: for each count, one 0-9 run per digit column, then its label
+  // (" citations · " / " searches"). Skip digit runs and label lines until the first body line.
+  let index = headerIndex + 1;
+  while (index < lines.length) {
+    const line = lines[index].trim();
+    if (/^\d$/.test(line) || /^(citations?|searches?)\b/i.test(line) || /^(citations?|searches?)?\s*·\s*(citations?|searches?)?$/i.test(line) || line === "") index += 1;
+    else break;
+  }
+  const report = lines.slice(index).join("\n").replace(/^\n+/, "").trimEnd();
+  return { completed: true, report };
+}
+
 // Current ChatGPT renders the thinking-effort tiers as a discrete slider inside the
 // "Thinking effort" menu. Only the current stop is rendered; its live description reads
 // "<Label>, <n> of <count>." and the stops step with ArrowLeft/ArrowRight.

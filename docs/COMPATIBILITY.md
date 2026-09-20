@@ -33,7 +33,7 @@ A persisted session is required on every host. `--no-session` runs report oracle
 | --- | --- | --- | --- | --- |
 | ChatGPT | `preset` (canonical ids in `ORACLE_SUBMIT_PRESETS`; human-readable labels are normalized) | `.tar.zst` | 250 MiB | Isolated seed profile, or existing-Chrome relay |
 | Grok | `mode: "heavy"` only | `.tar.gz` | 200 MiB | Isolated seed profile |
-| ChatGPT Deep Research | `preset: "deep_research"` (composer tool; model picker untouched) | `.tar.zst` | 250 MiB | Either; the job ends `failed` with `errorCode: deep_research_report_unreadable` and the conversation URL because the report renders in a cross-origin App widget |
+| ChatGPT Deep Research | `preset: "deep_research"` (composer tool; model picker untouched) | `.tar.zst` | 250 MiB | Existing-Chrome relay only: the report is read from the research widget's iframe through CDP frame capture; on the isolated profile the job fails with `errorCode: deep_research_report_unreadable` |
 
 ChatGPT presets: `pro_standard`, `pro_extended`, `thinking_light`, `thinking_standard`,
 `thinking_extended`, `thinking_heavy`, `instant`, `instant_auto_switch`. Grok uses `.tar.gz`
@@ -65,13 +65,15 @@ Known limits are part of the claim; read them before installing.
   Chromium-family browser profile.
 - **Relay mode needs a capable relay.** Relay builds without `Target.getTargets` cannot serve
   `agent-browser`; relay mode is ChatGPT-only.
-- **Deep Research reports are not readable yet (observed 2026-09-20).** The finished report and
-  the "Research completed" marker render inside a cross-origin, sandboxed ChatGPT App iframe
-  (`internal://deep-research`). The top document keeps a model-written placeholder, `Copy response`
-  copies only that placeholder, the conversation API carries the App call but no report text, and
-  the relay forwards no iframe sessions. `deep_research` jobs therefore enable and verify the tool,
-  attach, send, and fail closed with the conversation URL; they are excluded from the release
-  preset proof until the relay exposes frame sessions.
+- **Deep Research reports are read through CDP frame capture (verified 2026-09-20).** The report
+  renders inside a cross-origin, sandboxed ChatGPT App iframe (`internal://deep-research`) whose
+  same-origin child frame holds the text; the top document keeps a model-written placeholder and
+  the conversation API carries no report. The worker arms `Target.setAutoAttach` on its pinned tab
+  before sending — Chrome only surfaces frames created after arming — and reads
+  `frames[0].document.body.innerText` from the attached session. Relay transport only; a
+  `deep_research` job on the isolated profile fails with `deep_research_report_unreadable`. Live
+  proof: one job completed with a 13.5K-character report in 5 minutes. Excluded from the release
+  preset proof because each run consumes a Deep Research task.
 - **Wake-up is best effort.** Completion delivery into the host session is one attempt; the saved
   job directory is the durable record.
 - **No demo media.** The README uses command-level proof and design docs; no screenshot or GIF is

@@ -211,10 +211,12 @@ Per job:
 10. send
 11. wait for a stable conversation URL and persist `chatUrl` / `conversationId`
 12. wait for completion anchored to the current turn only; for a composer-tool preset (Deep
-    Research) the tool is enabled after the prompt is filled and before the upload, verified by
-    its pill in the composer, model configuration is skipped, and the assistant turn is classified
-    by the presence of the research widget: the job fails closed with a stable `errorCode` and the
-    conversation URL because the report renders in a cross-origin App iframe the worker cannot read
+    Research) the tool is enabled after the prompt is filled and before the upload and verified by
+    its pill, model configuration is skipped, CDP frame capture is armed on the pinned relay tab
+    before send (`Target.setAutoAttach` is not retroactive), and once the assistant turn shows the
+    research widget the report is polled from the attached iframe session
+    (`frames[0].document.body.innerText`) until `Research completed in` appears; a reply instead
+    of a research start, a missing tool, or an unreadable widget fail with a stable `errorCode`
 13. persist plain-text response
 14. download any response-local artifacts directly into the job artifact directory
 15. close the isolated browser session and delete the runtime profile in `finally`

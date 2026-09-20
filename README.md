@@ -338,15 +338,17 @@ upload accepted and 200 MiB + 1 byte rejected.
 
 `deep_research` is a composer-tool preset, not a model tier: the worker leaves the model picker
 alone, enables **Deep research** from the composer tools menu, verifies the pill in the composer,
-attaches the archive, and sends. The research then runs in your ChatGPT account. What the worker
-cannot do yet is read the finished report: ChatGPT renders it inside a cross-origin App widget that
-neither the page, the relay, nor the conversation API expose, so the job ends `failed` with
-`errorCode: deep_research_report_unreadable` and the conversation URL in `error` instead of a
-`response.md` that would only ever contain the placeholder text. Open the link for the report. If
-the model replies instead of starting research, the job fails with
-`deep_research_clarification_requested` and the reply text; if the tool is missing from the menu,
-`deep_research_toggle_not_found`. Reading the report needs a relay change (frame sessions); the
-worker will complete the job once that lands.
+attaches the archive, sends, and then reads the finished report out of ChatGPT's research widget.
+The widget is a cross-origin App iframe, so this works only on the **existing-Chrome relay**
+transport: before sending, the worker arms CDP frame capture on its own pinned tab, waits for the
+widget frame to attach, and polls it until `Research completed in …` appears; the report body is
+written to `response.md` with the widget's animated counters stripped and citation markers kept.
+Runs take minutes (the completion timeout is 90 minutes by default) and hold the tab the whole time.
+Failures are named: `deep_research_clarification_requested` when the model replies instead of
+starting research (the reply is in `error`; add "do not ask clarifying questions" to the prompt),
+`deep_research_toggle_not_found` when the tools menu has no Deep research entry, and
+`deep_research_report_unreadable` when the widget never yields a report (isolated-profile
+transport, frame never attached, or timeout); that last one still carries the conversation URL.
 
 ## Compatibility and known limits
 
@@ -369,8 +371,9 @@ Known limits are part of the claim:
 - **Archives are capped** at 250 MiB (ChatGPT) and 200 MiB (Grok) after default exclusions and
   automatic whole-repo pruning.
 - **Wake-up is best effort;** the job directory is the durable record.
-- **Deep Research jobs fail closed by design** until the relay exposes the report widget; see
-  [Deep Research](#deep-research). They are excluded from the release preset proof.
+- **Deep Research needs the relay transport** and holds the job's tab for the whole research
+  run; see [Deep Research](#deep-research). It is excluded from the release preset proof because
+  each run costs a Deep Research task on the account.
 
 The [compatibility matrix](docs/COMPATIBILITY.md) defines the supported boundary; the
 [release ledger](docs/RELEASE.md#evidence-ledger) holds the evidence.

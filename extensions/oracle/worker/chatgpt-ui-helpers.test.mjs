@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
-import { classifyDeepResearchTurn, effortSelectionVisible, isDeepResearchMenuEntry, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel } from "./chatgpt-ui-helpers.mjs";
+import { classifyDeepResearchTurn, effortSelectionVisible, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel } from "./chatgpt-ui-helpers.mjs";
 
 test("a versioned Pro button opens configuration without attesting its effort", () => {
   const snapshot = '- button "6 Pro" [expanded=false, ref=e48]';
@@ -125,4 +125,32 @@ test("the Deep Research placeholder turn is never a completed report", () => {
   assert.equal(classifyDeepResearchTurn({ snapshot: '- button "Copy response" [ref=e114]', text: "Worked for 6s\nDeep Research has started working on your omp-oracle / pi-oracle query. It will provide a report." }), "started");
   assert.equal(classifyDeepResearchTurn({ snapshot: '- button "Copy response" [ref=e114]', text: "Before I start, which npm registry scope should I focus on?" }), "reply");
   assert.equal(classifyDeepResearchTurn({ snapshot: "", text: "" }), "reply");
+});
+
+test("the finished widget text yields the report without the animated counter, keeping citation markers", () => {
+  // Shapes captured from the report frame's innerText on 2026-09-20. Each count in the header
+  // renders as one 0-9 digit per line per digit column followed by its label; a two-count header
+  // ("N citations · M searches") therefore carries two runs with " citations · " between them.
+  const digits = Array.from({ length: 10 }, (_, digit) => String(digit));
+  const body = [
+    "`omp-oracle` vs. `pi-oracle`: Package and Relationship Analysis",
+    "Executive summary",
+    "",
+    "omp-oracle is a renamed, history-preserving fork.",
+    "1",
+    "",
+    "Package profile",
+  ];
+  for (const header of [
+    ["Research completed in 2m · ", ...digits, ...digits, ...digits, " citations ·  searches"],
+    ["Research completed in 4m · ", ...digits, ...digits, " citations · ", ...digits, ...digits, ...digits, " searches"],
+  ]) {
+    const parsed = parseDeepResearchWidgetText([...header, ...body].join("\n"));
+    assert.equal(parsed.completed, true);
+    assert.equal(parsed.report.startsWith("`omp-oracle` vs. `pi-oracle`"), true, `body starts after the header: ${parsed.report.slice(0, 40)}`);
+    assert.equal(parsed.report.includes("fork.\n1\n\nPackage profile"), true, "citation markers in the body survive");
+    assert.equal(/\n0\n1\n2/.test(parsed.report), false, "the counter runs are stripped");
+  }
+  assert.deepEqual(parseDeepResearchWidgetText(""), { completed: false, report: "" });
+  assert.deepEqual(parseDeepResearchWidgetText("Researching…\nReading sources"), { completed: false, report: "" });
 });

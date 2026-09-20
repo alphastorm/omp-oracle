@@ -21,6 +21,7 @@ import { applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOr
 import { spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
+import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
 import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
@@ -33,6 +34,7 @@ import {
   effortSelectionVisible,
   classifyDeepResearchTurn,
   isDeepResearchMenuEntry,
+  parseDeepResearchWidgetText,
   parsePowerSliderDescription,
   powerSliderStepKey,
   powerSliderTargetLabel,
@@ -603,6 +605,8 @@ async function terminateBrowserProcess() {
 
 async function closeBrowser(job) {
   if (cleaningUpBrowser) return;
+  deepResearchCdp?.close();
+  deepResearchCdp = undefined;
   if (job.config.browser.chatGptRelayEndpoint && !job.relayTargetId && !browserStarted) return;
   cleaningUpBrowser = true;
   let tabCleanupError;
@@ -1871,11 +1875,19 @@ async function enableDeepResearch(job) {
   const opener = findEntry(before, (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.addFiles && !candidate.disabled);
   if (!opener) throw new OracleWorkerError("deep_research_toggle_not_found", `Could not find the "${CHATGPT_LABELS.addFiles}" menu to enable Deep Research`);
   await clickRef(job, opener.ref);
-  await agentBrowser(job, "wait", "500");
-  const menu = await snapshotText(job);
-  const entry = findEntry(menu, isDeepResearchMenuEntry);
+  // The menu animates open; a fixed wait snapshotted it half-open once. Poll until expanded.
+  let entry;
+  for (let attempt = 0; attempt < 10 && !entry; attempt += 1) {
+    await agentBrowser(job, "wait", "300");
+    const menu = await snapshotText(job);
+    entry = findEntry(menu, isDeepResearchMenuEntry);
+    if (!entry && !menu.includes(`button "${CHATGPT_LABELS.addFiles}" [expanded=true`)) {
+      const reopen = findEntry(menu, (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.addFiles && !candidate.disabled);
+      if (reopen && attempt >= 3) await clickRef(job, reopen.ref);
+    }
+  }
   if (!entry) {
-    await agentBrowser(job, "press", "Escape").catch(() => undefined);
+    // Leave the menu as it is so the failure diagnostics capture what was offered.
     throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research is not offered in the composer tools menu for this account or page");
   }
   await clickRef(job, entry.ref);
@@ -2124,20 +2136,18 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       lastCompletionSignature = completionSignature;
       if (stableCount >= 2) {
         if (job.selection.tool === "deep_research") {
-          // The turn is stable, but for Deep Research the assistant text is never the report: the
-          // report renders in a cross-origin App widget this worker cannot read, and any other
-          // assistant text means the model replied instead of starting research.
+          // The turn is stable, but for Deep Research the assistant text is never the report: it
+          // renders inside a cross-origin App iframe. Read it from the frame session captured
+          // before send; any assistant text without the widget means the model replied instead.
           const conversation = job.chatUrl || (await currentUrl(job).catch(() => "")) || "(unknown)";
-          if (classifyDeepResearchTurn({ snapshot, text: targetText }) === "started") {
+          if (classifyDeepResearchTurn({ snapshot, text: targetText }) !== "started") {
             throw new OracleWorkerError(
-              "deep_research_report_unreadable",
-              `Deep Research started in ${conversation}. The report renders in a cross-origin App widget this worker cannot read yet; open the conversation for the finished report.`,
+              "deep_research_clarification_requested",
+              `Deep Research did not start in ${conversation}; the assistant replied instead: ${targetText.slice(0, 300)}`,
             );
           }
-          throw new OracleWorkerError(
-            "deep_research_clarification_requested",
-            `Deep Research did not start in ${conversation}; the assistant replied instead: ${targetText.slice(0, 300)}`,
-          );
+          const report = await waitForDeepResearchReport(job, timeoutAt);
+          return { responseIndex: baselineAssistantCount, responseText: report };
         }
         return { responseIndex: baselineAssistantCount, responseText: targetText };
       }
@@ -2150,6 +2160,61 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   }
 
   throw new Error(`Timed out waiting for ${isGrokJob(job) ? "Grok" : "ChatGPT"} response completion`);
+}
+
+// Deep Research renders its report in a cross-origin App iframe (a ~300-byte shell whose
+// same-origin child frame holds the report). Chrome surfaces that iframe as a CDP child session
+// only if auto-attach was armed before the frame was created, so the client is armed before send.
+const DEEP_RESEARCH_REPORT_EXPRESSION = `(() => { try { return frames[0].document.body.innerText; } catch { return ""; } })()`;
+const DEEP_RESEARCH_FRAME_WAIT_MS = 60_000;
+
+/** @type {RelayCdpClient | undefined} */
+let deepResearchCdp;
+
+async function armDeepResearchFrameCapture(job) {
+  if (!job.config.browser.chatGptRelayEndpoint) {
+    throw new OracleWorkerError("deep_research_report_unreadable", "Deep Research needs the existing-Chrome relay transport (browser.chatGptRelayEndpoint); the report frame is not reachable from an isolated runtime.");
+  }
+  if (!job.relayTargetId) throw new Error("Deep Research frame capture needs the job-owned relay tab identity");
+  deepResearchCdp = await RelayCdpClient.connect(job.config.browser.chatGptRelayEndpoint);
+  await deepResearchCdp.armFrameCapture(job.relayTargetId);
+  await log("Armed frame capture on the job-owned relay tab for the Deep Research widget");
+}
+
+async function waitForDeepResearchReport(job, timeoutAt) {
+  const cdp = deepResearchCdp;
+  const conversation = job.chatUrl || (await currentUrl(job).catch(() => "")) || "(unknown)";
+  if (!cdp) throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but frame capture was not armed; open the conversation for the report.`);
+  const frameDeadline = Math.min(timeoutAt, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS);
+  let frame;
+  while (!frame && Date.now() < frameDeadline) {
+    // targetInfo.url is empty at attach time; the origin is confirmed from inside the session.
+    for (const candidate of cdp.frameSessions()) {
+      const origin = await cdp.evaluate(candidate.sessionId, "location.origin");
+      if (typeof origin === "string" && /web-sandbox\.oaiusercontent\.com$/.test(origin)) { frame = candidate; break; }
+    }
+    if (!frame) await sleep(1000);
+  }
+  if (!frame) {
+    throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but its widget frame never surfaced through the relay; open the conversation for the finished report.`);
+  }
+  await log(`Deep Research widget frame attached (${frame.sessionId}); waiting for the report`);
+  let lastLogAt = 0;
+  while (Date.now() < timeoutAt) {
+    await heartbeat();
+    const text = await cdp.evaluate(frame.sessionId, DEEP_RESEARCH_REPORT_EXPRESSION);
+    const parsed = parseDeepResearchWidgetText(typeof text === "string" ? text : "");
+    if (parsed.completed && parsed.report) {
+      await log(`Deep Research report read from the widget frame (${parsed.report.length} chars)`);
+      return parsed.report;
+    }
+    if (Date.now() - lastLogAt >= 60_000) {
+      lastLogAt = Date.now();
+      await log(`Deep Research in progress (${typeof text === "string" ? text.length : 0} chars in widget)`);
+    }
+    await sleep(job.config.worker.pollMs);
+  }
+  throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but the report did not appear before the completion timeout; open the conversation for the finished report.`);
 }
 
 async function sha256(path) {
@@ -2647,6 +2712,7 @@ async function run() {
     }
     const baselineAssistantCount = (await assistantMessages(currentJob)).length;
     await log(`Assistant response count before send: ${baselineAssistantCount}`);
+    if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);
     await clickSend(currentJob, baselineAssistantCount);
     await log(`Send accepted; waiting ${POST_SEND_SETTLE_MS}ms after send to avoid streaming interruption`);
     await sleep(POST_SEND_SETTLE_MS);

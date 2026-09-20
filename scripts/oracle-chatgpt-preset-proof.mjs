@@ -84,9 +84,9 @@ function canonicalPresets() {
   }]));
 }
 
-// Composer-tool presets (Deep Research) cannot complete: the report renders in a cross-origin App
-// widget the worker cannot read, so the job fails closed by design. They are excluded from the
-// live proof until report extraction exists; the exclusion is printed so it is never silent.
+// Composer-tool presets (Deep Research) read their report from a cross-origin App
+// widget; each live run consumes a Deep Research task on the account, so they are excluded from the
+// live proof; the exclusion is printed so it is never silent.
 function canonicalPresetIds() {
   return Object.entries(canonicalPresets()).filter(([, preset]) => !preset.tool).map(([id]) => id);
 }
@@ -294,7 +294,7 @@ function validateProof(proof, path) {
     console.log(`ChatGPT preset release proof accepted: ${path}`);
     console.log(`Validated presets: ${requiredPresets.join(", ")}`);
     const excluded = excludedToolPresetIds();
-    if (excluded.length > 0) console.log(`Excluded from live proof (composer tools fail closed by design): ${excluded.join(", ")}`);
+    if (excluded.length > 0) console.log(`Excluded from live proof (each run consumes a Deep Research task): ${excluded.join(", ")}`);
   }
 
   return errors;

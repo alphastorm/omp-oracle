@@ -261,10 +261,16 @@ copies use Node's recursive copy.
 
 ### A Deep Research job ended with `deep_research_report_unreadable`
 
-That is the designed terminal state today, not a defect in your setup. The research started in
-your ChatGPT account; `error` and `chatUrl` in `job.json` (and `oracle_read`) carry the
-conversation URL. Open it for the finished report. The worker cannot read the report because it
-renders in a cross-origin App widget; see the [compatibility known limits](COMPATIBILITY.md#known-limits).
+The research started in your ChatGPT account and `error`/`chatUrl` in `job.json` (and
+`oracle_read`) carry the conversation URL, but the worker could not read the report out of the
+research widget. Causes, in order of likelihood:
+
+- the job ran on the isolated-profile transport — Deep Research needs `browser.chatGptRelayEndpoint`
+  (the widget frame is only reachable through the relay's CDP session);
+- the widget frame never attached within 60 s of sending (relay or Chrome hiccup) — rerun;
+- the research exceeded `worker.completionTimeoutMs` (90 minutes by default).
+
+Open the conversation URL for the report in any of these cases.
 
 - `deep_research_clarification_requested` — the model replied (usually a question) instead of
   starting research; the reply is quoted in `error`. Restate the request with explicit assumptions

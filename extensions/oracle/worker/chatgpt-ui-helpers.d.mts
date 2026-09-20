@@ -28,6 +28,7 @@ export declare function powerSliderStepKey(currentLabel: string, targetLabel: st
 export declare function isDeepResearchMenuEntry(entry: { kind?: string; label?: string; disabled?: boolean }): boolean;
 export declare function snapshotHasDeepResearchPill(snapshot: string, composerLabel?: string): boolean;
 export declare function classifyDeepResearchTurn(turn: { snapshot?: string; text?: string }): "started" | "reply";
+export declare function parseDeepResearchWidgetText(text: string | undefined): { completed: boolean; report: string };
 export declare function snapshotHasUsableComposerControls(snapshot: string): boolean;
 export declare function snapshotHasModelOpener(snapshot: string): boolean;
 export declare function snapshotHasSelectedLatestModel(snapshot: string): boolean;
