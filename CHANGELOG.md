@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.3.0 - 2026-09-20
 
 ### Added
 - `oracle_read({ jobId, action: "recollect" })`: repeat collection of an already completed, exactly bound turn without sending anything. The worker's separate `--recollect` entrypoint never reaches configure, upload, composer, or send; jobs completed before turn binding existed need the observed `responseIndex` and `messageId` together, and the latest turn is never inferred

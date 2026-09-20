@@ -374,7 +374,7 @@ transport, frame never attached, or timeout); that last one still carries the co
 | Platforms | macOS and Linux fork-qualified through the Crabbox gate; Windows native declared (`package.json` `os`) and upstream-validated at `pi-oracle` 0.7.20, not re-qualified by the fork; Chromium-family browsers |
 | Providers | ChatGPT (presets above), Grok (`heavy`) |
 | Transports | Isolated seed profile (both providers); existing-Chrome relay (ChatGPT only) |
-| Package | `omp-oracle` on npm (current release `0.2.0`); the GitHub URL tracks `main` |
+| Package | `omp-oracle` on npm (current release `0.3.0`); the GitHub URL tracks `main` |
 
 Known limits are part of the claim:
 
