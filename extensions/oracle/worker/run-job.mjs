@@ -23,7 +23,7 @@ import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
-import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, validateArtifactBytes } from "./response-capture.mjs";
+import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from "./response-capture.mjs";
 import {
   buildAllowedChatGptOrigins,
   deriveAssistantCompletionSignature,
@@ -2274,7 +2274,7 @@ async function captureBoundTurn(job, binding) {
   if (!binding.conversationId || observed !== binding.conversationId) throw new Error("Collection conversation binding does not match the current page.");
   const captured = await evalPage(job, toJsonScript(`return ${captureExpression(binding)};`));
   if (!captured || typeof captured.rawHtml !== "string") throw new Error("Bound response capture failed.");
-  const turnSha256 = createHash("sha256").update(captured.rawHtml).digest("hex");
+  const turnSha256 = turnContentSha256(captured.rawText);
   if (!binding.messageId && binding.turnSha256 && binding.turnSha256 !== turnSha256) throw new Error("Bound response content changed; refusing index-only recollection.");
   return { captured, binding: { ...binding, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
 }

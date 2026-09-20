@@ -339,6 +339,13 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
   }
 }
 
+// Identity for a turn that carries no data-message-id. ChatGPT re-renders the same turn with
+// different class attributes, so a hash of the sanitized HTML changes between visits and an
+// index-only binding could never be recollected; the turn's normalized text does not change.
+export function turnContentSha256(rawText) {
+  return createHash('sha256').update(String(rawText || '').replace(/\s+/g, ' ').trim()).digest('hex');
+}
+
 export function redactTransportSecrets(text) {
   return String(text).replace(/https?:\/\/[^\s<>"')]+/g, (value) => {
     if (/(?:[?&]|&amp;)(?:x-amz-[^=&#]+|x-goog-[^=&#]+|sig|signature|token|access_token|auth|key-pair-id|policy|expires|se|sp|sv)=/i.test(value)) return '[transport-url-redacted]';

@@ -101,6 +101,7 @@ export declare function collectNativeDownload(input: {
   onWait?: () => void;
 }): Promise<OracleNativeDownload>;
 export declare function redactTransportSecrets(text: unknown): string;
+export declare function turnContentSha256(rawText: unknown): string;
 export declare function validateArtifactBytes(bytes: Buffer, options?: { fileName?: string; contentType?: string; expectedSize?: number }): { size: number; sha256: string; detectedType: string };
 export declare function collectionOutcome(input: {
   hasResponse: boolean;

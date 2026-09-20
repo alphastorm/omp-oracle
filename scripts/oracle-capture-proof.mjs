@@ -11,7 +11,7 @@ import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import ts from 'typescript';
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
-import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
+import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'oracle-capture-proof-'));
 const chrome = process.env.CHROME_BIN || ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium', '/usr/bin/google-chrome'].find(existsSync);
@@ -64,7 +64,7 @@ try {
   const jobDir = join(root, 'job');
   await mkdir(jobDir);
   const job = { id: 'synthetic', responsePath: join(jobDir, 'response.md'), conversationId: 'synthetic', selection: { provider: 'chatgpt' }, config: { artifacts: { capture: true } } };
-  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','redactTransportSecrets','validateArtifactBytes','jobDir','evalPage','currentUrl','conversationIdFromUrl'];
+  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','redactTransportSecrets','turnContentSha256','validateArtifactBytes','jobDir','evalPage','currentUrl','conversationIdFromUrl'];
   // The browser adapter retains dead session identities and enforces the Unix socket limit.
   // Collection itself still executes production functions against real Chromium above.
   const factory = new Function(...dependencyNames, `let currentJob; let shuttingDown=false;
@@ -96,7 +96,7 @@ try {
       collect:async(job,binding)=>{currentJob=job;await collectBoundResult(job,binding);return currentJob;},
       recollect:async(job, warnings=[])=>{currentJob=job;retiredSessions.add(job.runtimeSessionName);nextCleanupWarnings=warnings;await runRecollection();return currentJob;}
     };`);
-  const worker = factory(createHash,existsSync,readFile,writeFile,rename,chmod,mkdir,join,basename,captureExpression,captureDownload,collectionOutcome,redactTransportSecrets,validateArtifactBytes,jobDir,async (_job, expression) => {
+  const worker = factory(createHash,existsSync,readFile,writeFile,rename,chmod,mkdir,join,basename,captureExpression,captureDownload,collectionOutcome,redactTransportSecrets,turnContentSha256,validateArtifactBytes,jobDir,async (_job, expression) => {
     let result = await evaluate(expression);
     while (typeof result === 'string') { try { result = JSON.parse(result); } catch { break; } }
     return result;
@@ -154,6 +154,24 @@ try {
   assert.equal(partial.collectionBinding.messageId, 'new', 'A failed recollection must not change the durable turn binding');
   assert.equal(await readFile(partial.responsePath, 'utf8'), exact);
   assert.equal(await readFile(manifest[0].copiedPath, 'utf8'), 'artifact payload\n');
+
+  // A turn without any data-message-id binds by normalized text: the same content re-rendered
+  // with different class attributes still recollects; changed content is refused.
+  await evaluate(`for (const el of document.querySelectorAll('[data-message-id]')) el.removeAttribute('data-message-id');`);
+  const indexOnly = await worker.collect({ ...second, collectionBinding: undefined }, { conversationId: 'synthetic', responseIndex: 1 });
+  assert.equal(indexOnly.collectionStatus, 'complete');
+  assert.equal(indexOnly.collectionBinding.messageId, undefined);
+  assert.match(indexOnly.collectionBinding.turnSha256, /^[a-f0-9]{64}$/);
+  await evaluate(`for (const el of document.querySelectorAll('article, article > *')) el.className = 'rerender-' + Math.random().toString(16).slice(2);`);
+  const rerendered = await worker.collect(indexOnly, indexOnly.collectionBinding);
+  assert.equal(rerendered.collectionStatus, 'complete', 'Class churn between renders must not invalidate an index-only binding');
+  assert.equal(rerendered.collectionBinding.turnSha256, indexOnly.collectionBinding.turnSha256);
+  await evaluate(`document.querySelectorAll('article')[1].insertAdjacentHTML('beforeend', '<p>Edited after completion</p>')`);
+  const changed = await worker.collect(rerendered, rerendered.collectionBinding);
+  assert.equal(changed.collectionStatus, 'partial', 'Changed turn content must be refused for an index-only binding');
+  assert(changed.collectionOptionalMissing.some((gap) => /refusing index-only recollection/.test(gap)));
+  assert.equal(await readFile(changed.responsePath, 'utf8'), exact, 'Earlier bytes survive the refusal');
+  await evaluate(`document.querySelectorAll('article p').forEach((p) => p.remove()); document.querySelectorAll('article')[0].setAttribute('data-message-id', 'old'); document.querySelectorAll('article')[1].setAttribute('data-message-id', 'new');`);
 
   // The driver's `close` returns while its session daemon is still listed; a same-name command in
   // that window is served by the dying daemon (orphan tab, then "Connection refused"). The worker's

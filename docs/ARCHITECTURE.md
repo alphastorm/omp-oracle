@@ -529,10 +529,11 @@ jobs without these fields stay readable; absence is unknown, not failure.
 
 Collection binds to one assistant turn: `conversationId` (checked against the live URL),
 `responseIndex` (the position observed at completion), and once captured the exact
-`data-message-id` plus a `turnSha256` of the sanitized turn HTML. Actual ChatGPT headings wrap a
-descendant `data-message-id`, so the binding resolves through the heading wrapper; message
-identity wins over a stale positional index, and a missing or ambiguous identity fails closed
-instead of capturing the last answer or the whole conversation.
+`data-message-id` plus a `turnSha256` of the turn's normalized text (class attributes churn
+between renders, so the sanitized HTML is not hashed). Actual ChatGPT headings wrap a descendant
+`data-message-id`, so the binding resolves through the heading wrapper; message identity wins over
+a stale positional index, and a missing or ambiguous identity fails closed instead of capturing
+the last answer or the whole conversation.
 
 ### Capture
 
