@@ -31,6 +31,10 @@ import {
   matchesRequestedModelControlLabel,
   requestedEffortLabel,
   effortSelectionVisible,
+  parsePowerSliderDescription,
+  powerSliderStepKey,
+  powerSliderTargetLabel,
+  snapshotHasPowerSliderMenu,
   snapshotCanSafelySkipModelConfiguration,
   snapshotHasClosedCompactSelection,
   snapshotHasModelConfigurationUi,
@@ -1639,6 +1643,54 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
   throw new Error(`Could not verify requested model settings after configuration for ${job.selection.modelFamily}`);
 }
 
+const POWER_SLIDER_ELEMENT = `document.querySelector('[role="menuitem"][aria-label="Power"]')`;
+
+async function readPowerSliderState(job) {
+  // Bare string results come back JSON-quoted from parseEvalResult; wrap in an object instead.
+  const result = await evalPage(job, toJsonScript(`
+    const power = ${POWER_SLIDER_ELEMENT};
+    if (!power) return { description: "" };
+    const ids = (power.getAttribute("aria-describedby") || "").split(/\\s+/).filter(Boolean);
+    return { description: ids.map((id) => (document.getElementById(id)?.textContent || "").trim()).join(" ") };
+  `));
+  const description = result && typeof result === "object" && typeof result.description === "string" ? result.description : "";
+  return parsePowerSliderDescription(description);
+}
+
+async function focusPowerSlider(job) {
+  const result = await evalPage(job, toJsonScript(`
+    const power = ${POWER_SLIDER_ELEMENT};
+    if (!power) return { focused: false };
+    power.focus();
+    return { focused: document.activeElement === power };
+  `));
+  return Boolean(result && typeof result === "object" && result.focused === true);
+}
+
+// Drive the current slider-based thinking-effort picker: only the current stop is rendered, so
+// step with real arrow keys and trust the slider's own description after every step.
+async function configurePowerSlider(job) {
+  const target = powerSliderTargetLabel(job.selection);
+  let state = await readPowerSliderState(job);
+  if (!state) throw new Error("Could not read the ChatGPT thinking-effort slider");
+  await log(`Thinking-effort slider reads ${state.label} (${state.index} of ${state.count}); target ${target}`);
+  if (state.label !== target) {
+    if (!(await focusPowerSlider(job))) throw new Error("Could not focus the ChatGPT thinking-effort slider");
+    for (let step = 0; step < state.count && state.label !== target; step += 1) {
+      const key = powerSliderStepKey(state.label, target);
+      if (!key) throw new Error(`Unknown thinking-effort slider position: ${state.label}`);
+      const before = state.index;
+      await agentBrowser(job, "press", key);
+      await agentBrowser(job, "wait", "250");
+      state = await readPowerSliderState(job);
+      if (!state) throw new Error("Lost the ChatGPT thinking-effort slider while stepping");
+      if (state.index === before) throw new Error(`Thinking-effort slider did not move toward ${target} from ${state.label}`);
+    }
+  }
+  if (state.label !== target) throw new Error(`Could not set the thinking-effort slider to ${target}; it reads ${state.label}`);
+  await log(`Thinking-effort slider set to ${state.label} (${state.index} of ${state.count})`);
+}
+
 async function configureModel(job) {
   if (isGrokJob(job)) return configureGrokModel(job);
   const initialSnapshot = await snapshotText(job);
@@ -1650,6 +1702,14 @@ async function configureModel(job) {
   await log(`Configuring model family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
   let familySnapshot = await openModelConfiguration(job);
   let verificationSnapshot = familySnapshot;
+  if (snapshotHasPowerSliderMenu(familySnapshot)) {
+    await configurePowerSlider(job);
+    if (!(await maybeClickLabeledEntry(job, CHATGPT_LABELS.close, { kind: "button" }))) {
+      await agentBrowser(job, "press", "Escape").catch(() => undefined);
+    }
+    await waitForModelConfigurationToSettle(job, { stronglyVerified: true });
+    return;
+  }
 
   const initialFamilyOpener = findEntry(
     initialSnapshot,

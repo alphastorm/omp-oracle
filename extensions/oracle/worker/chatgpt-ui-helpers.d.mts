@@ -20,6 +20,11 @@ export declare function effortSelectionVisible(snapshot: string, effortLabel: st
 export declare function thinkingChipVisible(snapshot: string): boolean;
 export declare function snapshotHasClosedCompactSelection(snapshot: string, selection: OracleUiSelection): boolean;
 export declare function snapshotHasModelConfigurationUi(snapshot: string): boolean;
+export declare const POWER_SLIDER_TIER_LABELS: readonly string[];
+export declare function snapshotHasPowerSliderMenu(snapshot: string): boolean;
+export declare function parsePowerSliderDescription(description: string | undefined): { label: string; index: number; count: number } | undefined;
+export declare function powerSliderTargetLabel(selection: OracleUiSelection): string;
+export declare function powerSliderStepKey(currentLabel: string, targetLabel: string): "ArrowLeft" | "ArrowRight" | undefined;
 export declare function snapshotHasUsableComposerControls(snapshot: string): boolean;
 export declare function snapshotHasModelOpener(snapshot: string): boolean;
 export declare function snapshotHasSelectedLatestModel(snapshot: string): boolean;

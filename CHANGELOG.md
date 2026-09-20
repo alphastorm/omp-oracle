@@ -20,6 +20,7 @@ history is kept below the divider.
 
 ### Fixed
 - made relay cleanup verify physical target removal and retain durable ownership when the driver omits or fails to close a live target
+- drove ChatGPT's slider-based thinking-effort picker by keyboard, verifying each step from the slider's own description, so every preset configures again on the composer that replaced the tier menu (Instant, Medium, High, Extra High, Pro)
 - supported current versioned Pro controls and the `Power` plus checked `Latest` transition without treating a closed model label as effort proof
 - closed compact model menus by clicking the empty composer when Escape does not dismiss them on continuation pages
 - kept Node worker launch, project-trust handling, and transient ChatGPT 403 classification compatible with current OMP runtimes

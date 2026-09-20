@@ -485,6 +485,59 @@ function hasCurrentPowerEffortMenu(entries) {
   return hasExpandedEffortOpener && hasEffortMenu && menuItems.has("Power") && menuItems.has("Select model");
 }
 
+// Current ChatGPT renders the thinking-effort tiers as a discrete slider inside the
+// "Thinking effort" menu. Only the current stop is rendered; its live description reads
+// "<Label>, <n> of <count>." and the stops step with ArrowLeft/ArrowRight.
+export const POWER_SLIDER_TIER_LABELS = Object.freeze(["Instant", "Medium", "High", "Extra High", "Pro"]);
+
+/**
+ * @param {string} snapshot
+ * @returns {boolean}
+ */
+export function snapshotHasPowerSliderMenu(snapshot) {
+  return hasCurrentPowerEffortMenu(parseSnapshotEntries(snapshot));
+}
+
+/**
+ * @param {string | undefined} description
+ * @returns {{ label: string; index: number; count: number } | undefined}
+ */
+export function parsePowerSliderDescription(description) {
+  const match = String(description || "").match(/^\s*(.+?),\s*(\d+)\s+of\s+(\d+)\./);
+  if (!match) return undefined;
+  const index = Number(match[2]);
+  const count = Number(match[3]);
+  if (!Number.isInteger(index) || !Number.isInteger(count) || index < 1 || count < 1 || index > count) return undefined;
+  return { label: normalizeText(match[1]), index, count };
+}
+
+/**
+ * The slider stop that satisfies a selection, mirroring compactSelectionMatchesRequested:
+ * Pro has one undifferentiated stop, and light thinking shares Medium with standard.
+ * @param {OracleUiSelection} selection
+ * @returns {string}
+ */
+export function powerSliderTargetLabel(selection) {
+  if (selection.modelFamily === "instant") return "Instant";
+  if (selection.modelFamily === "pro") return "Pro";
+  const effort = selection.effort || "standard";
+  if (effort === "extended") return "High";
+  if (effort === "heavy") return "Extra High";
+  return "Medium";
+}
+
+/**
+ * @param {string} currentLabel
+ * @param {string} targetLabel
+ * @returns {"ArrowLeft" | "ArrowRight" | undefined}
+ */
+export function powerSliderStepKey(currentLabel, targetLabel) {
+  const current = POWER_SLIDER_TIER_LABELS.indexOf(normalizeText(currentLabel));
+  const target = POWER_SLIDER_TIER_LABELS.indexOf(normalizeText(targetLabel));
+  if (current < 0 || target < 0 || current === target) return undefined;
+  return target > current ? "ArrowRight" : "ArrowLeft";
+}
+
 /**
  * @param {string} snapshot
  * @returns {boolean}

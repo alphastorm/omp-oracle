@@ -104,10 +104,10 @@ Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS work
   `real-extension` PASS (`run-1789871654549-uee638`) against `omp-oracle-platform-smoke:node24`.
 - OMP 18.2.6: `omp install --dry-run .` resolves the checkout as `omp-oracle`.
 - Live ChatGPT tracer through the fork's build and the relay transport (2026-09-20): job
-  `020385c2-773f-4130-a469-30edcec17579` navigated its job-owned tab and reached
-  `configuring_model`, then failed with `Could not find model family control for instant` on the
-  current slider-based composer. See the compatibility known limit; the preset proof is blocked
-  until the worker adapts.
+  `020385c2-773f-4130-a469-30edcec17579` failed at `configuring_model` on the slider-based
+  composer (`Could not find model family control for instant`); after the slider driver landed,
+  job `9d4012f3-e48b-45c7-93c6-66822b3fdd29` set `Instant (1 of 5)`, uploaded, and completed with
+  both response markers in 40 s. Diagnostics: `.artifacts/ui-drift-2026-09-20/`.
 - Not yet run by the fork: the macOS Crabbox lane and the live ChatGPT preset proof. The
   Windows native lane is not release-required for the fork.
 
