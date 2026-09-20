@@ -43,6 +43,16 @@ accepted a 200 MiB upload and rejected 200 MiB + 1 byte.
 
 Known limits are part of the claim; read them before installing.
 
+- **ChatGPT model configuration fails on the current composer (observed 2026-09-20).** On a
+  ChatGPT Pro account showing `Latest` (GPT-5.6), the composer's "Thinking effort" control is a
+  discrete slider whose tier labels (Instant, Medium, High, Extra High, Power) are not exposed as
+  accessibility rows; only the current level and a "Select model" version list are. The worker
+  selects tiers by accessibility label, so every ChatGPT preset fails at `configuring_model` with
+  `Could not find model family control`, on both transports. Live tracer job
+  `020385c2-773f-4130-a469-30edcec17579` and the captured menu are under
+  `.artifacts/ui-drift-2026-09-20/` on the maintainer workstation. Grok is unaffected. Until the
+  worker drives the slider, ChatGPT jobs cannot complete on accounts with this UI, and the
+  preset proof cannot pass.
 - **Experimental public beta.** Provider UI, auth, model controls, and artifact download behavior
   drift; release proof is re-run per release, not continuously.
 - **The `omp-oracle` name is not on npm yet.** `pi-oracle` on npm is the upstream package and does

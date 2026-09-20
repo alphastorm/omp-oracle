@@ -339,6 +339,11 @@ upload accepted and 200 MiB + 1 byte rejected.
 
 Known limits are part of the claim:
 
+- **ChatGPT model configuration currently fails on the new composer.** Observed 2026-09-20 on a
+  Pro account: the "Thinking effort" control is a slider that exposes no per-tier rows to the
+  accessibility tree, so every ChatGPT preset stops at `configuring_model` with
+  `Could not find model family control`. Grok is unaffected. Tracked in
+  [Compatibility](docs/COMPATIBILITY.md#known-limits) until the worker adapts.
 - **Experimental public beta.** Provider UI, auth, model controls, and artifact download
   behavior can drift.
 - **Fork changes are not yet matrix-qualified.** The relay transport and OMP host compatibility
