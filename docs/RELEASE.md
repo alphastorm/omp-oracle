@@ -91,8 +91,37 @@ under their own heading and were recorded against the upstream package identity.
 
 ### Fork evidence (omp-oracle)
 
-Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation
-(2026-09-20). Artifact run ids live under the gitignored `.artifacts/` root.
+Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
+Artifact run ids live under the gitignored `.artifacts/` root.
+
+#### 0.2.0 (2026-09-20, `6401cfc`)
+
+- Deep Research acceptance through the fork's build and the relay transport: job
+  `00f41969-f0ab-458d-a348-0124ad75465a` enabled and verified the composer tool, armed frame
+  capture, attached the widget frame, held heartbeats across the research phase, and completed
+  with a 13,550-character report in 5 minutes; after the two-counter header fix, job
+  `4dc1d412-8f3f-4ca6-8434-25f60100bac6` completed with a clean body in 4m20s. Earlier attempts
+  recorded each designed failure with its own code: `deep_research_toggle_not_found`,
+  `deep_research_clarification_requested`, `deep_research_report_unreadable`. Spike captures:
+  `.artifacts/deep-research-spike-2026-09-20/`.
+- CDP frame capture works through the unmodified OMP 18.2.6 relay; no relay change was needed.
+  The earlier "relay cannot expose frames" reading came from arming `Target.setAutoAttach` after
+  the frame already existed, and from reading the OOPIF shell instead of its same-origin child.
+- Live eight-preset ChatGPT proof re-run against `6401cfc` (`npm run release:proof:chatgpt-presets`
+  accepted): `instant` `2cd01096`, `instant_auto_switch` `1cb07f93`, `thinking_light` `f0724ffc`,
+  `thinking_standard` `603c27cf`, `thinking_extended` `76710d74`, `thinking_heavy` `8a1a5286`,
+  `pro_standard` `438e5f62`, `pro_extended` `e5ff58c9`; all eight completed with both markers.
+  `deep_research` is excluded and the exclusion is printed.
+- `npm run release:check` passed as one composition on `6401cfc` (local gate, preset proof, macOS
+  and Ubuntu Crabbox lanes), and again inside `prepublishOnly` during the publish.
+- Published `omp-oracle@0.2.0` from `6401cfc`: shasum
+  `93d61ccecbcf527456a4f884cc1d6e5857ea72ca`, 78 files; tag `v0.2.0` and the
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.2.0) name the same
+  commit. A fresh `npm install omp-oracle@0.2.0` carries the `deep_research` preset and
+  `shared/relay-cdp-client.mjs`.
+
+#### 0.1.0 (2026-09-20, `85adab1`)
+
 
 - Local gate: `npm run verify:oracle` green on macOS (Node 26) and inside `cimg/node:24.16`
   (Node 24.16.0); the same gate passed on the first hosted CI run.
