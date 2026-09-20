@@ -94,6 +94,56 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.3.0 (2026-09-20, `9f26e9c`)
+
+- Native research export boundary, reproduced before it was fixed: against an owned headless
+  Chromium (`node scripts/oracle-capture-proof.mjs`), a sandboxed cross-origin report frame whose
+  Export → Export to Markdown menu delegates the download to the host page made the in-frame
+  byte hook fail with `Native control did not expose downloadable bytes.` while Chrome itself
+  wrote the export; the pre-armed collector (`Page.downloadWillBegin`/`downloadProgress` plus the
+  object-URL registry) then recovered bytes identical to the file Chrome saved, bound to the tab's
+  main frame. A probe on the maintainer's real Chrome 153 through the OMP relay confirmed the
+  transport: `Browser.setDownloadBehavior` is not routed (`-32601`), `Page` download events are
+  forwarded for both the page and the OOPIF session, and a 74-byte probe export was collected
+  identical to the saved file (removed afterwards by exact path and content hash).
+- One authorized collection-only tracer on a previously completed Deep Research job (private
+  diligence run; identifiers withheld) recollected the report's native Markdown export: 36,995
+  bytes, SHA-256 equal to the operator's earlier manual export, `blob` source from the host main
+  frame, validated and stored under `artifacts/`, `collectionStatus: complete` with no gaps, tab
+  closed with no cleanup warnings. The first two attempts exposed and fixed, with regressions: an
+  extension poller in another session terminating the recollecting worker as a stale terminal
+  cleanup worker (predecessor `lastCleanupAt` outranking the fresh heartbeat), and
+  `agent-browser close` returning while its daemon still served a same-name `open` (orphan tab,
+  then `Connection refused`).
+- Focused cross-family review of the candidate (`review-daybreak-blue`, lead Claude; subject
+  `54460e8`): nine findings, all lead-verified and dispositioned — eight mitigated with executable
+  regressions and one partially mitigated/accepted (identity-less positional roots still bind by
+  content hash and are refused at recollection). Remediation is `9f26e9c`.
+- Local gate: `npm run verify:oracle` green on the feature, release-prep, and remediation
+  states; the helper suite includes the fake-relay collector tests and the sanity harness the
+  live-recollection reconcile case.
+- Isolated loaded-extension smokes through `omp --standard … --no-extensions -e` with a local
+  model: whole-repo archive exclusions (job `a9d41f6e`, `.pi/`, `.oracle-context/`, `.cursor/`,
+  `.scratchpad.md`, `.artifacts/` excluded, README present; isolated worker failed cleanly on
+  auth), symlink escape rejection (no job created), and `oracle_read({ action: "recollect" })`
+  on the completed instant canary `b5dca6b9` (complete in 4 s, provenance restored). Agent
+  feedback led to the `collection-binding:` summary line; the `touch`-only seed marker in the
+  test plan was found to be rejected at submit time and corrected to a timestamped marker.
+- Live eight-preset ChatGPT proof against `9f26e9c` (`npm run release:proof:chatgpt-presets`
+  accepted): `instant` `e0d780a8`, `instant_auto_switch` `577ecd41`, `thinking_light`
+  `b310013c`, `thinking_standard` `7b038f37`, `thinking_extended` `d887033e`, `thinking_heavy`
+  `1a2b9d1f`, `pro_standard` `05775d87`, `pro_extended` `f7d1e39a`; all eight completed with
+  both markers in 42–68 s. `deep_research` is excluded and the exclusion is printed.
+- Crabbox lanes on `9f26e9c`: macOS `platform-build` PASS (52.6 s) and `real-extension` PASS,
+  Ubuntu `platform-build` PASS (37.8 s) and `real-extension` PASS; `npm run release:check` passed
+  as one composition, and again inside `prepublishOnly` during the publish.
+- Published `omp-oracle@0.3.0` from `9f26e9c` (registry `gitHead` matches): shasum
+  `25fd2d0ccd7e16256b86c5904976ac71ca51227a`, 81 files, dist-tag `latest`; tag `v0.3.0` and the
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.3.0) name the same
+  commit. A fresh `npm pack omp-oracle@0.3.0` reproduces the shasum and carries
+  `worker/response-capture.mjs` and `shared/relay-cdp-client.mjs`; the repository-only proof
+  scripts are not shipped.
+
 #### 0.2.0 (2026-09-20, `6401cfc`)
 
 - Deep Research acceptance through the fork's build and the relay transport: job
