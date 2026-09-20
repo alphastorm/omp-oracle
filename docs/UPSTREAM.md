@@ -44,6 +44,9 @@ The exact list per release is in [`CHANGELOG.md`](../CHANGELOG.md).
 
 - Upstream is merged, not rebased, so the shared history stays intact and each upstream release
   lands as one merge commit (the last one is `upstream-compat-20260918`).
+- Upstream's release tags (`v0.1.0` through `v0.7.20` of `pi-oracle`) are not carried in this
+  repository; they remain in `fitchmultz/pi-oracle`. The fork's `v*` tags name `omp-oracle`
+  releases only, starting at `v0.1.0`.
 - After a merge, the local gate (`npm run verify:oracle`) must pass; changes that touch archive
   behavior, process cleanup, runtime/browser profile handling, package metadata, or the Crabbox
   harness also need the focused platform runs described in

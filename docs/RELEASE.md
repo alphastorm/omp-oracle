@@ -115,8 +115,15 @@ Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS work
   `d3605d00`; every job completed with `PRESET <preset> OK` and `PACKAGE omp-oracle`, Pro
   presets on the single `Pro` stop. The proof is re-run against the release commit before
   publishing, because the checker binds jobs to the current HEAD.
-- The macOS Crabbox lane runs inside `npm run release:check` at publish time; the Windows native
-  lane is not release-required for the fork.
+- macOS Crabbox lane (SSH to localhost, 2026-09-20): `platform-build` PASS
+  (`run-1789875191134-adr3y0`) and `real-extension` PASS (`run-1789875241370-75h0od`); the full
+  `npm run release:check` then passed as one composition on `85adab1`, and again inside
+  `prepublishOnly` during the publish. The Windows native lane is not release-required for the
+  fork.
+- Published `omp-oracle@0.1.0` on 2026-09-20 from `85adab1`: shasum
+  `943f969b35348963f105b7d46dd33d08b4fc99d3`, 76 files; tag `v0.1.0` and the
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.1.0) point at the same
+  commit, and `omp install --dry-run omp-oracle` resolves it from the registry.
 
 ### Carried upstream evidence
 
