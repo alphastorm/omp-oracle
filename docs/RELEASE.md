@@ -122,7 +122,6 @@ Artifact run ids live under the gitignored `.artifacts/` root.
 
 #### 0.1.0 (2026-09-20, `85adab1`)
 
-
 - Local gate: `npm run verify:oracle` green on macOS (Node 26) and inside `cimg/node:24.16`
   (Node 24.16.0); the same gate passed on the first hosted CI run.
 - Packed install through pi 0.80.9 on macOS: `npm run smoke:real:packed` installed
