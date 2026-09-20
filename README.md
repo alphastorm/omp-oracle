@@ -331,7 +331,7 @@ upload accepted and 200 MiB + 1 byte rejected.
 
 | | Current contract |
 | --- | --- |
-| Hosts | Oh My Pi and `pi`; `pi` 0.80.9 is the validated upstream baseline, OMP 18.2.6 is observed loading the package and passing preflight |
+| Hosts | Oh My Pi and `pi`; `pi` 0.80.9 is the validated upstream baseline. OMP 18.2.6 is observed loading the extension as upstream `pi-oracle@0.7.20` and resolving this checkout as `omp-oracle` (`omp install --dry-run`); no job has run through the fork's build on OMP yet |
 | Platforms | macOS, Linux, Windows native, Chromium-family browsers |
 | Providers | ChatGPT (presets above), Grok (`heavy`) |
 | Transports | Isolated seed profile (both providers); existing-Chrome relay (ChatGPT only) |
