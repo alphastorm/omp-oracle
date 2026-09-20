@@ -31,6 +31,7 @@ export declare function classifyDeepResearchTurn(turn: { snapshot?: string; text
 export declare function parseDeepResearchWidgetText(text: string | undefined): { completed: boolean; report: string };
 export declare function snapshotHasUsableComposerControls(snapshot: string): boolean;
 export declare function snapshotHasModelOpener(snapshot: string): boolean;
+export declare function matchesModelConfigurationOpener(entry: import("./artifact-heuristics.d.mts").SnapshotEntry): boolean;
 export declare function snapshotHasSelectedLatestModel(snapshot: string): boolean;
 export declare function autoSwitchToThinkingSelectionVisible(snapshot: string): boolean | undefined;
 export declare function snapshotCanSafelySkipModelConfiguration(snapshot: string, selection: OracleUiSelection): boolean;

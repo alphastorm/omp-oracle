@@ -45,6 +45,9 @@ export async function closeRelayTab({ binary, sessionName, endpoint, targetId })
     }
   };
   await assertRelayReady(endpoint);
+  // The driver spawns a fresh pinned daemon (and its own tab) for a session whose daemon is gone.
+  // Consult the relay inventory first so an already-closed target never costs a stray tab.
+  if (!(await relayTargetListed(endpoint, targetId))) return;
   const listed = await run("tab", "list");
   if (!listed.success || !Array.isArray(listed.data?.tabs)) {
     throw new Error("Could not inspect the relay job's pinned tab; cleanup refused.");
@@ -60,13 +63,18 @@ export async function closeRelayTab({ binary, sessionName, endpoint, targetId })
   // The driver can omit a live target or acknowledge a rejected close. Always
   // verify the relay inventory before discarding the durable owned identity.
   await assertRelayReady(endpoint);
+  if (await relayTargetListed(endpoint, targetId)) {
+    throw new Error("The job-owned relay tab remains open after cleanup.");
+  }
+}
+
+/** @param {string} endpoint @param {string} targetId */
+async function relayTargetListed(endpoint, targetId) {
   const response = await fetch(new URL("/json/list", endpoint), {
     signal: AbortSignal.timeout(5000),
     redirect: "error",
   });
   if (!response.ok) throw new Error("Could not verify relay tab cleanup.");
   const targets = await response.json();
-  if (!Array.isArray(targets) || targets.some((target) => target.id === targetId)) {
-    throw new Error("The job-owned relay tab remains open after cleanup.");
-  }
+  return !Array.isArray(targets) || targets.some((target) => target.id === targetId);
 }

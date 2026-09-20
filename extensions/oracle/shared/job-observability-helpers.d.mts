@@ -26,6 +26,13 @@ export interface OracleJobSummaryLike {
   responsePath?: string;
   responseFormat?: string;
   artifactFailureCount?: number;
+  generationStatus?: "completed";
+  collectionStatus?: "complete" | "partial" | "failed";
+  collectionBinding?: { conversationId?: string; responseIndex?: number; messageId?: string; turnSha256?: string; frameId?: string };
+  responseCapturePath?: string;
+  collectionRequiredMissing?: string[];
+  collectionOptionalMissing?: string[];
+  recollectionError?: string;
   lastCleanupAt?: string;
   cleanupWarnings?: string[];
   error?: string;

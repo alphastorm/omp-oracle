@@ -279,6 +279,25 @@ Open the conversation URL for the report in any of these cases.
   the pill did not appear after selecting it. Check the account has Deep Research and that the
   ChatGPT page is a normal chat, then retry.
 
+### A completed job reads `collection-status: partial`
+
+Generation finished but the worker holds less than the whole turn. `oracle_read` and
+`/oracle-read` list the gaps: required gaps (`bound_response_capture`,
+`rich_response_fidelity`, …) mean the saved answer is degraded; optional gaps
+(`native_markdown_export`, `artifact:<candidate>`) mean a secondary file is missing while
+`response.md` is intact. `response.capture.json` carries the exact turn binding, fidelity, and
+source URLs.
+
+Do not resubmit. Run `oracle_read({ jobId, action: "recollect" })`: the worker opens a fresh
+disposable session, reacquires the exact bound turn, and repeats collection only; it never
+configures, uploads, or sends. Jobs completed before turn binding existed need the observed
+`responseIndex` and `messageId` together (`data-message-id` of the assistant turn). A failed
+recollection records `recollectionError` and keeps the earlier usable output.
+
+For Deep Research, recollection re-activates Export → Export to Markdown; the browser saves its
+own copy in Chrome's configured download directory each time (the worker never changes that
+destination), and the validated bytes land under `artifacts/<sha256>-deep-research-report.md`.
+
 ### The prompt arrived with unrelated text in front of it (relay mode)
 
 ChatGPT restores a saved draft into the composer of your signed-in Chrome, and filling the

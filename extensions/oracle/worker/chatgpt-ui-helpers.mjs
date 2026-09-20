@@ -681,19 +681,23 @@ export function snapshotHasUsableComposerControls(snapshot) {
  * @returns {boolean}
  */
 export function snapshotHasModelOpener(snapshot) {
-  /** @type {SnapshotEntry[]} */
-  const entries = parseSnapshotEntries(snapshot);
-  return entries.some((entry) => {
-    if (entry.disabled || entry.kind !== "button" || typeof entry.label !== "string") return false;
-    const label = normalizeChipLabel(entry.label);
-    return label === "Model"
-      || label === "Model selector"
-      || COMPACT_INTELLIGENCE_OPENER_PATTERN.test(label)
-      || EFFORT_LABELS.has(label)
-      || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {OracleUiModelFamily} */ (family)))
-      || THINKING_CHIP_PATTERN.test(label)
-      || PRO_CHIP_PATTERN.test(label);
-  });
+  return parseSnapshotEntries(snapshot).some(matchesModelConfigurationOpener);
+}
+
+/**
+ * Composer openers are model chips, not arbitrary family-prefixed response actions.
+ * @param {SnapshotEntry} entry
+ * @returns {boolean}
+ */
+export function matchesModelConfigurationOpener(entry) {
+  if (entry.disabled || entry.kind !== "button" || typeof entry.label !== "string") return false;
+  const label = normalizeChipLabel(entry.label).replace(/^\d+(?:\.\d+)*\s+/, "");
+  return label === "Model"
+    || label === "Model selector"
+    || COMPACT_INTELLIGENCE_OPENER_PATTERN.test(label)
+    || EFFORT_LABELS.has(label)
+    || THINKING_CHIP_PATTERN.test(label)
+    || PRO_CHIP_PATTERN.test(label);
 }
 
 export function snapshotHasSelectedLatestModel(snapshot) {

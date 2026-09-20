@@ -217,8 +217,11 @@ Per job:
     research widget the report is polled from the attached iframe session
     (`frames[0].document.body.innerText`) until `Research completed in` appears; a reply instead
     of a research start, a missing tool, or an unreadable widget fail with a stable `errorCode`
-13. persist plain-text response
-14. download any response-local artifacts directly into the job artifact directory
+13. bind the completed assistant turn (`conversationId` + `responseIndex`, then the exact
+    `data-message-id` and a content hash) and record `generationStatus: completed`
+14. collect the bound turn only (never the whole conversation): scoped DOM evidence, exact code
+    payloads, derived Markdown, stable source URLs, and any response-local artifacts, writing
+    `response.capture.json` plus `collectionStatus` with required/optional gaps
 15. close the isolated browser session and delete the runtime profile in `finally`
 
 ## Existing-Chrome relay transport
@@ -367,10 +370,14 @@ ${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/
   prompt.md
   context-<job-id>.tar.zst   # ChatGPT
   context-<job-id>.tar.gz    # Grok
-  response.md
+  response.md                # response (native Markdown export, exact code payload, or derived Markdown)
+  response.capture.json      # binding, method, fidelity, sources, code blocks, gaps, artifact inspection
+  response.raw.txt           # bound-turn evidence: innerText
+  response.raw.html          # bound-turn evidence: sanitized DOM (active content, transient attributes, signed URLs removed)
+  response.block-<n>.txt     # exact text of each leaf code block in the bound turn
   artifacts.json
   artifacts/
-    ...downloaded files...
+    <sha256>-<file name>     # validated downloads only
   logs/
     worker.log
     ...diagnostic captures on failure...
@@ -400,6 +407,12 @@ Important fields include:
 - `conversationId`
 - `responsePath`
 - `responseFormat` (`text/plain`)
+- `generationStatus` (`completed` once the assistant turn finished; independent of collection)
+- `collectionStatus` (`complete | partial | failed`), `collectionRequiredMissing`,
+  `collectionOptionalMissing` (see [Collection](#collection))
+- `collectionBinding` (`{ conversationId, responseIndex, messageId?, turnSha256?, frameId? }`)
+- `responseCapturePath`
+- `recollectionError` (last `oracle_read` recollection failure, cleared on success)
 - `artifactPaths`
 - `artifactsManifestPath`
 - `archivePath`
@@ -497,27 +510,95 @@ Examples:
 - websocket error text
 - `Try again later`
 
-## Artifact strategy
+## Collection
 
-The artifact path is now direct and browser-local.
+Generation and collection are separate facts. `generationStatus: completed` records that the
+assistant finished the turn; `collectionStatus` records how much of that turn the worker holds:
 
-Use response-local candidate detection exactly as before, but replace browser-download-manager scraping with direct `agent-browser` downloads:
+- `complete` — response saved with nothing missing
+- `partial` — response saved, but named gaps remain
+- `failed` — no usable response bytes
 
-- find artifact candidates only in the current assistant response region
-- for each candidate ref:
-  - call `agent-browser download <ref> <dest>`
-  - write directly into `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/artifacts`
-  - compute size / sha256 / detected type
-  - append manifest entry
+Gaps are explicit strings. Required gaps mean the answer itself is degraded (`response`,
+`rich_response_fidelity`, `unresolved_source_links`, `bound_response_capture`,
+`redacted_transport_links`, `native_export_source_links`); optional gaps mean a secondary file is
+missing (`native_markdown_export`, `artifact:<candidate>`, `artifact_inspection:<state>`). Legacy
+jobs without these fields stay readable; absence is unknown, not failure.
 
-This deliberately avoids:
+### Exact binding
 
-- `chrome://downloads`
-- downloads-tab ownership logic
-- browser-global download history heuristics
-- focus-sensitive tab hacks
+Collection binds to one assistant turn: `conversationId` (checked against the live URL),
+`responseIndex` (the position observed at completion), and once captured the exact
+`data-message-id` plus a `turnSha256` of the sanitized turn HTML. Actual ChatGPT headings wrap a
+descendant `data-message-id`, so the binding resolves through the heading wrapper; message
+identity wins over a stale positional index, and a missing or ambiguous identity fails closed
+instead of capturing the last answer or the whole conversation.
 
-Visible labels are still not trusted as authoritative filenames. They are treated primarily as display metadata.
+### Capture
+
+`extensions/oracle/worker/response-capture.mjs` holds closure-free browser functions that the
+worker evaluates in the owned page or the bound report frame and that the synthetic Chromium proof
+runs unchanged. From the bound root it produces raw text, sanitized HTML, derived Markdown, leaf
+`pre` code blocks (nested presentation wrappers are not double-counted; language classes may be
+absent), stable source URLs (signed transport URLs are dropped; literal URLs in text and code are
+inventoried), structural artifact candidates, and child frames. A single `markdown` code block is
+saved as the exact response (`exact_code`); Deep Research prefers the native export
+(`native_markdown`); otherwise the derived Markdown is saved (`derived_markdown`). Exact payload
+files and the surrounding derived response are distinct fidelity claims.
+
+### Artifacts
+
+Candidates come only from the bound turn (or bound report frame): controls with `download`
+attributes, file-like hrefs, or export labels. Each candidate is recorded as `discovered`,
+`downloaded`, `validated`, or `failed` in `artifacts.json`; validated bytes are checked against
+their declared size and format (PDF/ZIP/PNG/UTF-8 text) before they land under
+`artifacts/<sha256>-<name>`. Identical bytes are stored once, and a candidate whose validated file
+already exists is not downloaded again.
+
+Turn artifacts are captured in the page realm: the control is activated under temporary
+`fetch`/`open`/anchor hooks that read the UI's own download bytes, with the driver's native
+`agent-browser download <ref> <dest>` as the fallback.
+
+A Deep Research report lives in a sandboxed cross-origin App iframe, and its Export → Export to
+Markdown menu delegates the download to the host page, so no hook inside the frame can see the
+bytes. The worker therefore pre-arms native download observation before activating the control:
+`Page.enable` on both the pinned tab session and the bound frame session so Chrome's
+`Page.downloadWillBegin` / `Page.downloadProgress` events arrive through the relay, plus an
+object-URL registry in each realm that remembers the `Blob` behind every `URL.createObjectURL`
+while armed. A download is accepted only when it begins in the tab's main frame or in the bound
+report frame tree; its bytes are read from the registered `Blob` (or decoded from a `data:` URL),
+checked against Chrome's `totalBytes`, and validated as Markdown that carries the report title.
+`Browser.setDownloadBehavior` is not routed by the extension relay and is never sent: the user's
+download destination is untouched, Chrome keeps its own copy in its configured download
+directory, and the relay reports no saved path, so no directory is scanned. A download from a
+transport URL the hooks did not read is reported as a precise optional gap rather than refetched.
+
+This deliberately avoids `chrome://downloads`, downloads-tab ownership logic, browser-global
+download history heuristics, focus-sensitive tab hacks, and any change to the browser's download
+behavior. Visible labels are display metadata, never authoritative filenames.
+
+### Recollection
+
+`oracle_read({ jobId, action: "recollect" })` retries collection of an already completed job
+without sending anything: the worker's separate `--recollect` entrypoint never reaches configure,
+upload, composer, or send. Jobs completed before binding existed require the observed
+`responseIndex` and `messageId` together; the latest turn is never inferred, and an explicit
+binding can never replace a saved one. Recollection opens a fresh `oracle-<uuid>` driver session
+(the original tab is gone, and a longer suffix would exceed macOS's 103-byte Unix socket path),
+arms frame capture before navigating, reacquires the exact turn, collects, then restores the
+original runtime provenance after cleanup. Earlier usable bytes always survive: a failed
+recollection records `recollectionError`, marks `bound_response_capture` missing, and keeps the
+previous `response.md` and validated artifacts.
+
+While a recollection runs, the completed job is terminal, cleanup-pending, and has a live worker.
+Terminal-cleanup reconciliation judges such a worker by `lastCleanupAt` before `heartbeatAt`, so
+admission retires the predecessor's `lastCleanupAt` and heartbeats throughout; otherwise an
+extension poller in any live session would terminate the worker mid-collection as a stale
+cleanup worker. Browser teardown also waits until the driver no longer lists the session before
+returning, because `agent-browser close` returns while its daemon is still serving: a same-name
+command in that window is served by the dying daemon and its tab is orphaned. A session the driver
+does not list is never closed (the driver would spawn a daemon and a stray tab just to close it),
+and a relay target the inventory no longer lists never reaches the driver at all.
 
 ## Same-thread follow-ups
 

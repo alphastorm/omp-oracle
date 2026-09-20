@@ -54,12 +54,12 @@
   },
   "scripts": {
     "check:oracle-extension": "node --check extensions/oracle/shared/browser-profile-helpers.mjs && node --check extensions/oracle/shared/process-helpers.mjs && node --check extensions/oracle/shared/state-path-helpers.mjs && node --check extensions/oracle/shared/relay-cdp-client.mjs && node --check extensions/oracle/shared/time-helpers.mjs && node --check extensions/oracle/shared/state-coordination-helpers.mjs && node --check extensions/oracle/shared/job-coordination-helpers.mjs && node --check extensions/oracle/shared/job-lifecycle-helpers.mjs && node --check extensions/oracle/shared/job-observability-helpers.mjs && node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/chatgpt-ui-helpers.mjs && node --check extensions/oracle/worker/chatgpt-flow-helpers.mjs && node --check extensions/oracle/worker/auth-flow-helpers.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/chromium-cookie-source.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:typebox --outfile=/tmp/pi-oracle-extension-check.js",
-    "test:oracle-helpers": "node --test scripts/oracle-host-compat.test.mjs extensions/oracle/shared/relay-browser-helpers.test.mjs extensions/oracle/worker/auth-flow-helpers.test.mjs extensions/oracle/worker/chatgpt-ui-helpers.test.mjs",
+    "test:oracle-helpers": "node --test scripts/oracle-host-compat.test.mjs extensions/oracle/shared/relay-browser-helpers.test.mjs extensions/oracle/worker/auth-flow-helpers.test.mjs extensions/oracle/worker/chatgpt-ui-helpers.test.mjs extensions/oracle/worker/response-capture.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:worker-helpers": "tsc --noEmit -p tsconfig.worker-helpers.json",
     "sanity:oracle": "node scripts/oracle-sanity-runner.mjs",
     "pack:check": "npm pack --dry-run",
-    "verify:oracle": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run test:oracle-helpers && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle && npm run pack:check",
+    "verify:oracle": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run check:oracle-proofs && npm run test:oracle-helpers && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle && npm run pack:check",
     "test": "npm run verify:oracle",
     "prepublishOnly": "npm run release:check",
     "check:platform-smoke": "node --check scripts/platform-smoke.mjs && node --check scripts/platform-smoke/assertions.mjs && node --check scripts/platform-smoke/artifacts.mjs && node --check scripts/platform-smoke/crabbox-runner.mjs && node --check scripts/platform-smoke/doctor.mjs && node --check scripts/platform-smoke/targets.mjs && node scripts/platform-smoke/invariants.mjs",
@@ -74,11 +74,13 @@
     "release:check": "npm run verify:oracle && npm run release:proof:chatgpt-presets && npm run smoke:platform:all",
     "check:oracle-real-smoke": "node --check scripts/oracle-real-smoke.mjs && node --check scripts/oracle-sanity-runner.mjs",
     "check:oracle-release-proof": "node --check scripts/oracle-chatgpt-preset-proof.mjs",
+    "check:oracle-proofs": "node --check scripts/oracle-capture-proof.mjs && node --check scripts/oracle-composer-proof.mjs",
+    "proof:capture": "node scripts/oracle-capture-proof.mjs",
     "release:proof:chatgpt-presets": "node scripts/oracle-chatgpt-preset-proof.mjs check",
     "smoke:real:packed": "node scripts/oracle-real-smoke.mjs run --mode packed",
     "smoke:real:source": "node scripts/oracle-real-smoke.mjs run --mode source",
     "sanity:oracle:platform": "node scripts/oracle-sanity-runner.mjs --mode platform",
-    "verify:oracle:platform": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run sanity:oracle:platform && npm run pack:check"
+    "verify:oracle:platform": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run check:oracle-proofs && npm run sanity:oracle:platform && npm run pack:check"
   },
   "dependencies": {
     "@steipete/sweet-cookie": "^0.3.0"

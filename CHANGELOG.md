@@ -4,6 +4,28 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Added
+- `oracle_read({ jobId, action: "recollect" })`: repeat collection of an already completed, exactly bound turn without sending anything. The worker's separate `--recollect` entrypoint never reaches configure, upload, composer, or send; jobs completed before turn binding existed need the observed `responseIndex` and `messageId` together, and the latest turn is never inferred
+- separate generation and collection evidence: `generationStatus`, `collectionStatus` (`complete | partial | failed`) with named required/optional gaps, the exact `collectionBinding`, and `response.capture.json` recording method, fidelity, source URLs, exact code payloads, sanitized bound-turn evidence, and artifact inspection; validated artifact manifests keep identical bytes once and never re-download a validated file; earlier usable bytes survive a failed recollection
+- Deep Research native Markdown export collection: the sandboxed widget delegates Export → Export to Markdown to the host page, so the worker pre-arms Chrome's `Page.downloadWillBegin`/`downloadProgress` events and an object-URL registry on the pinned tab and the bound frame before activating the menu, accepts only a download that began in its own tab or the bound report frame tree, reads the bytes from the registered `Blob` (or a `data:` URL), and validates them against Chrome's declared size and the report title. The browser's download destination is never changed (the extension relay does not route `Browser.setDownloadBehavior`), so Chrome keeps its own copy in its configured download directory
+- real-Chromium collection proof (`npm run proof:capture`): rich content, generic downloads, nested code, exact message binding across shifted indices, the host-delegated native export byte-identical to the file Chrome saved, idempotent recollection, recollection admission timestamps, and driver teardown serialization; a no-send browser regression exercising the actual worker composer functions against an explicitly owned tab
+- `RelayCdpClient.on()` event subscriptions and per-command deadlines for long in-page waits
+
+### Fixed
+- a recollecting worker was terminated mid-collection by the extension poller of any live session: terminal-cleanup reconciliation judges a completed, cleanup-pending job's worker by the predecessor's `lastCleanupAt` before `heartbeatAt`, so recollection admission now retires that timestamp and heartbeats throughout
+- `agent-browser close` returns while its session daemon is still serving; a same-name command in that window was answered by the dying daemon (orphaned tab, then `Connection refused`). Browser teardown now returns only once the driver no longer lists the session, never closes a session the driver does not list, and never sends an already-gone relay target through the driver
+- pending CDP command deadlines held the worker process open (up to 90 s after a completed recollection) and are now cleared on settlement
+- recognize actual ChatGPT stop controls when accepting sends and waiting for completion
+- bind collection by exact message identity across nested wrappers and shifted indices; avoid duplicating nested code blocks
+- recollect completed jobs through fresh, bounded-length browser sessions rather than closed predecessor tabs
+- recognize the asynchronous research Export to Markdown menu and retain literal source URLs
+- select the actual composer model chip in follow-up chats instead of mistaking response actions such as Pro feedback for model configuration controls
+- detect completed composer uploads using parsed UI controls rather than a raw line window that excluded attachments after multiline prompts; retain enabled-send and consecutive-poll checks
+- clear large existing ChatGPT drafts with native editor commands and verify the empty state before inserting the replacement
+- position the Deep Research pill after the prompt and wait for the animated composer toolbar to become stationary and uncovered before clicking
+
 ## 0.2.0 - 2026-09-20
 
 ### Added

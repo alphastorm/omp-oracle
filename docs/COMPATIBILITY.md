@@ -74,6 +74,17 @@ Known limits are part of the claim; read them before installing.
   `deep_research` job on the isolated profile fails with `deep_research_report_unreadable`. Live
   proof: one job completed with a 13.5K-character report in 5 minutes. Excluded from the release
   preset proof because each run consumes a Deep Research task.
+- **Deep Research native Markdown exports are collected through Chrome's download events
+  (verified 2026-09-20 on Chrome 153 through the OMP relay).** The widget's Export → Export to
+  Markdown menu delegates the download to the host page, so hooks inside the frame never see the
+  bytes. The worker enables the `Page` domain on the pinned tab and the bound frame session,
+  listens for `Page.downloadWillBegin`/`Page.downloadProgress`, and reads the bytes from the
+  `Blob` it registered behind the UI's object URL. The extension relay does not route
+  `Browser.setDownloadBehavior` (`chrome.debugger` clients may not write local files), so the
+  worker never changes the browser's download destination and never learns the saved path: Chrome
+  keeps its own copy in its configured download directory, and the worker's copy is validated
+  against Chrome's declared byte count instead. Live proof: a completed job's export was
+  recollected byte-identical (36,995 bytes, same SHA-256) to the file Chrome saved.
 - **Wake-up is best effort.** Completion delivery into the host session is one attempt; the saved
   job directory is the durable record.
 - **No demo media.** The README uses command-level proof and design docs; no screenshot or GIF is

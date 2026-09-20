@@ -35,6 +35,8 @@
     "extensions/oracle/worker/chatgpt-flow-helpers.d.mts",
     "extensions/oracle/worker/auth-flow-helpers.mjs",
     "extensions/oracle/worker/auth-flow-helpers.d.mts",
+    "extensions/oracle/worker/response-capture.mjs",
+    "extensions/oracle/worker/response-capture.d.mts",
     "extensions/oracle/worker/state-locks.mjs",
     "extensions/oracle/worker/state-locks.d.mts"
   ]

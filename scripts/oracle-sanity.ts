@@ -30,7 +30,7 @@ import {
 } from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies, type ImportedAuthCookie } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "../extensions/oracle/worker/chromium-cookie-source.mjs";
-import { extractArtifactLabels, filterStructuralArtifactCandidates, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "../extensions/oracle/worker/artifact-heuristics.mjs";
+import { parseSnapshotEntries } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
   buildAssistantCompletionSignature,
@@ -38,6 +38,7 @@ import {
   effortSelectionVisible,
   matchesCompactIntelligenceControlLabel,
   matchesCompactIntelligenceOpenerLabel,
+  matchesModelConfigurationOpener,
   matchesRequestedModelControlLabel,
   snapshotCanSafelySkipModelConfiguration,
   snapshotHasClosedCompactSelection,
@@ -49,7 +50,7 @@ import {
   stripChatGptResponseChrome,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
-import { assistantSnapshotSlice, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
+import { assistantSnapshotSlice, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
 import {
   buildConversationLeaseMetadata,
   buildRuntimeLeaseMetadata,
@@ -2271,6 +2272,45 @@ async function testCleanupPendingRecoveryTerminatesStaleLiveWorker(config: Oracl
   }
 }
 
+// A completed job being recollected is terminal, cleanup-pending, and has a live worker. The
+// reconciler judges such a worker by lastCleanupAt before heartbeatAt, so the worker's admission
+// write retires the predecessor cleanup timestamp; a fresh heartbeat then keeps it alive.
+async function testCleanupPendingReconcileSparesFreshRecollectionWorker(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const cwd = process.cwd();
+  const jobId = await createTerminalJob(config, cwd, "/tmp/oracle-sanity-session-recollect-live-worker.jsonl");
+  const job = readJob(jobId);
+  assert(job, "recollection live-worker job should exist");
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], { detached: true, stdio: "ignore" });
+  holder.unref();
+  const holderPid = holder.pid;
+  assert(holderPid !== undefined, "recollection live-worker sanity should expose a worker pid");
+  const holderStartedAt = await waitForProcessStartedAtValue(holderPid);
+  const staleAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  try {
+    // Exactly the worker's admission write (proven behaviorally in scripts/oracle-capture-proof.mjs)
+    // on a job whose predecessor cleanup finished long ago.
+    await updateJob(job.id, (current) => ({
+      ...current, completedAt: staleAt, phaseAt: staleAt, runtimeSessionName: `oracle-${randomUUID()}`,
+      workerPid: holderPid, workerStartedAt: holderStartedAt, cleanupPending: true, heartbeatAt: new Date().toISOString(), lastCleanupAt: undefined,
+    }));
+    const untouched = await reconcileStaleOracleJobs();
+    assert(!untouched.some((entry) => entry.id === jobId), "reconcile must leave a fresh recollecting worker alone");
+    assert(isPidAlive(holderPid), "reconcile must not terminate a recollecting worker with a fresh heartbeat");
+    assert(readJob(jobId)?.cleanupPending === true, "reconcile must not clear cleanupPending under a live recollecting worker");
+
+    // The pre-fix shape kept the predecessor's lastCleanupAt, which outranks the fresh heartbeat.
+    await updateJob(job.id, (current) => ({ ...current, lastCleanupAt: staleAt }));
+    const repaired = await reconcileStaleOracleJobs();
+    assert(repaired.some((entry) => entry.id === jobId), "a stale predecessor cleanup timestamp still marks the worker as stale");
+    assert(await waitForPidExit(holderPid), "the stale shape is what killed the live recollection worker");
+  } finally {
+    if (isPidAlive(holderPid)) process.kill(holderPid, "SIGKILL");
+    await waitForPidExit(holderPid);
+    await cleanupJob(jobId);
+  }
+}
+
 async function testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const cwd = process.cwd();
@@ -4060,14 +4100,11 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
   const archiveSource = await readFile(new URL("../extensions/oracle/lib/archive.ts", import.meta.url), "utf8");
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
-  const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
   const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
   assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
   assert(workerSource.includes("Too many requests"), "worker should surface provider rate-limit modals instead of reporting generic UI drift");
   assert(workerSource.includes("waiting for send acceptance"), "worker should surface provider rate-limit modals after clicking send instead of reporting generic send acceptance failure");
   assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");
-  assert(workerSource.includes("querySelectorAll('button, a')"), "worker should scan both button and link artifact controls");
-  assert(workerSource.includes("ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000"), "worker should keep the longer artifact download timeout");
   assert(workerSource.includes("POST_SEND_SETTLE_MS = 15_000"), "worker should wait 15 seconds after send before continuing");
   assert(workerSource.includes("promoteQueuedJobsAfterCleanup"), "worker should promote queued jobs after cleanup for autonomous queue advancement");
   assert(sharedJobCoordinationSource.includes("Queued oracle archive is missing:"), "cleanup-driven promotion should fail queued jobs whose archive is missing");
@@ -4089,7 +4126,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('["button", "radio", "menuitemradio"].includes(candidate.kind || "")'), "worker should accept radio-style model family controls in addition to button controls");
   assert(workerSource.includes('["button", "switch"].includes(candidate.kind || "")'), "worker should treat the auto-switch control as a switch in the current ChatGPT configure modal");
   assert(workerSource.includes("Could not find model family control"), "worker should describe missing family selectors generically instead of assuming button-only controls");
-  assert(workerSource.includes('candidate.label === "Model"'), "worker should recognize the current ChatGPT Model button as the configuration opener");
+
   assert(workerSource.includes("canUseOpenModelMenuForSelection"), "worker should fall back to the top-level model menu for plain Instant when ChatGPT's configure sheet is unavailable");
   assert(workerSource.includes("snapshotHasUsableComposerControls"), "worker readiness should accept authenticated usable composer shells even when model labels drift");
   assert(workerSource.includes("public Log in/Sign up controls"), "worker readiness should not accept ChatGPT's public logged-out composer shell as authenticated");
@@ -4109,7 +4146,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
   assert(uiHelpersSource.includes("selectionMatchesChipSelection"), "ChatGPT UI helpers should recognize composer chips like Heavy thinking or Extended Pro as durable preset indicators");
-  assert(uiHelpersSource.includes("snapshotHasModelOpener"), "ChatGPT UI helpers should centralize current model-opener recognition for auth and worker flows");
+
   assert(authBootstrapSource.includes("from \"./state-locks.mjs\""), "auth bootstrap should use the shared hardened state-lock helper instead of keeping divergent auth-lock crash recovery logic inline");
   assert(authBootstrapSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "auth bootstrap should use the shared ChatGPT origin helper so runtime/auth stay aligned");
   assert(authBootstrapSource.includes("from \"./auth-flow-helpers.mjs\""), "auth bootstrap should use the extracted auth flow helper module for probe normalization and page classification");
@@ -4162,13 +4199,10 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(!workerSource.includes("Proceeding after model configuration timeout because strong in-dialog verification already succeeded"), "worker should not proceed if the model configuration sheet never closes");
   assert(sharedObservabilitySource.includes("buildOracleWakeupNotificationContent"), "shared observability helpers should centralize wake-up notification formatting");
   assert(sharedObservabilitySource.includes("Response file: unavailable yet"), "shared observability helpers should avoid implying that failed jobs already have a response file when they do not");
-  assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
   assert(workerSource.includes("activateSendButton"), "worker should activate provider send through the page DOM instead of relying only on accessibility click refs");
   assert(workerSource.includes("waitForSendAccepted"), "worker should verify that provider send actually leaves the composer before awaiting a response");
   assert(workerSource.includes("send-not-accepted"), "worker should capture diagnostics when provider send activation does not submit the message");
   assert(workerSource.includes("message did not leave the composer"), "worker should fail clearly instead of waiting forever when provider send is not accepted");
-  assert(workerSource.includes("document.querySelector('main') || document.body"), "artifact capture should fall back when ChatGPT accessibility snapshots no longer expose ChatGPT-said headings");
-  assert(workerSource.includes("downloadArtifactViaBrowserEval"), "artifact capture should use a browser-eval fallback for ChatGPT behavior buttons that do not emit standard browser downloads");
 }
 
 async function testArchiveDefaultExclusions(): Promise<void> {
@@ -5113,6 +5147,11 @@ function testSharedObservabilityHelpers(): void {
 }
 
 function testChatGptUiHelpers(): void {
+  const responseActions = '- button "Pro feedback" [expanded=false, ref=e1]\n- button "Switch model" [expanded=false, ref=e2]';
+  assert(!snapshotHasModelOpener(responseActions), "response actions must not be mistaken for composer model controls");
+  const followUpComposer = `${responseActions}\n- textbox "Chat with ChatGPT" [ref=e3]\n- button "6 Pro" [expanded=false, ref=e4]`;
+  const followUpOpener = parseSnapshotEntries(followUpComposer).find(matchesModelConfigurationOpener);
+  assert(followUpOpener?.label === "6 Pro", "follow-up selection must open the numbered composer chip rather than Pro feedback");
   const closedThinkingSnapshot = [
     '- button "Thinking, click to remove" [ref=e110]',
     '- button "Thinking" [expanded=false, ref=e111]',
@@ -5748,6 +5787,12 @@ function testAuthFlowHelpers(): void {
 }
 
 function testChatGptFlowHelpers(): void {
+  const uploadName = "context-upload.tar.zst";
+  const longComposer = `- textbox "Chat with ChatGPT" [ref=e1]: ${uploadName}\n${"case evidence\n".repeat(100)}`;
+  const completedUpload = `${longComposer}\n- button "Send prompt" [ref=e2]\n- button "${uploadName}" [ref=e3]`;
+  assert(composerFileEntryCount(completedUpload, uploadName, "Chat with ChatGPT") === 1, "multiline prompt text must not hide a completed attachment");
+  assert(composerFileEntryCount(longComposer, uploadName, "Chat with ChatGPT") === 0, "mentioning a filename in the prompt is not an attachment");
+  assert(composerFileEntryCount(`- button "${uploadName}" [ref=e1]`, uploadName, "Chat with ChatGPT") === 0, "a file outside an identified composer must not confirm an upload");
   const snapshot = [
     '- heading "ChatGPT said:" [level=2, ref=e1]',
     '- paragraph [ref=e2]: First answer',
@@ -5837,228 +5882,8 @@ async function testSanityRunnerIsolation(): Promise<void> {
   assert((await readFile(new URL("./oracle-sanity.ts", import.meta.url), "utf8")).includes("assertIsolatedSanityEnvironment();"), "sanity entrypoint should fail fast when invoked without isolated oracle temp dirs");
 }
 
-function testArtifactCandidateHeuristics(): void {
-  assert(
-    JSON.stringify(extractArtifactLabels("Created /mnt/data/butterscotch.txt")) === JSON.stringify(["butterscotch.txt"]),
-    "artifact label extraction should collapse paths to basenames",
-  );
-  assert(
-    JSON.stringify(extractArtifactLabels("dog.txt cat.txt")) === JSON.stringify(["dog.txt", "cat.txt"]),
-    "artifact label extraction should preserve multiple filenames",
-  );
-  assert(
-    JSON.stringify(extractArtifactLabels("hello\nbutterscotch.txt")) === JSON.stringify(["butterscotch.txt"]),
-    "artifact label extraction should ignore surrounding prose lines",
-  );
-  assert(
-    JSON.stringify(extractArtifactLabels("f.write(\"ARTIFACT_OK\") and oracle-dogfood-artifact.txt")) === JSON.stringify(["oracle-dogfood-artifact.txt"]),
-    "artifact label extraction should ignore common code member calls that look like filenames",
-  );
-  assert(
-    stripChatGptResponseChrome("Stopped thinking\nAnswer body\nDo you like this personality?\n") === "Answer body",
-    "ChatGPT response extraction should strip assistant chrome/status/personality feedback lines",
-  );
-
-  const successCandidates = filterStructuralArtifactCandidates([
-    {
-      label: "sup-homie.txt",
-      paragraphText: "Created the artifact: sup-homie.txt",
-      listItemText: "",
-      paragraphInteractiveCount: 1,
-      paragraphArtifactLabelCount: 1,
-      paragraphOtherTextLength: 21,
-      listItemInteractiveCount: 0,
-      listItemArtifactLabelCount: 0,
-      focusableInteractiveCount: 1,
-      focusableArtifactLabelCount: 1,
-      focusableOtherTextLength: 21,
-    },
-    {
-      label: "linked-download.txt",
-      paragraphText: "linked-download.txt",
-      listItemText: "linked-download.txt",
-      paragraphInteractiveCount: 1,
-      paragraphArtifactLabelCount: 1,
-      paragraphOtherTextLength: 0,
-      listItemInteractiveCount: 1,
-      listItemArtifactLabelCount: 1,
-      focusableInteractiveCount: 1,
-      focusableArtifactLabelCount: 1,
-      focusableOtherTextLength: 0,
-    },
-    {
-      label: "Attached",
-      paragraphText: "Attached",
-      listItemText: "Attached",
-      paragraphInteractiveCount: 1,
-      paragraphArtifactLabelCount: 1,
-      paragraphOtherTextLength: 0,
-      listItemInteractiveCount: 1,
-      listItemArtifactLabelCount: 1,
-      focusableInteractiveCount: 1,
-      focusableArtifactLabelCount: 1,
-      focusableOtherTextLength: 0,
-    },
-    {
-      label: "Done",
-      paragraphText: "Done",
-      listItemText: "Done",
-      paragraphInteractiveCount: 1,
-      paragraphArtifactLabelCount: 1,
-      paragraphOtherTextLength: 0,
-      listItemInteractiveCount: 1,
-      listItemArtifactLabelCount: 1,
-      focusableInteractiveCount: 1,
-      focusableArtifactLabelCount: 1,
-      focusableOtherTextLength: 0,
-    },
-    {
-      label: "butterscotch.txt",
-      controlLabel: "Download",
-      paragraphText: "butterscotch.txt Download",
-      listItemText: "butterscotch.txt Download",
-      paragraphInteractiveCount: 1,
-      paragraphArtifactLabelCount: 1,
-      paragraphOtherTextLength: 0,
-      listItemInteractiveCount: 1,
-      listItemArtifactLabelCount: 1,
-      focusableInteractiveCount: 1,
-      focusableArtifactLabelCount: 1,
-      focusableOtherTextLength: 0,
-    },
-    {
-      label: "oracle-dogfood-artifact.txt",
-      controlLabel: "Download the file",
-      paragraphText: "Download the file",
-      listItemText: "",
-      paragraphInteractiveCount: 1,
-      paragraphArtifactLabelCount: 0,
-      paragraphOtherTextLength: 0,
-      listItemInteractiveCount: 0,
-      listItemArtifactLabelCount: 0,
-      focusableInteractiveCount: 1,
-      focusableArtifactLabelCount: 0,
-      focusableOtherTextLength: 0,
-      fromResponseTextLabel: true,
-    },
-  ]);
-  assert(successCandidates.some((candidate) => candidate.label === "sup-homie.txt"), "artifact heuristics should preserve real downloadable artifacts");
-  assert(successCandidates.some((candidate) => candidate.label === "linked-download.txt"), "artifact heuristics should preserve link-rendered downloadable artifacts");
-  assert(successCandidates.some((candidate) => candidate.label === "Attached"), "artifact heuristics should preserve generic Attached download controls");
-  assert(successCandidates.some((candidate) => candidate.label === "Done"), "artifact heuristics should preserve generic Done download controls");
-  assert(successCandidates.some((candidate) => candidate.label === "butterscotch.txt"), "artifact heuristics should map generic Download controls onto nearby file labels");
-  assert(successCandidates.some((candidate) => candidate.label === "oracle-dogfood-artifact.txt"), "artifact heuristics should map generic Download controls onto unique filename labels extracted from response text");
-
-  const falsePositiveCandidates = filterStructuralArtifactCandidates([
-    {
-      label: "package.json",
-      paragraphText: "Related process issue: the current flow is still self-inconsistent. check:release starts with the clean-tree guard in package.json via scripts/check-clean-worktree.mjs, while the README says to regenerate provider QA bundles first and then run release check in README.md.",
-      listItemText: "",
-      paragraphInteractiveCount: 3,
-      paragraphArtifactLabelCount: 3,
-      paragraphOtherTextLength: 180,
-      listItemInteractiveCount: 0,
-      listItemArtifactLabelCount: 0,
-      focusableInteractiveCount: 3,
-      focusableArtifactLabelCount: 3,
-      focusableOtherTextLength: 180,
-    },
-    {
-      label: "scripts/check-clean-worktree.mjs",
-      paragraphText: "Related process issue: the current flow is still self-inconsistent. check:release starts with the clean-tree guard in package.json via scripts/check-clean-worktree.mjs, while the README says to regenerate provider QA bundles first and then run release check in README.md.",
-      listItemText: "",
-      paragraphInteractiveCount: 3,
-      paragraphArtifactLabelCount: 3,
-      paragraphOtherTextLength: 180,
-      listItemInteractiveCount: 0,
-      listItemArtifactLabelCount: 0,
-      focusableInteractiveCount: 3,
-      focusableArtifactLabelCount: 3,
-      focusableOtherTextLength: 180,
-    },
-  ]);
-  assert(falsePositiveCandidates.length === 0, "artifact heuristics should ignore inline file-reference buttons in normal prose responses");
-
-  const artifactOnlyCandidates = filterStructuralArtifactCandidates([
-    {
-      label: "report.csv",
-      paragraphText: "report.csv",
-      listItemText: "report.csv",
-      paragraphInteractiveCount: 1,
-      paragraphArtifactLabelCount: 1,
-      paragraphOtherTextLength: 0,
-      listItemInteractiveCount: 1,
-      listItemArtifactLabelCount: 1,
-      focusableInteractiveCount: 1,
-      focusableArtifactLabelCount: 1,
-      focusableOtherTextLength: 0,
-    },
-    {
-      label: "dog.txt",
-      paragraphText: "dog.txt cat.txt",
-      listItemText: "",
-      paragraphInteractiveCount: 2,
-      paragraphArtifactLabelCount: 2,
-      paragraphOtherTextLength: 0,
-      listItemInteractiveCount: 0,
-      listItemArtifactLabelCount: 0,
-      focusableInteractiveCount: 2,
-      focusableArtifactLabelCount: 2,
-      focusableOtherTextLength: 8,
-    },
-    {
-      label: "cat.txt",
-      paragraphText: "dog.txt cat.txt",
-      listItemText: "",
-      paragraphInteractiveCount: 2,
-      paragraphArtifactLabelCount: 2,
-      paragraphOtherTextLength: 0,
-      listItemInteractiveCount: 0,
-      listItemArtifactLabelCount: 0,
-      focusableInteractiveCount: 2,
-      focusableArtifactLabelCount: 2,
-      focusableOtherTextLength: 8,
-    },
-  ]);
-  assert(artifactOnlyCandidates.some((candidate) => candidate.label === "report.csv"), "empty artifact-only responses should still allow artifact capture");
-  assert(artifactOnlyCandidates.some((candidate) => candidate.label === "dog.txt"), "compact multi-file artifact blocks should still allow artifact capture");
-  assert(artifactOnlyCandidates.some((candidate) => candidate.label === "cat.txt"), "compact multi-file artifact blocks should still allow artifact capture");
-
-  const suspiciousOnlyCandidates = partitionStructuralArtifactCandidates([
-    {
-      label: "ghost.txt",
-      controlLabel: "Download",
-      paragraphText: "ghost.txt Download more context that makes the structure ambiguous and too long to trust safely in one shot",
-      listItemText: "",
-      paragraphInteractiveCount: 2,
-      paragraphArtifactLabelCount: 1,
-      paragraphOtherTextLength: 90,
-      listItemInteractiveCount: 0,
-      listItemArtifactLabelCount: 0,
-      focusableInteractiveCount: 2,
-      focusableArtifactLabelCount: 1,
-      focusableOtherTextLength: 90,
-    },
-  ]);
-  assert(suspiciousOnlyCandidates.confirmed.length === 0, "ambiguous download controls should not be treated as confirmed artifact candidates");
-  assert(suspiciousOnlyCandidates.suspicious.some((candidate) => candidate.label === "ghost.txt"), "ambiguous download controls should still surface a suspicious artifact signal");
-
-  const plainTextFileReferenceCandidates = partitionStructuralArtifactCandidates([
-    {
-      label: "ChatGPT.com",
-      paragraphText: "Do not use it for projects that must never be uploaded to ChatGPT.com or Grok.",
-      listItemText: "",
-      paragraphInteractiveCount: 1,
-      paragraphArtifactLabelCount: 1,
-      paragraphOtherTextLength: 76,
-      listItemInteractiveCount: 0,
-      listItemArtifactLabelCount: 0,
-      focusableInteractiveCount: 1,
-      focusableArtifactLabelCount: 1,
-      focusableOtherTextLength: 76,
-    },
-  ]);
-  assert(plainTextFileReferenceCandidates.confirmed.length === 0, "plain linked/file-looking response text should not become downloadable artifact candidates");
+function testResponseChrome(): void {
+  assert(stripChatGptResponseChrome("Stopped thinking\nAnswer body\nDo you like this personality?\n") === "Answer body", "Response chrome must not contaminate the answer");
 }
 
 async function testPollerHostSafety(): Promise<void> {
@@ -6125,6 +5950,7 @@ async function runPlatformSanity(): Promise<void> {
   await testRuntimeConversationLeases(config);
   await testCleanupPendingRecoveryUnblocksAdmission(config);
   await testCleanupPendingRecoveryTerminatesStaleLiveWorker(config);
+  await testCleanupPendingReconcileSparesFreshRecollectionWorker(config);
   await testCleanupPendingBlocksAdmission(config);
   await testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config);
   await testRuntimeProfileCloneTimeoutKillsHungCp(config);
@@ -6154,7 +5980,7 @@ async function runPlatformSanity(): Promise<void> {
   testSharedObservabilityHelpers();
   testAuthFlowHelpers();
   testChatGptFlowHelpers();
-  testArtifactCandidateHeuristics();
+  testResponseChrome();
   await resetOracleStateDir().catch(() => undefined);
   console.log("oracle platform sanity checks passed");
 }
@@ -6170,6 +5996,7 @@ async function main() {
   await testRuntimeConversationLeases(config);
   await testCleanupPendingRecoveryUnblocksAdmission(config);
   await testCleanupPendingRecoveryTerminatesStaleLiveWorker(config);
+  await testCleanupPendingReconcileSparesFreshRecollectionWorker(config);
   await testCleanupPendingBlocksAdmission(config);
   await testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config);
   await testRuntimeProfileCloneTimeoutKillsHungCp(config);
@@ -6253,7 +6080,7 @@ async function main() {
   testChatGptUiHelpers();
   testAuthFlowHelpers();
   testChatGptFlowHelpers();
-  testArtifactCandidateHeuristics();
+  testResponseChrome();
   sanityProgress("poller host safety");
   await testPollerHostSafety();
   await resetOracleStateDir().catch(() => undefined);

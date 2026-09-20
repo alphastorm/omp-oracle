@@ -4,6 +4,9 @@
 // Usage: Imported by the oracle extension entrypoint and sanity tests to register tools against the pi API.
 // Invariants/Assumptions: The pi runtime validates TypeBox schemas before execute, while execute owns semantic normalization.
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { resolveNodeExecutable } from "../shared/process-helpers.mjs";
 import { rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +71,8 @@ import {
   tryAcquireRuntimeLease,
 } from "./runtime.js";
 
+const execFileAsync = promisify(execFile);
+
 const ORACLE_PROVIDER_PARAM_DESCRIPTION = `Oracle web provider. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}.`;
 const ORACLE_PROVIDER_PARAM = Type.Optional(StringEnum(ORACLE_PROVIDERS, {
   description: ORACLE_PROVIDER_PARAM_DESCRIPTION,
@@ -119,6 +124,9 @@ const ORACLE_AUTH_PARAMS = Type.Object({
 
 const ORACLE_READ_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
+  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect an already completed, exactly bound response without sending a prompt. Default: read saved files only." })),
+  responseIndex: Type.Optional(Type.Integer({ minimum: 0, description: "For legacy jobs only: explicit zero-based assistant turn index, paired with messageId." })),
+  messageId: Type.Optional(Type.String({ minLength: 1, description: "For legacy jobs only: exact observed data-message-id of the completed assistant turn." })),
 }, { additionalProperties: false });
 
 const ORACLE_CANCEL_PARAMS = Type.Object({
@@ -380,6 +388,13 @@ function redactJobDetails(
     artifactsPath: `${getJobDir(job.id)}/artifacts`,
     artifactPaths: job.artifactPaths,
     artifactFailureCount: job.artifactFailureCount,
+    generationStatus: job.generationStatus,
+    collectionStatus: job.collectionStatus,
+    collectionBinding: job.collectionBinding,
+    responseCapturePath: job.responseCapturePath,
+    collectionRequiredMissing: job.collectionRequiredMissing,
+    collectionOptionalMissing: job.collectionOptionalMissing,
+    recollectionError: job.recollectionError,
     artifactsManifestPath: job.artifactsManifestPath,
     workerLogPath: job.workerLogPath,
     archiveDeletedAfterUpload: job.archiveDeletedAfterUpload,
@@ -1146,9 +1161,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
   pi.registerTool({
     name: "oracle_read",
     label: "Oracle Read",
-    description: "Read the status and outputs of a previously dispatched oracle job.",
+    description: "Read saved status and outputs, or explicitly recollect a completed bound result without sending a prompt.",
     promptSnippet: "Read oracle job status, queue position, artifacts, and response preview by job id.",
-    promptGuidelines: ["Use oracle_read when the user asks for the status, output, or artifacts of a previously submitted oracle job."],
+    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of an already completed exact bound turn; it never submits or regenerates a response."],
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
@@ -1156,6 +1171,14 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         if (!job || job.projectId !== getProjectId(ctx.cwd)) {
           throw new Error(`Oracle job not found in this project: ${params.jobId}`);
         }
+        if (params.action === "recollect") {
+          if (job.status !== "complete") throw new Error("Recollection requires an already completed job.");
+          if ((params.responseIndex === undefined) !== (params.messageId === undefined)) throw new Error("Legacy turn binding requires responseIndex and messageId together.");
+          const explicit = params.responseIndex !== undefined || params.messageId !== undefined
+            ? JSON.stringify({ responseIndex: params.responseIndex, messageId: params.messageId }) : undefined;
+          // Collection-only worker run, awaited in-turn; its own deadlines end it in minutes, this backstop ends a wedged transport.
+          await execFileAsync(resolveNodeExecutable(), [workerPath, job.id, "--recollect", ...(explicit ? [explicit] : [])], { maxBuffer: 1024 * 1024, timeout: 10 * 60 * 1000 });
+        } else if (params.responseIndex !== undefined || params.messageId !== undefined) throw new Error("Turn binding parameters require action=recollect.");
         const latest = isTerminalOracleJob(job)
           ? await markWakeupSettled(job.id, {
             source: "oracle_read",

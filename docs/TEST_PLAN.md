@@ -6,6 +6,7 @@ the question; the full gate lives in [Release](RELEASE.md).
 | Rung | Command or procedure | Proves |
 | --- | --- | --- |
 | Local gate | `npm run verify:oracle` | Syntax and bundle checks, helper unit tests, both typechecks, the isolated sanity harness (config, locks, queueing, worker, tool schemas, documentation contracts), and `npm pack --dry-run` |
+| Collection proof | `npm run proof:capture` | Against an owned headless Chromium, no account or network: exact code payload capture, message-identity binding across shifted indices, nested code blocks, generic artifact download, the sandboxed report frame's host-delegated native Markdown export through pre-armed download events (bytes identical to the file Chrome saved), idempotent recollection that preserves earlier bytes, recollection admission timestamps, and driver teardown serialization |
 | Isolated `pi` session smoke | [below](#isolated-pi-session-smoke) | The local extension loads through the real `pi` CLI; whole-repo archives exclude local tool state; symlink escapes are rejected; exercised agents give candid feedback |
 | Auth recovery drill | [below](#auth-recovery-drill) | A broken auth seed fails as a clean auth error, `/oracle-auth` repairs it, and the next job succeeds |
 | Platform matrix | [`docs/PLATFORM_SMOKE.md`](PLATFORM_SMOKE.md) | Packed install, load, and `oracle_submit` on macOS and Ubuntu through Crabbox (Windows native available, not required) |
@@ -114,9 +115,8 @@ mkdir -p \
 mkdir -p \
   "$TEST1_AGENT/extensions/oracle-auth-seed-profile" \
   "$TEST2_AGENT/extensions/oracle-auth-seed-profile"
-touch \
-  "$TEST1_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation" \
-  "$TEST2_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation"
+date -u +%FT%TZ > "$TEST1_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation"
+date -u +%FT%TZ > "$TEST2_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation"
 
 echo 'secret' > "$OUTSIDE/secret.txt"
 ln -s "$OUTSIDE" "$FIXTURE/linked-outside"
@@ -197,7 +197,7 @@ Expected behavior:
 Notes:
 
 - this smoke test does not require `/oracle-auth`
-- the snippet creates an isolated test auth seed profile plus `.oracle-seed-generation` marker for `TEST1_AGENT` because `oracle_submit` now rejects missing or unverified seed profiles before archiving
+- the snippet creates an isolated test auth seed profile plus a non-empty `.oracle-seed-generation` marker for `TEST1_AGENT` because `oracle_submit` rejects missing or unverified seed profiles before archiving; an empty marker (`touch`) counts as unverified and is rejected at submit time
 - with that marker-only seed profile, the worker still fails later due to missing real auth, which is useful because the archive remains on disk for inspection
 
 #### Test 2: symlink escape rejection

@@ -1,14 +1,16 @@
 // Purpose: Minimal CDP client over the browser relay for reading out-of-process iframes.
-// Responsibilities: Attach to a page target, arm auto-attach, hand out iframe child sessions, and
-// evaluate expressions inside them. Chrome's Target.setAutoAttach is not retroactive, so callers
-// must arm it before the frame they want is created; the relay forwards the resulting child
-// sessions with standard flat-session routing (verified on OMP 18.2.6).
+// Responsibilities: Attach to a page target, arm auto-attach, hand out iframe child sessions,
+// evaluate expressions inside them, and surface session events (downloads) to subscribers.
+// Chrome's Target.setAutoAttach is not retroactive, so callers must arm it before the frame they
+// want is created; the relay forwards the resulting child sessions with standard flat-session
+// routing (verified on OMP 18.2.6).
 // Invariants/Assumptions: One client per job; the page target is the job-owned pinned tab; the
 // client never creates, closes, or selects tabs.
 
 const CDP_COMMAND_TIMEOUT_MS = 10_000;
 
 /** @typedef {{ sessionId: string; targetId: string; type: string; url: string }} RelayFrameSession */
+/** @typedef {{ method: string; sessionId?: string; params: Record<string, any> }} RelayCdpEvent */
 
 export class RelayCdpClient {
   /** @type {WebSocket | undefined} */
@@ -18,6 +20,8 @@ export class RelayCdpClient {
   #pending = new Map();
   /** @type {RelayFrameSession[]} */
   #frames = [];
+  /** @type {Map<string, Set<(event: RelayCdpEvent) => void>>} */
+  #listeners = new Map();
 
   /**
    * @param {string} endpoint relay HTTP origin, e.g. http://127.0.0.1:9224
@@ -66,6 +70,10 @@ export class RelayCdpClient {
       const info = message.params.targetInfo;
       this.#frames.push({ sessionId: message.params.sessionId, targetId: info.targetId || "", type: info.type || "", url: info.url || "" });
     }
+    if (message.method && this.#listeners.has(message.method)) {
+      const event = { method: message.method, sessionId: message.sessionId, params: message.params || {} };
+      for (const listener of this.#listeners.get(message.method) || []) listener(event);
+    }
   }
 
   /** @param {Error} error */
@@ -78,21 +86,40 @@ export class RelayCdpClient {
    * @param {string} method
    * @param {Record<string, unknown>} [params]
    * @param {string} [sessionId]
+   * @param {number} [timeoutMs] per-command deadline; long in-page waits must raise it
    * @returns {Promise<unknown>}
    */
-  send(method, params = {}, sessionId = undefined) {
+  send(method, params = {}, sessionId = undefined, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
     const socket = this.#socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Browser relay CDP connection is not open."));
     const id = this.#nextId++;
     const { promise, resolve, reject } = Promise.withResolvers();
-    this.#pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
-    setTimeout(() => {
+    // A pending deadline must not outlive its command: it would hold the worker process open.
+    const deadline = setTimeout(() => {
       if (!this.#pending.has(id)) return;
       this.#pending.delete(id);
       reject(new Error(`CDP ${method} timed out`));
-    }, CDP_COMMAND_TIMEOUT_MS);
+    }, timeoutMs);
+    deadline.unref?.();
+    this.#pending.set(id, {
+      resolve: (value) => { clearTimeout(deadline); resolve(value); },
+      reject: (error) => { clearTimeout(deadline); reject(error); },
+    });
+    socket.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
     return promise;
+  }
+
+  /**
+   * Subscribe to a CDP event on any session this client owns. Returns the unsubscribe function.
+   * @param {string} method
+   * @param {(event: RelayCdpEvent) => void} listener
+   * @returns {() => void}
+   */
+  on(method, listener) {
+    const listeners = this.#listeners.get(method) || new Set();
+    listeners.add(listener);
+    this.#listeners.set(method, listeners);
+    return () => { listeners.delete(listener); };
   }
 
   /**

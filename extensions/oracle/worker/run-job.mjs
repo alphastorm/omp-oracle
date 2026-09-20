@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Job state is persisted under worker-held locks, browser/session artifacts live under the configured oracle directories, and cleanup preserves durable recovery semantics.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { appendFile, chmod, cp as copyDirectory, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, cp as copyDirectory, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -18,16 +18,17 @@ import {
   runQueuedJobPromotionPass,
 } from "../shared/job-coordination-helpers.mjs";
 import { applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
-import { spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
+import { readProcessStartedAt, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
-import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
+import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
+import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, validateArtifactBytes } from "./response-capture.mjs";
 import {
   buildAllowedChatGptOrigins,
   deriveAssistantCompletionSignature,
   matchesCompactIntelligenceControlLabel,
-  matchesCompactIntelligenceOpenerLabel,
+  matchesModelConfigurationOpener,
   matchesModelFamilyLabel,
   matchesRequestedModelControlLabel,
   requestedEffortLabel,
@@ -51,7 +52,7 @@ import {
   autoSwitchToThinkingSelectionVisible,
   stripChatGptResponseChrome,
 } from "./chatgpt-ui-helpers.mjs";
-import { assistantSnapshotSlice, conversationIdFromUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
@@ -84,12 +85,8 @@ const WORKER_SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
-const ARTIFACT_CANDIDATE_STABILITY_TIMEOUT_MS = 15_000;
-const ARTIFACT_CANDIDATE_STABILITY_POLL_MS = 1_500;
-const ARTIFACT_CANDIDATE_STABILITY_POLLS = 2;
 const ARTIFACT_DOWNLOAD_HEARTBEAT_MS = 10_000;
 const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000;
-const ARTIFACT_DOWNLOAD_MAX_ATTEMPTS = 2;
 const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const MODEL_CONFIGURATION_OPEN_TIMEOUT_MS = 45_000;
@@ -603,6 +600,23 @@ async function terminateBrowserProcess() {
   }
 }
 
+// `agent-browser close` returns before its session daemon exits. A command issued on the same
+// session name during that window is served by the dying daemon and its tab is orphaned, and the
+// next command finds a vanished socket (observed live as "Connection refused"). Only a listed
+// session is closed, and teardown is complete only once the driver no longer lists the session.
+async function agentBrowserSessionListed(sessionName) {
+  const result = await spawnCommand(AGENT_BROWSER_BIN, ["session", "list"], { allowFailure: true, timeoutMs: 5_000 });
+  return result.code === 0 && String(result.stdout || "").split("\n").some((line) => line.trim() === sessionName);
+}
+
+async function waitForAgentBrowserSessionTeardown(sessionName) {
+  const deadline = Date.now() + AGENT_BROWSER_CLOSE_TIMEOUT_MS;
+  while (await agentBrowserSessionListed(sessionName)) {
+    if (Date.now() >= deadline) throw new Error(`agent-browser session ${sessionName} is still active after close`);
+    await sleep(50);
+  }
+}
+
 async function closeBrowser(job) {
   if (cleaningUpBrowser) return;
   deepResearchCdp?.close();
@@ -622,12 +636,15 @@ async function closeBrowser(job) {
         tabCleanupError = error;
       }
     }
-    const result = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "close"], {
-      allowFailure: true,
-      timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS,
-    });
-    if (result.code !== 0) {
-      throw new Error(result.stderr || result.stdout || `agent-browser close exited with code ${result.code}`);
+    if (await agentBrowserSessionListed(job.runtimeSessionName)) {
+      const result = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "close"], {
+        allowFailure: true,
+        timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS,
+      });
+      if (result.code !== 0) {
+        throw new Error(result.stderr || result.stdout || `agent-browser close exited with code ${result.code}`);
+      }
+      await waitForAgentBrowserSessionTeardown(job.runtimeSessionName);
     }
     if (tabCleanupError) throw tabCleanupError;
   } finally {
@@ -969,18 +986,6 @@ function matchesRequestedModelControl(candidate, selection, options = {}) {
   return matchesRequestedModelControlLabel(candidate.label, selection);
 }
 
-function matchesModelConfigurationOpener(candidate) {
-  if (candidate.kind !== "button" || typeof candidate.label !== "string" || candidate.disabled) return false;
-  const label = String(candidate.label || "");
-  return candidate.label === "Model"
-    || candidate.label === "Model selector"
-    || matchesCompactIntelligenceOpenerLabel(label)
-    || /^(?:Light|Standard|Extended|Heavy)(?:, click to remove)?$/i.test(label)
-    || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} */ (family)))
-    || /^(?:(?:Light|Standard|Extended|Heavy) )?Thinking(?:, click to remove)?$/i.test(label)
-    || /^(?:(?:Light|Standard|Extended|Heavy) )?Pro(?:, click to remove)?$/i.test(label);
-}
-
 function canUseOpenModelMenuForSelection(snapshot, selection) {
   if (selection.modelFamily !== "instant" || selection.autoSwitchToThinking === true) return false;
   return Boolean(findEntry(
@@ -1128,10 +1133,18 @@ async function setComposerText(job, text) {
   const labels = labelsForJob(job);
   const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === labels.composer);
   if (!entry) throw new Error("Could not find ChatGPT composer textbox");
-  // ChatGPT restores a saved draft into the composer; fill appends to it instead of replacing it.
-  await clickRef(job, entry.ref);
-  await agentBrowser(job, "press", process.platform === "darwin" ? "Meta+a" : "Control+a");
-  await agentBrowser(job, "press", "Backspace");
+  // Keyboard select-all can miss a large restored draft; fill then appends to it.
+  // Use the editor's native editing commands and verify clearing before insertion.
+  const cleared = await evalPage(job, toJsonScript(`
+    const el = document.querySelector('#prompt-textarea');
+    if (!el?.isContentEditable) return false;
+    el.focus();
+    if (document.activeElement !== el) return false;
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+    return !el.innerText.trim();
+  `));
+  if (!cleared) throw new Error("Could not clear ChatGPT composer draft; prompt was not inserted");
   await agentBrowser(job, "fill", entry.ref, text);
 }
 
@@ -1382,27 +1395,6 @@ function detectResponseFailureText(text) {
   return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
 }
 
-function composerSnapshotSlice(snapshot, job = currentJob) {
-  const lines = snapshot.split("\n");
-  const labels = labelsForJob(job);
-  let composerIndex = -1;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (lines[index].includes(`textbox "${labels.composer}"`) || (isGrokJob(job) && lines[index].includes("contenteditable"))) {
-      composerIndex = index;
-      break;
-    }
-  }
-  if (composerIndex === -1) return snapshot;
-  const startIndex = Math.max(0, composerIndex - 16);
-  const endIndex = Math.min(lines.length, composerIndex + 16);
-  return lines.slice(startIndex, endIndex).join("\n");
-}
-
-function composerFileEntryCount(snapshot, fileLabel, job = currentJob) {
-  const composerSlice = composerSnapshotSlice(snapshot, job);
-  return parseSnapshotEntries(composerSlice).filter((candidate) => candidate.label === fileLabel).length;
-}
-
 async function waitForUploadConfirmed(job, fileLabel, baselineCount) {
   const timeoutAt = Date.now() + 10 * 60 * 1000;
   let stableCount = 0;
@@ -1424,7 +1416,7 @@ async function waitForUploadConfirmed(job, fileLabel, baselineCount) {
     );
     const fileCount = isGrokJob(job) && snapshot.includes(fileLabel)
       ? baselineCount + 1
-      : composerFileEntryCount(snapshot, fileLabel, job);
+      : composerFileEntryCount(snapshot, fileLabel, labels.composer);
 
     if ((sendEntry || isGrokJob(job)) && fileCount > baselineCount) {
       stableCount += 1;
@@ -1488,7 +1480,7 @@ async function sendAcceptanceState(job, baselineAssistantCount) {
     url: urlResult.url,
     urlKnown: urlResult.ok,
     assistantCount: Math.max(baselineAssistantCount, messages.length),
-    stopStreaming: isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming"),
+    stopStreaming: isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : chatGptStreamingVisible(snapshot),
     transientErrorText: detectProviderVisibleBlockerText(snapshot) || "",
   };
 }
@@ -1874,6 +1866,37 @@ async function enableDeepResearch(job) {
   }
   const opener = findEntry(before, (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.addFiles && !candidate.disabled);
   if (!opener) throw new OracleWorkerError("deep_research_toggle_not_found", `Could not find the "${CHATGPT_LABELS.addFiles}" menu to enable Deep Research`);
+  // Filling expands/animates the composer. Wait for a stationary, uncovered
+  // control and keep the tool pill out of the prompt text (not inside a path).
+  const settled = await evalPage(job, toAsyncJsonScript(`
+    const editor = document.querySelector("#prompt-textarea");
+    if (!editor?.isContentEditable) return false;
+    editor.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return await new Promise(resolve => {
+      let previous, stableFrames = 0, frame = 0;
+      const finish = ready => { clearTimeout(timer); cancelAnimationFrame(frame); resolve(ready); };
+      const timer = setTimeout(() => finish(false), 5000);
+      const check = () => {
+        const button = document.querySelector(${JSON.stringify(`button[aria-label="${CHATGPT_LABELS.addFiles}"]`)});
+        const rect = button?.getBoundingClientRect();
+        const hit = rect && document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        const ready = rect?.width > 0 && rect.height > 0 && !button.disabled && button.contains(hit);
+        if (ready && previous && rect.x === previous.x && rect.y === previous.y && rect.width === previous.width && rect.height === previous.height) stableFrames++;
+        else stableFrames = 0;
+        previous = rect;
+        if (stableFrames >= 3) finish(true);
+        else frame = requestAnimationFrame(check);
+      };
+      frame = requestAnimationFrame(check);
+    });
+  `));
+  if (!settled) throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research menu control did not become stationary and uncovered");
   await clickRef(job, opener.ref);
   // The menu animates open; a fixed wait snapshotted it half-open once. Poll until expanded.
   let entry;
@@ -1930,8 +1953,8 @@ async function uploadArchive(job) {
 
   const fileLabel = basename(job.archivePath);
   const addFilesSnapshot = await snapshotText(job);
-  const baselineComposerFileCount = composerFileEntryCount(addFilesSnapshot, fileLabel, job);
   const labels = labelsForJob(job);
+  const baselineComposerFileCount = composerFileEntryCount(addFilesSnapshot, fileLabel, labels.composer);
   const addFilesEntry = findEntry(
     addFilesSnapshot,
     (candidate) => candidate.label === labels.addFiles && candidate.kind === "button",
@@ -1999,7 +2022,7 @@ async function assistantMessages(job) {
         text = text
           .split('\\n')
           .map((line) => line.trimEnd())
-          .filter((line) => line.trim() && !/^Thought for\\b/i.test(line.trim()))
+          .filter((line) => !/^Thought for\\b/i.test(line.trim()))
           .join('\\n')
           .trim();
         return text;
@@ -2083,7 +2106,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   while (Date.now() < timeoutAt) {
     await heartbeat();
     const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
-    const hasStopStreaming = isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming");
+    const hasStopStreaming = isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : chatGptStreamingVisible(snapshot);
     const hasRetryButton = snapshot.includes('button "Retry"');
     const copyResponseCount = isGrokJob(job) ? (snapshot.match(/button "Copy"/g) || []).length : (snapshot.match(/Copy response/g) || []).length;
     throwIfProviderTransientError(job, snapshot, "waiting for response completion");
@@ -2146,7 +2169,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
               `Deep Research did not start in ${conversation}; the assistant replied instead: ${targetText.slice(0, 300)}`,
             );
           }
-          const report = await waitForDeepResearchReport(job, timeoutAt);
+          const report = await waitForDeepResearchReport(job, timeoutAt, baselineAssistantCount);
           return { responseIndex: baselineAssistantCount, responseText: report };
         }
         return { responseIndex: baselineAssistantCount, responseText: targetText };
@@ -2165,11 +2188,12 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
 // Deep Research renders its report in a cross-origin App iframe (a ~300-byte shell whose
 // same-origin child frame holds the report). Chrome surfaces that iframe as a CDP child session
 // only if auto-attach was armed before the frame was created, so the client is armed before send.
-const DEEP_RESEARCH_REPORT_EXPRESSION = `(() => { try { return frames[0].document.body.innerText; } catch { return ""; } })()`;
+const DEEP_RESEARCH_REPORT_EXPRESSION = `(() => { try { return (frames[0]?.document || globalThis.document).body.innerText; } catch { return ""; } })()`;
 const DEEP_RESEARCH_FRAME_WAIT_MS = 60_000;
 
 /** @type {RelayCdpClient | undefined} */
 let deepResearchCdp;
+let deepResearchPageSession;
 
 async function armDeepResearchFrameCapture(job) {
   if (!job.config.browser.chatGptRelayEndpoint) {
@@ -2177,22 +2201,18 @@ async function armDeepResearchFrameCapture(job) {
   }
   if (!job.relayTargetId) throw new Error("Deep Research frame capture needs the job-owned relay tab identity");
   deepResearchCdp = await RelayCdpClient.connect(job.config.browser.chatGptRelayEndpoint);
-  await deepResearchCdp.armFrameCapture(job.relayTargetId);
+  deepResearchPageSession = await deepResearchCdp.armFrameCapture(job.relayTargetId);
   await log("Armed frame capture on the job-owned relay tab for the Deep Research widget");
 }
 
-async function waitForDeepResearchReport(job, timeoutAt) {
+async function waitForDeepResearchReport(job, timeoutAt, responseIndex) {
   const cdp = deepResearchCdp;
   const conversation = job.chatUrl || (await currentUrl(job).catch(() => "")) || "(unknown)";
   if (!cdp) throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but frame capture was not armed; open the conversation for the report.`);
   const frameDeadline = Math.min(timeoutAt, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS);
   let frame;
   while (!frame && Date.now() < frameDeadline) {
-    // targetInfo.url is empty at attach time; the origin is confirmed from inside the session.
-    for (const candidate of cdp.frameSessions()) {
-      const origin = await cdp.evaluate(candidate.sessionId, "location.origin");
-      if (typeof origin === "string" && /web-sandbox\.oaiusercontent\.com$/.test(origin)) { frame = candidate; break; }
-    }
+    frame = await boundResearchFrame(job, responseIndex).catch(() => undefined);
     if (!frame) await sleep(1000);
   }
   if (!frame) {
@@ -2217,424 +2237,239 @@ async function waitForDeepResearchReport(job, timeoutAt) {
   throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but the report did not appear before the completion timeout; open the conversation for the finished report.`);
 }
 
-async function sha256(path) {
-  const buffer = await readFile(path);
-  return createHash("sha256").update(buffer).digest("hex");
+
+
+
+
+
+
+
+
+async function collectArtifactCandidates(job, responseIndex) {
+  const captured = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex })};`));
+  if (!captured?.candidates) throw new Error("Bound artifact inspection failed.");
+  return { candidates: captured.candidates, suspiciousLabels: [] };
 }
 
-async function detectType(path) {
-  const result = await spawnCommand("file", ["-b", path], { allowFailure: true });
-  return result.stdout || "unknown";
-}
-
-function preferredArtifactName(label, index) {
-  const normalized = String(label || "").trim();
-  const fileNameMatch = normalized.match(/([A-Za-z0-9._-]+\.[A-Za-z0-9]{1,12})(?!.*[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,12})/);
-  if (fileNameMatch) return basename(fileNameMatch[1]).replace(/[^a-zA-Z0-9._-]/g, "_");
-  return `artifact-${String(index + 1).padStart(2, "0")}`;
-}
-
-async function downloadArtifactViaBrowserEval(job, selector, destinationPath) {
-  const result = await evalPage(job, toAsyncJsonScript(`
-    const selector = ${JSON.stringify(selector)};
-    const maxBytes = 25 * 1024 * 1024;
-    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const element = document.querySelector(selector);
-    if (!element) return { ok: false, error: 'artifact selector not found' };
-
-    const urls = [];
-    const captures = [];
-    const originalOpen = window.open;
-    const originalFetch = window.fetch?.bind(window);
-    const originalAnchorClick = HTMLAnchorElement.prototype.click;
-
-    const arrayBufferToBase64 = (buffer) => {
-      const bytes = new Uint8Array(buffer);
-      let binary = '';
-      const chunkSize = 0x8000;
-      for (let index = 0; index < bytes.length; index += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-      }
-      return btoa(binary);
-    };
-
-    const shouldCapture = (url, headers) => {
-      const contentDisposition = headers?.get?.('content-disposition') || '';
-      const contentType = headers?.get?.('content-type') || '';
-      const signal = [url, contentDisposition, contentType].join(' ').toLowerCase();
-      return /download|files|oaiusercontent|attachment/i.test(signal) || signal.includes('estuary/content');
-    };
-
-    const captureResponse = async (response, source) => {
-      if (!response || captures.length > 0 || !shouldCapture(response.url || '', response.headers)) return;
-      const contentLength = Number(response.headers.get('content-length') || 0);
-      if (contentLength > maxBytes) {
-        captures.push({ ok: false, error: 'artifact response too large for browser-eval fallback', url: response.url || '', source });
-        return;
-      }
-      const clone = response.clone();
-      const buffer = await clone.arrayBuffer();
-      if (buffer.byteLength > maxBytes) {
-        captures.push({ ok: false, error: 'artifact response too large for browser-eval fallback', url: response.url || '', source });
-        return;
-      }
-      const contentType = response.headers.get('content-type') || '';
-      if (contentType.toLowerCase().includes('application/json') && originalFetch) {
-        try {
-          const text = new TextDecoder().decode(buffer);
-          const payload = JSON.parse(text);
-          const downloadUrl = typeof payload?.download_url === 'string' ? payload.download_url : undefined;
-          if (downloadUrl) {
-            const fileResponse = await originalFetch(downloadUrl, { credentials: 'include' });
-            await captureResponse(fileResponse, 'download_url');
-            if (captures.length > 0) return;
-          }
-        } catch (_error) {
-          // Fall through and preserve the JSON payload as last-resort evidence.
-        }
-      }
-      captures.push({
-        ok: true,
-        url: response.url || '',
-        source,
-        contentType,
-        contentDisposition: response.headers.get('content-disposition') || '',
-        bytesBase64: arrayBufferToBase64(buffer),
-      });
-    };
-
-    try {
-      window.open = (url, ...args) => {
-        if (url) urls.push(String(url));
-        return originalOpen.call(window, url, ...args);
-      };
-      HTMLAnchorElement.prototype.click = function patchedAnchorClick() {
-        if (this.href) urls.push(this.href);
-        return originalAnchorClick.call(this);
-      };
-      if (originalFetch) {
-        window.fetch = async (...args) => {
-          const response = await originalFetch(...args);
-          const requestUrl = String(args[0]?.url || args[0] || response?.url || '');
-          if (shouldCapture(requestUrl, response?.headers) || shouldCapture(response?.url || '', response?.headers)) {
-            await captureResponse(response, 'fetch');
-          }
-          return response;
-        };
-      }
-
-      element.click();
-      await sleep(3000);
-      for (const url of urls) {
-        if (captures.length > 0 || !url || !originalFetch) continue;
-        try {
-          const response = await originalFetch(url, { credentials: 'include' });
-          await captureResponse(response, 'url');
-        } catch (_error) {
-          // Keep trying any other captured URLs.
-        }
-      }
-      return captures[0] || { ok: false, error: 'click did not expose a downloadable artifact response', urls };
-    } finally {
-      window.open = originalOpen;
-      HTMLAnchorElement.prototype.click = originalAnchorClick;
-      if (originalFetch) window.fetch = originalFetch;
-    }
-  `));
-
-  if (!result?.ok || typeof result.bytesBase64 !== "string") {
-    throw new Error(result?.error || "browser-eval artifact fallback did not capture a file");
-  }
-
-  await writeFile(destinationPath, Buffer.from(result.bytesBase64, "base64"), { mode: 0o600 });
-  return result;
-}
-
-async function collectArtifactCandidates(job, responseIndex, responseText = "") {
-  const snapshot = await snapshotText(job);
-  const targetSlice = assistantSnapshotSlice(snapshot, CHATGPT_LABELS.composer, responseIndex) || snapshot;
-
-  const structural = await evalPage(
-    job,
-    toJsonScript(`
-      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-      const genericArtifactLabels = new Set(${JSON.stringify(GENERIC_ARTIFACT_LABELS)});
-      const fileLabelPattern = new RegExp(${JSON.stringify(FILE_LABEL_PATTERN_SOURCE)}, 'g');
-      const downloadControlPattern = /(?:^|\\b)(?:download|save)(?:\\b|$)/i;
-      const artifactMarkerAttr = 'data-pi-oracle-artifact-candidate';
-      const artifactPrefix = 'pi-oracle-artifact-${jobId}-${responseIndex}-';
-      const sanitize = (value) => normalize(value).replace(/^[^A-Za-z0-9._~/-]+|[^A-Za-z0-9._~/-]+$/g, '');
-      const sanitizeArtifactLabel = (value) => {
-        const normalized = sanitize(value);
-        if (!normalized) return '';
-        const basename = normalized.split(/[\\/]/).filter(Boolean).at(-1) || '';
-        return basename.replace(/^[^A-Za-z0-9._-]+|[^A-Za-z0-9._-]+$/g, '');
-      };
-      const extractArtifactLabels = (value) => {
-        const seen = new Set();
-        const labels = [];
-        for (const match of String(value || '').matchAll(fileLabelPattern)) {
-          const label = sanitizeArtifactLabel(match[1] || match[0] || '');
-          if (!label || seen.has(label)) continue;
-          seen.add(label);
-          labels.push(label);
-        }
-        return labels;
-      };
-      const isFileLabel = (value) => {
-        const normalized = normalize(value);
-        if (!normalized) return false;
-        if (genericArtifactLabels.has(normalized.toUpperCase())) return true;
-        return extractArtifactLabels(normalized).length > 0;
-      };
-      const isDownloadControl = (value) => downloadControlPattern.test(normalize(value));
-      const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
-        .filter((el) => normalize(el.textContent) === 'ChatGPT said:');
-      const host = headings[${responseIndex}]?.nextElementSibling || document.querySelector('main') || document.body;
-      if (!host) return { candidates: [] };
-
-      const interactiveElements = (node) => node ? Array.from(node.querySelectorAll('button, a')) : [];
-      const interactiveLabels = (node) => interactiveElements(node)
-        .map((candidate) => normalize(candidate.textContent || candidate.getAttribute('aria-label') || candidate.getAttribute('title')))
-        .filter(Boolean);
-      const artifactLabelsForNode = (node) => extractArtifactLabels(node?.textContent || '');
-      const otherTextLength = (text, labels) => {
-        let remaining = normalize(text);
-        for (const label of labels || []) {
-          remaining = normalize(remaining.replaceAll(label, ' '));
-        }
-        remaining = normalize(remaining.replaceAll('Coding Citation', ' '));
-        return remaining.length;
-      };
-      const focusableFor = (node) => node?.closest('[tabindex]');
-      const uniqueLabel = (...groups) => {
-        for (const group of groups) {
-          const labels = Array.from(new Set((group || []).map(sanitizeArtifactLabel).filter(Boolean)));
-          if (labels.length === 1) return labels[0];
-        }
-        return undefined;
-      };
-
-      const responseTextArtifactLabels = ${JSON.stringify(extractArtifactLabels(responseText))};
-      const candidates = interactiveElements(host)
-        .map((button, index) => {
-          const controlLabel = normalize(button.textContent || button.getAttribute('aria-label') || button.getAttribute('title'));
-          const paragraph = button.closest('p');
-          const listItem = button.closest('li');
-          const focusable = focusableFor(button);
-          const ownArtifactLabels = extractArtifactLabels(controlLabel);
-          const paragraphArtifactLabels = artifactLabelsForNode(paragraph);
-          const listItemArtifactLabels = artifactLabelsForNode(listItem);
-          const focusableArtifactLabels = artifactLabelsForNode(focusable);
-          const label = uniqueLabel(
-            ownArtifactLabels,
-            listItemArtifactLabels,
-            paragraphArtifactLabels,
-            focusableArtifactLabels,
-            isDownloadControl(controlLabel) && responseTextArtifactLabels.length > 0 ? [responseTextArtifactLabels.at(-1)] : [],
-          );
-          if (!label && !isFileLabel(controlLabel) && !isDownloadControl(controlLabel)) return null;
-          if (!label) return null;
-          const marker = artifactPrefix + index;
-          button.setAttribute(artifactMarkerAttr, marker);
-          return {
-            label,
-            selector: '[' + artifactMarkerAttr + '="' + marker + '"]',
-            controlLabel,
-            paragraphText: normalize(paragraph?.textContent),
-            listItemText: normalize(listItem?.textContent),
-            paragraphInteractiveCount: interactiveElements(paragraph).length,
-            paragraphArtifactLabelCount: Array.from(new Set(paragraphArtifactLabels)).length,
-            paragraphOtherTextLength: otherTextLength(paragraph?.textContent, [...paragraphArtifactLabels, ...interactiveLabels(paragraph)]),
-            listItemInteractiveCount: interactiveElements(listItem).length,
-            listItemArtifactLabelCount: Array.from(new Set(listItemArtifactLabels)).length,
-            focusableInteractiveCount: interactiveElements(focusable).length,
-            focusableArtifactLabelCount: Array.from(new Set(focusableArtifactLabels)).length,
-            focusableOtherTextLength: otherTextLength(focusable?.textContent, [...focusableArtifactLabels, ...interactiveLabels(focusable)]),
-            fromResponseTextLabel: responseTextArtifactLabels.includes(label),
-          };
-        })
-        .filter(Boolean);
-
-      return { candidates };
-    `),
-  );
-
-  const partitioned = partitionStructuralArtifactCandidates(structural?.candidates || []);
-  const snapshotEntries = parseSnapshotEntries(targetSlice);
-  const hasGenericArtifactControl = snapshotEntries.some(
-    (entry) =>
-      (entry.kind === "button" || entry.kind === "link") &&
-      !entry.disabled &&
-      /(?:^|\b)(?:download|save)(?:\b|$)/i.test(`${entry.label || ""} ${entry.value || ""}`),
-  );
-  const suspiciousFromText = hasGenericArtifactControl
-    ? extractArtifactLabels(responseText)
-        .filter((label) => !partitioned.confirmed.some((candidate) => candidate.label === label) && !partitioned.suspicious.some((candidate) => candidate.label === label))
-        .map((label) => ({ label }))
-    : [];
-
-  return {
-    snapshot,
-    targetSlice,
-    candidates: partitioned.confirmed,
-    suspiciousLabels: [...partitioned.suspicious.map((candidate) => candidate.label), ...suspiciousFromText.map((candidate) => candidate.label)]
-      .filter((label, index, labels) => labels.indexOf(label) === index),
-  };
-}
-
-async function waitForStableArtifactCandidates(job, responseIndex, responseText = "") {
-  const deadline = Date.now() + ARTIFACT_CANDIDATE_STABILITY_TIMEOUT_MS;
-  let lastSignature;
-  let stablePolls = 0;
-  let latest = { snapshot: "", targetSlice: undefined, candidates: [], suspiciousLabels: [] };
-
-  while (Date.now() < deadline) {
-    latest = await collectArtifactCandidates(job, responseIndex, responseText);
-    const signature = JSON.stringify({
-      candidates: latest.candidates.map((candidate) => candidate.label),
-      suspiciousLabels: latest.suspiciousLabels,
-    });
-    if (signature === lastSignature) stablePolls += 1;
-    else {
-      lastSignature = signature;
-      stablePolls = 1;
-    }
-    if (stablePolls >= ARTIFACT_CANDIDATE_STABILITY_POLLS) return latest;
-    await heartbeat();
-    await sleep(ARTIFACT_CANDIDATE_STABILITY_POLL_MS);
-  }
-
-  return latest;
-}
-
-async function reopenConversationForArtifacts(job, responseIndex, responseText, reason) {
-  const targetUrl = job.chatUrl || stripUrlQueryAndHash(await currentUrl(job));
-  await log(`Reopening conversation before artifact capture (${reason}): ${targetUrl}`);
-  await agentBrowser(job, "open", targetUrl);
-  await agentBrowser(job, "wait", "1500");
-  return waitForStableArtifactCandidates(job, responseIndex, responseText);
-}
-
-async function withHeartbeatWhile(task, intervalMs = ARTIFACT_DOWNLOAD_HEARTBEAT_MS) {
-  let inFlight = true;
-  let heartbeatRunning = false;
-  const timer = setInterval(() => {
-    if (!inFlight || heartbeatRunning) return;
-    heartbeatRunning = true;
-    void heartbeat()
-      .catch(() => undefined)
-      .finally(() => {
-        heartbeatRunning = false;
-      });
-  }, intervalMs);
+async function withHeartbeatWhile(task) {
+  let active = true;
+  const timer = setInterval(() => { if (active) void heartbeat().catch(() => undefined); }, ARTIFACT_DOWNLOAD_HEARTBEAT_MS);
   timer.unref?.();
-  try {
-    return await task();
-  } finally {
-    inFlight = false;
-    clearInterval(timer);
+  try { return await task(); }
+  finally { active = false; clearInterval(timer); }
+}
+
+
+
+
+
+
+
+
+
+async function captureBoundTurn(job, binding) {
+  const observed = conversationIdFromUrl(await currentUrl(job));
+  if (!binding.conversationId || observed !== binding.conversationId) throw new Error("Collection conversation binding does not match the current page.");
+  const captured = await evalPage(job, toJsonScript(`return ${captureExpression(binding)};`));
+  if (!captured || typeof captured.rawHtml !== "string") throw new Error("Bound response capture failed.");
+  const turnSha256 = createHash("sha256").update(captured.rawHtml).digest("hex");
+  if (!binding.messageId && binding.turnSha256 && binding.turnSha256 !== turnSha256) throw new Error("Bound response content changed; refusing index-only recollection.");
+  return { captured, binding: { ...binding, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
+}
+
+async function boundResearchFrame(job, responseIndex) {
+  if (!deepResearchCdp || !deepResearchPageSession) throw new Error("Research frame capture is not armed.");
+  const turn = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex, messageId: job.collectionBinding?.messageId })};`));
+  if (!turn?.frames?.length) throw new Error("No research iframe exists in the bound assistant turn.");
+  const documentNode = await deepResearchCdp.send("DOM.getDocument", {}, deepResearchPageSession);
+  const frameIds = [];
+  for (const frame of turn.frames) {
+    const found = await deepResearchCdp.send("DOM.querySelector", { nodeId: documentNode.root.nodeId, selector: frame.selector }, deepResearchPageSession);
+    if (!found.nodeId) continue;
+    const description = await deepResearchCdp.send("DOM.describeNode", { nodeId: found.nodeId }, deepResearchPageSession);
+    if (description.node?.frameId) frameIds.push(description.node.frameId);
   }
+  const matches = [];
+  for (const candidate of deepResearchCdp.frameSessions()) {
+    const href = await deepResearchCdp.evaluate(candidate.sessionId, "location.href");
+    if (typeof href !== "string" || !/^https:\/\/[^/]*web-sandbox\.oaiusercontent\.com(?:\/|$)/.test(href)) continue;
+    if (frameIds.includes(candidate.targetId) || turn.frames.some((frame) => frame.src === href)) matches.push(candidate);
+  }
+  if (matches.length !== 1) throw new Error("The bound report frame is absent or ambiguous.");
+  return matches[0];
+}
+
+// The Export control and its asynchronous "Export to Markdown" option live in the report document
+// nested inside the sandboxed widget frame; the download itself is delegated to the host page.
+async function activateReportExport(frame, selector) {
+  const result = await deepResearchCdp.send("Runtime.evaluate", {
+    expression: `(async () => { const document = frames[0]?.document || globalThis.document; return await (${activateDownloadControl.toString()})(${JSON.stringify(selector)}, true); })()`,
+    returnByValue: true, awaitPromise: true,
+  }, frame.sessionId, ARTIFACT_DOWNLOAD_TIMEOUT_MS);
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description?.split("\n")[0] || result.exceptionDetails.text || "Report export activation failed.");
+  return result.result?.value;
 }
 
 async function flushArtifactsState(artifacts) {
-  await secureWriteText(`${jobDir}/artifacts.json`, `${JSON.stringify(artifacts, null, 2)}\n`);
-  await mutateJob((current) => ({
-    ...current,
-    artifactPaths: artifacts.flatMap((artifact) => (artifact.copiedPath && existsSync(artifact.copiedPath) ? [artifact.copiedPath] : [])),
-  }));
+  await secureWriteText(join(jobDir, "artifacts.json"), redactTransportSecrets(JSON.stringify(artifacts, null, 2)) + "\n");
+  await mutateJob((job) => ({ ...job, artifactPaths: [...new Set(artifacts.filter((item) => item.copiedPath && existsSync(item.copiedPath)
+    && (item.state === "validated" || (item.state === undefined && !item.error && !item.unconfirmed))).map((item) => item.copiedPath))] }));
 }
 
-async function downloadArtifacts(job, responseIndex, responseText = "") {
-  if (isGrokJob(job)) {
-    await secureWriteText(`${jobDir}/artifacts.json`, "[]\n");
-    await mutateJob((current) => ({ ...current, artifactPaths: [] }));
-    return [];
+async function preserveCaptureFile(path, content) {
+  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (existsSync(path)) {
+    const previous = await readFile(path);
+    if (previous.equals(bytes)) return { path, sha256: digest, size: bytes.length };
+    const previousDigest = createHash("sha256").update(previous).digest("hex");
+    const historyPath = path + "." + previousDigest + ".previous";
+    if (!existsSync(historyPath)) await secureWriteText(historyPath, previous);
   }
-  if (!job.config.artifacts.capture) {
-    await secureWriteText(`${jobDir}/artifacts.json`, "[]\n");
-    await mutateJob((current) => ({ ...current, artifactPaths: [] }));
-    return [];
-  }
+  await secureWriteText(path, bytes);
+  return { path, sha256: digest, size: bytes.length };
+}
 
-  let { targetSlice, candidates, suspiciousLabels } = await reopenConversationForArtifacts(job, responseIndex, responseText, "initial");
-
-  await log(`Artifact candidates: ${candidates.map((candidate) => candidate.label).join(", ") || "(none)"}`);
-  if (suspiciousLabels.length > 0) {
-    await log(`Suspicious artifact signals: ${suspiciousLabels.join(", ")}`);
-  }
-
-  const artifactsDir = `${jobDir}/artifacts`;
+async function collectBoundResult(job, binding, fallbackText = "") {
+  const requiredMissing = [];
+  const optionalMissing = [];
+  let capture;
+  let frame;
+  let inspection = "not_performed";
+  let fidelity = "text_only";
+  let method = "text_fallback";
+  let response = fallbackText;
+  let oldManifest = [];
+  try { oldManifest = JSON.parse(await readFile(join(jobDir, "artifacts.json"), "utf8")); } catch {}
+  const artifacts = Array.isArray(oldManifest) ? [...oldManifest] : [];
+  const artifactsDir = join(jobDir, "artifacts");
   await ensurePrivateDir(artifactsDir);
-  const artifacts = [];
-  await flushArtifactsState(artifacts);
-
-  for (const [index, originalCandidate] of candidates.entries()) {
-    let downloaded = false;
-    let activeCandidate = originalCandidate;
-    for (let attempt = 1; attempt <= ARTIFACT_DOWNLOAD_MAX_ATTEMPTS && !downloaded; attempt += 1) {
-      if (!activeCandidate?.selector) {
-        await log(`Artifact "${originalCandidate.label}" has no live selector, marking unconfirmed`);
-        artifacts.push({ displayName: originalCandidate.label, unconfirmed: true, error: "Artifact candidate lost its live selector before download." });
+  try {
+    const turn = await captureBoundTurn(job, binding);
+    binding = turn.binding;
+    capture = turn.captured;
+    // Bind before collection: a later download failure can be retried without sending.
+    await mutateJob((latest) => ({ ...latest, collectionBinding: binding }));
+    if (job.selection.tool === "deep_research") {
+      frame = await boundResearchFrame(job, binding.responseIndex);
+      const report = await deepResearchCdp.evaluate(frame.sessionId, captureExpression({ report: true }, true));
+      const completionText = await deepResearchCdp.evaluate(frame.sessionId, DEEP_RESEARCH_REPORT_EXPRESSION);
+      if (!report?.rawHtml || !parseDeepResearchWidgetText(completionText).completed) throw new Error("Bound research frame is not a completed report.");
+      capture = report;
+      binding = { ...binding, frameId: frame.targetId };
+    }
+    inspection = "inspected";
+    fidelity = "derived_markdown";
+    method = "scoped_dom";
+    response = capture.markdown;
+    const markdownBlocks = capture.codeBlocks.filter((block) => /^(?:markdown|md)$/i.test(block.language));
+    if (markdownBlocks.length === 1 && job.selection.tool !== "deep_research") {
+      response = markdownBlocks[0].text;
+      fidelity = "exact_code";
+      method = "code_text_content";
+    }
+    if (capture.sources.some((source) => source.kind !== "artifact" && source.unresolved)) requiredMissing.push("unresolved_source_links");
+    for (const block of capture.codeBlocks) {
+      const content = redactTransportSecrets(block.text);
+      block.file = await preserveCaptureFile(join(jobDir, "response.block-" + block.index + ".txt"), content);
+      block.exact = content === block.text;
+      delete block.text;
+    }
+    const rawText = await preserveCaptureFile(join(jobDir, "response.raw.txt"), redactTransportSecrets(capture.rawText));
+    const rawHtml = await preserveCaptureFile(join(jobDir, "response.raw.html"), redactTransportSecrets(capture.rawHtml));
+    capture.rawEvidence = { text: rawText, html: rawHtml, scope: "bound_turn",
+      sanitization: "active content, transient attributes, and signed transport URLs removed" };
+    if (!job.config.artifacts.capture) inspection = "not_performed";
+    else {
+      let candidates = capture.candidates;
+      if (frame && candidates.some((item) => item.nativeMarkdown)) candidates = candidates.filter((item) => item.nativeMarkdown);
+      for (const candidate of candidates) {
+        const candidateId = (frame ? "frame:" : "turn:") + candidate.candidateId;
+        const existing = artifacts.find((item) => item.candidateId === candidateId);
+        if (existing?.state === "validated" && existing.copiedPath && existsSync(existing.copiedPath)) {
+          try {
+            const validation = validateArtifactBytes(await readFile(existing.copiedPath), { fileName: existing.fileName });
+            if (validation.sha256 === existing.sha256) continue;
+          } catch {}
+        }
+        const record = { candidateId, displayName: redactTransportSecrets(candidate.label), state: "discovered", required: false };
+        const at = artifacts.findIndex((item) => item.candidateId === candidateId);
+        if (at >= 0) artifacts[at] = record; else artifacts.push(record);
         await flushArtifactsState(artifacts);
-        break;
-      }
-
-      const destinationPath = join(artifactsDir, preferredArtifactName(originalCandidate.label, index));
-      await rm(destinationPath, { force: true }).catch(() => undefined);
-      try {
-        await log(`Artifact "${originalCandidate.label}" download attempt ${attempt}/${ARTIFACT_DOWNLOAD_MAX_ATTEMPTS} using selector ${activeCandidate.selector}`);
         try {
-          const fallback = await downloadArtifactViaBrowserEval(job, activeCandidate.selector, destinationPath);
-          await log(`Artifact "${originalCandidate.label}" captured via browser-eval fallback (${fallback.source || "unknown"}${fallback.contentType ? `, ${fallback.contentType}` : ""})`);
-        } catch (fallbackError) {
-          await log(`Artifact "${originalCandidate.label}" browser-eval fallback did not capture file: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
-          await withHeartbeatWhile(() =>
-            agentBrowser(job, "download", activeCandidate.selector, destinationPath, {
+          let downloaded;
+          let nativeDownloadPath;
+          if (frame) {
+            downloaded = await withHeartbeatWhile(() => collectNativeDownload({
+              cdp: deepResearchCdp, pageSessionId: deepResearchPageSession, frameSessionId: frame.sessionId,
               timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS,
-            }),
-          );
+              activate: () => activateReportExport(frame, candidate.selector),
+            }));
+            await log(`Native report export collected (${downloaded.native.source} download ${downloaded.native.guid} from frame ${downloaded.native.frameId}, ${downloaded.native.totalBytes} bytes)`);
+          } else {
+            const expression = "(" + captureDownload.toString() + ")(" + JSON.stringify(candidate.selector) + ")";
+            try {
+              downloaded = await evalPage(job, toAsyncJsonScript(`return await ${expression};`));
+            } catch (browserCaptureError) {
+              nativeDownloadPath = join(artifactsDir, `.download-${candidate.candidateId}-${randomUUID()}`);
+              await log(`Browser byte capture for ${candidate.candidateId} did not observe a file; using the driver's pre-armed native download listener.`);
+              await withHeartbeatWhile(() => agentBrowser(job, "download", candidate.selector, nativeDownloadPath, { timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS }));
+              downloaded = { bytesBase64: (await readFile(nativeDownloadPath)).toString("base64"), fileName: candidate.fileName || "", contentType: "" };
+            } finally {
+              if (nativeDownloadPath) await rm(nativeDownloadPath, { force: true }).catch(() => undefined);
+            }
+          }
+          if (!downloaded?.bytesBase64) throw new Error("Download did not expose bytes.");
+          record.state = "downloaded";
+          await flushArtifactsState(artifacts);
+          const bytes = Buffer.from(downloaded.bytesBase64, "base64");
+          const suggested = downloaded.fileName || candidate.fileName || candidate.label.match(/[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,12}\b/)?.[0] || (frame ? "report.md" : "artifact");
+          const fileName = basename(redactTransportSecrets(suggested)).replace(/[^A-Za-z0-9._-]/g, "_") || "artifact";
+          const validation = validateArtifactBytes(bytes, { ...downloaded, fileName });
+          if (frame && (validation.detectedType !== "text/plain" || !/^#{1,6}\s+/m.test(bytes.toString("utf8")) || (capture.title && !bytes.toString("utf8").includes(capture.title)))) throw new Error("Native research export does not match the bound Markdown report.");
+          const sameBytes = artifacts.find((item) => item !== record && item.sha256 === validation.sha256 && item.copiedPath && existsSync(item.copiedPath));
+          const destination = sameBytes?.copiedPath || join(artifactsDir, validation.sha256 + "-" + fileName);
+          if (!sameBytes) await preserveCaptureFile(destination, bytes);
+          Object.assign(record, validation, { state: "validated", fileName, copiedPath: destination, nativeMarkdown: Boolean(frame), ...(downloaded.native ? { nativeDownload: downloaded.native } : {}) });
+        } catch (error) {
+          Object.assign(record, { state: "failed", unconfirmed: true, error: redactTransportSecrets(error.message || String(error)) });
         }
-        await heartbeat(undefined, { force: true });
-        await chmod(destinationPath, 0o600).catch(() => undefined);
-        const [size, checksum, detectedType] = await Promise.all([
-          stat(destinationPath).then((stats) => stats.size),
-          sha256(destinationPath),
-          detectType(destinationPath),
-        ]);
-        artifacts.push({
-          displayName: originalCandidate.label,
-          fileName: basename(destinationPath),
-          copiedPath: destinationPath,
-          size,
-          sha256: checksum,
-          detectedType,
-        });
-        downloaded = true;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await rm(destinationPath, { force: true }).catch(() => undefined);
-        await log(`Artifact "${originalCandidate.label}" download failed on attempt ${attempt}/${ARTIFACT_DOWNLOAD_MAX_ATTEMPTS}: ${message}`);
-        if (attempt >= ARTIFACT_DOWNLOAD_MAX_ATTEMPTS) {
-          artifacts.push({ displayName: originalCandidate.label, unconfirmed: true, error: message });
-        } else {
-          const refreshed = await reopenConversationForArtifacts(job, responseIndex, responseText, `retry ${attempt + 1} for ${originalCandidate.label}`);
-          targetSlice = refreshed.targetSlice;
-          candidates = refreshed.candidates;
-          suspiciousLabels = refreshed.suspiciousLabels;
-          activeCandidate = candidates.find((candidate) => candidate.label === originalCandidate.label);
-          await sleep(1_000);
-        }
-      } finally {
         await flushArtifactsState(artifacts);
       }
     }
+    if (frame) {
+      const native = artifacts.find((item) => item.nativeMarkdown && item.state === "validated");
+      if (native) {
+        response = await readFile(native.copiedPath, "utf8"); fidelity = "native_markdown"; method = "native_report_download";
+        if (capture.sources.some((source) => source.kind !== "artifact" && source.url && !response.includes(source.url))) requiredMissing.push("native_export_source_links");
+      }
+      else optionalMissing.push("native_markdown_export");
+    }
+  } catch (error) {
+    inspection = "failed";
+    binding = job.collectionBinding || binding;
+    requiredMissing.push("bound_response_capture");
+    optionalMissing.push("capture_error:" + redactTransportSecrets(error.message || String(error)));
   }
-
-  if (suspiciousLabels.length > 0) {
-    await log(`Ignoring plain-text artifact-like labels without downloadable controls: ${suspiciousLabels.join(", ")}`);
+  const safeResponse = redactTransportSecrets(response);
+  if (safeResponse !== response) { requiredMissing.push("redacted_transport_links"); fidelity = "text_only"; }
+  // Never erase usable earlier output when a recollection attempt fails.
+  let responseFile;
+  if (safeResponse) responseFile = await preserveCaptureFile(job.responsePath || join(jobDir, "response.md"), safeResponse);
+  else if (job.responsePath && existsSync(job.responsePath)) {
+    const bytes = await readFile(job.responsePath);
+    responseFile = { path: job.responsePath, sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
   }
-
+  const outcome = collectionOutcome({ hasResponse: Boolean(responseFile?.size), fidelity, inspection, artifacts, requiredMissing, optionalMissing });
+  const metadata = { schemaVersion: 1, jobId: job.id, binding, collectedAt: new Date().toISOString(), method, fidelity, response: responseFile,
+    rawEvidence: capture?.rawEvidence, codeBlocks: capture?.codeBlocks || [], sources: capture?.sources || [],
+    artifactInspection: { state: inspection, candidateCount: capture?.candidates?.length || 0, result: inspection === "inspected" ? capture?.candidates?.length ? "candidates_found" : "none_found" : "unconfirmed" }, ...outcome };
+  const responseCapturePath = join(jobDir, "response.capture.json");
+  await preserveCaptureFile(responseCapturePath, redactTransportSecrets(JSON.stringify(metadata, null, 2)) + "\n");
+  await flushArtifactsState(artifacts);
+  await mutateJob((latest) => ({ ...latest, generationStatus: "completed", collectionBinding: binding, responseCapturePath,
+    ...(responseFile ? { responsePath: responseFile.path } : {}), ...outcome,
+    artifactFailureCount: artifacts.filter((item) => item.state === undefined ? item.error || item.unconfirmed : item.state !== "validated").length + (inspection === "failed" ? 1 : 0) }));
   return artifacts;
 }
 
@@ -2753,15 +2588,16 @@ async function run() {
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     const responseText = isGrokJob(currentJob) ? completion.responseText.trim() : stripChatGptResponseChrome(completion.responseText);
-    await secureWriteText(currentJob.responsePath, `${responseText}\n`);
+    const collectionBinding = { conversationId: currentJob.conversationId, responseIndex: completion.responseIndex };
+    await mutateJob((job) => ({ ...job, generationStatus: "completed", collectionBinding }));
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "downloading_artifacts", {
       at: new Date().toISOString(),
       source: "oracle:worker",
       message: "Downloading any response artifacts.",
       patch: { heartbeatAt: new Date().toISOString() },
     }));
-    const artifacts = await downloadArtifacts(currentJob, completion.responseIndex, responseText);
-    const artifactFailureCount = artifacts.filter((artifact) => artifact.unconfirmed || artifact.error).length;
+    await collectBoundResult(currentJob, collectionBinding, responseText);
+    const artifactFailureCount = currentJob.artifactFailureCount || 0;
     const finalPhase = artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete";
 
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, finalPhase, {
@@ -2828,4 +2664,70 @@ async function run() {
   }
 }
 
-await run();
+async function runRecollection() {
+  // Separate entrypoint: never reaches configure/upload/composer/send or the submit queue.
+  await withLock(ORACLE_STATE_DIR, "recollect", jobId, { processPid: process.pid }, async () => {
+    currentJob = await readJob();
+    if (currentJob.status !== "complete") throw new Error("Recollection requires an already completed job.");
+    const explicit = process.argv[4] ? JSON.parse(process.argv[4]) : undefined;
+    let binding = currentJob.collectionBinding;
+    if (!binding?.messageId && !binding?.turnSha256) {
+      if (!Number.isInteger(explicit?.responseIndex) || explicit.responseIndex < 0 || !explicit.messageId) throw new Error("Legacy recollection requires an explicit responseIndex and messageId.");
+      binding = { conversationId: currentJob.conversationId, responseIndex: explicit.responseIndex, messageId: explicit.messageId };
+    } else if (explicit && (explicit.responseIndex !== binding.responseIndex || explicit.messageId !== binding.messageId)) throw new Error("Recollection cannot replace an existing turn binding.");
+    if (!binding.conversationId || conversationIdFromUrl(currentJob.chatUrl) !== binding.conversationId) throw new Error("Recollection requires the job's exact saved conversation URL.");
+    const priorWorker = { runtimeSessionName: currentJob.runtimeSessionName, workerPid: currentJob.workerPid, workerStartedAt: currentJob.workerStartedAt,
+      cleanupPending: currentJob.cleanupPending, cleanupWarnings: currentJob.cleanupWarnings };
+    let acquired = false;
+    await withLock(ORACLE_STATE_DIR, "admission", "global", { processPid: process.pid, jobId }, async () => {
+      currentJob = await readJob();
+      if (jobBlocksAdmission(currentJob)) throw new Error("The completed job still has a live worker or pending cleanup.");
+      const at = new Date().toISOString();
+      if (!await tryAcquireRuntimeLeaseForJob(currentJob, at)) throw new Error("Oracle runtime capacity is busy; recollection was not queued.");
+      if (!await tryAcquireConversationLeaseForJob(currentJob, at)) {
+        await releaseLease(ORACLE_STATE_DIR, "runtime", currentJob.runtimeId);
+        throw new Error("The bound conversation is busy; recollection was not queued.");
+      }
+      // A completed job with cleanupPending and a worker is judged by lastCleanupAt, then heartbeatAt.
+      // Retire the stale cleanup timestamp and heartbeat throughout, or an extension poller kills
+      // this live worker as a stale terminal-cleanup worker mid-collection (observed live).
+      await mutateJob((job) => ({ ...job, runtimeSessionName: `oracle-${randomUUID()}`,
+        workerPid: process.pid, workerStartedAt: readProcessStartedAt(process.pid), cleanupPending: true, heartbeatAt: at, lastCleanupAt: undefined }));
+      acquired = true;
+    });
+    try {
+      await ensurePrivateDir(join(jobDir, "logs"));
+      if (!currentJob.config.browser.chatGptRelayEndpoint) await cloneSeedProfileToRuntime(currentJob);
+      // Arm before navigation; only the newly owned tab is touched.
+      await launchBrowser(currentJob, "about:blank");
+      if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);
+      await agentBrowser(currentJob, "open", currentJob.chatUrl);
+      let ready = false;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await heartbeat();
+        try { await captureBoundTurn(currentJob, binding); ready = true; break; } catch { await sleep(500); }
+      }
+      if (!ready) throw new Error("The exact bound assistant turn could not be reacquired.");
+      if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding.responseIndex);
+      await collectBoundResult(currentJob, binding);
+      await mutateJob((job) => ({ ...job, recollectionError: undefined }));
+    } catch (error) {
+      const message = redactTransportSecrets(error.message || String(error));
+      await log("Recollection failed: " + message);
+      await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,
+        collectionRequiredMissing: [...new Set([...(job.collectionRequiredMissing || []), "bound_response_capture"])] }));
+    } finally {
+      if (acquired) {
+        const warnings = await cleanupRuntime(currentJob);
+        await mutateJob((job) => ({ ...job, ...priorWorker, cleanupPending: warnings.length > 0 || priorWorker.cleanupPending === true,
+          cleanupWarnings: priorWorker.cleanupWarnings?.length || warnings.length ? [...new Set([...(priorWorker.cleanupWarnings || []), ...warnings])] : undefined,
+          lastCleanupAt: new Date().toISOString() }));
+      }
+    }
+  });
+}
+
+if (process.argv[3] === "--recollect") {
+  try { await runRecollection(); }
+  catch (error) { console.error(redactTransportSecrets(error.message || String(error))); process.exitCode = 1; }
+} else await run();

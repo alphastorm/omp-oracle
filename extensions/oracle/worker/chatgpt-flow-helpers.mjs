@@ -1,11 +1,38 @@
 // Purpose: Provide pure provider conversation-state helpers used by the oracle worker.
-// Responsibilities: Slice assistant snapshot regions, normalize URLs, and track stable conversation URL observations.
+// Responsibilities: Slice assistant snapshots, count composer attachments, normalize URLs, and track stable conversation URLs.
 // Scope: Pure worker flow logic only; browser I/O and polling loops stay in run-job.mjs.
 // Usage: Imported by run-job.mjs and sanity tests to validate conversation-state heuristics without driving a browser.
 // Invariants/Assumptions: Snapshot text comes from agent-browser `snapshot -i`; URL inputs may be malformed and must fail safely.
 
 /** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleStableValueState} OracleStableValueState */
 /** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleSendAcceptanceState} OracleSendAcceptanceState */
+
+import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
+
+/** @param {string} snapshot @returns {boolean} */
+export function chatGptStreamingVisible(snapshot) {
+  return parseSnapshotEntries(snapshot).some((entry) => entry.kind === "button" && !entry.disabled
+    && /^(?:Stop answering|Stop streaming|Stop generating)$/.test(entry.label || ""));
+}
+
+/**
+ * Count nearby UI controls, not text lines: a multiline composer value can span hundreds of lines.
+ * @param {string} snapshot
+ * @param {string} fileLabel
+ * @param {string} composerLabel
+ * @returns {number}
+ */
+export function composerFileEntryCount(snapshot, fileLabel, composerLabel) {
+  const entries = parseSnapshotEntries(snapshot);
+  const composerIndex = entries.findLastIndex((entry) => entry.kind === "textbox" && entry.label === composerLabel);
+  if (composerIndex === -1) return 0;
+  let count = 0;
+  const end = Math.min(entries.length, composerIndex + 17);
+  for (let index = Math.max(0, composerIndex - 16); index < end; index += 1) {
+    if (entries[index].label === fileLabel) count += 1;
+  }
+  return count;
+}
 
 /**
  * @param {string} snapshot

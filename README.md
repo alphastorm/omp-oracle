@@ -248,6 +248,14 @@ Agent-facing tools:
   id/URL; omit it for the default fresh thread.
 - `oracle_read` — Agent callers can use `oracle_read({ jobId })` to read saved output in-turn.
   Failed jobs that callers must tell apart carry a stable `errorCode` next to `error`.
+  `generationStatus` and `collectionStatus` are separate: a completed turn can still be
+  `partial` with named required/optional gaps, and `response.capture.json` records the exact
+  turn binding, fidelity, source URLs, code blocks, and artifact inspection. Missing optional
+  files never erase the answer. `oracle_read({ jobId, action: "recollect" })` retries collection
+  of an already completed, exactly bound turn without submitting a prompt; jobs completed before
+  binding existed need the observed `responseIndex` and `messageId` together, and the latest turn
+  is never inferred. Recollection opens a fresh disposable browser session and keeps the earlier
+  usable output if it fails.
 - `oracle_cancel` — cancels a queued or active job by id.
 
 ## Example requests
@@ -341,8 +349,16 @@ alone, enables **Deep research** from the composer tools menu, verifies the pill
 attaches the archive, sends, and then reads the finished report out of ChatGPT's research widget.
 The widget is a cross-origin App iframe, so this works only on the **existing-Chrome relay**
 transport: before sending, the worker arms CDP frame capture on its own pinned tab, waits for the
-widget frame to attach, and polls it until `Research completed in …` appears; the report body is
-written to `response.md` with the widget's animated counters stripped and citation markers kept.
+widget frame to attach, and polls it until `Research completed in …` appears. It then collects
+the report's native **Export → Export to Markdown** file: the sandboxed widget delegates that
+download to the host page, so the worker pre-arms Chrome's download events and an object-URL
+registry on both the tab and the frame before activating the menu, accepts only a download that
+began in its own tab or the bound report frame, and validates the bytes against Chrome's declared
+size and the report title. The browser's download destination is never changed, so Chrome also
+keeps its own copy in your configured download directory. When the native file cannot be
+collected the job still completes with the derived Markdown and an optional
+`native_markdown_export` gap; use `oracle_read({ jobId, action: "recollect" })` rather than
+resubmitting research.
 Runs take minutes (the completion timeout is 90 minutes by default) and hold the tab the whole time.
 Failures are named: `deep_research_clarification_requested` when the model replies instead of
 starting research (the reply is in `error`; add "do not ask clarifying questions" to the prompt),

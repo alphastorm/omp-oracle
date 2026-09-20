@@ -105,12 +105,16 @@ export function isWorkerProcessAlive(pid: number | undefined, startedAt?: string
 }
 
 export interface OracleArtifactRecord {
+  candidateId?: string;
   displayName?: string;
   fileName?: string;
   sourcePath?: string;
   copiedPath?: string;
   url?: string;
   state?: number | string;
+  required?: boolean;
+  nativeMarkdown?: boolean;
+  nativeDownload?: { guid: string; frameId: string; source: "blob" | "data"; totalBytes: number; activation?: unknown };
   size?: number;
   sha256?: string;
   detectedType?: string;
@@ -175,6 +179,13 @@ export interface OracleJob {
   notifyClaimedAt?: string;
   notifyClaimedBy?: string;
   artifactFailureCount?: number;
+  generationStatus?: "completed";
+  collectionStatus?: "complete" | "partial" | "failed";
+  collectionBinding?: { conversationId: string; responseIndex: number; messageId?: string; turnSha256?: string; frameId?: string };
+  responseCapturePath?: string;
+  collectionRequiredMissing?: string[];
+  collectionOptionalMissing?: string[];
+  recollectionError?: string;
   error?: string;
   /** Stable machine-readable code for worker failures that callers must distinguish. */
   errorCode?: string;

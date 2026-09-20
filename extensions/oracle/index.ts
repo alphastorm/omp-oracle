@@ -81,7 +81,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
     get(target, property, receiver) {
       if (property === "registerTool") {
         return (definition: ProgrammaticToolDefinition) => {
-          if (definition.name === "oracle_preflight" || definition.name === "oracle_submit") {
+          if (definition.name === "oracle_preflight" || definition.name === "oracle_submit" || definition.name === "oracle_read") {
             programmaticTools.set(definition.name, definition);
           }
           return Reflect.apply(nativeRegisterTool, target, [definition]);
@@ -94,8 +94,9 @@ export default function oracleExtension(pi: ExtensionAPI) {
   registerOracleTools(capturingPi, workerPath, authWorkerPath);
   const preflightTool = programmaticTools.get("oracle_preflight");
   const submitTool = programmaticTools.get("oracle_submit");
-  if (!preflightTool || !submitTool) {
-    throw new Error("Pi Oracle did not register its programmatic preflight and submit tools");
+  const readTool = programmaticTools.get("oracle_read");
+  if (!preflightTool || !submitTool || !readTool) {
+    throw new Error("Pi Oracle did not register its programmatic preflight, submit, and read tools");
   }
   const abortSignal = new AbortController().signal;
   Object.defineProperty(globalThis, PROGRAMMATIC_API_SYMBOL, {
@@ -103,6 +104,8 @@ export default function oracleExtension(pi: ExtensionAPI) {
     enumerable: false,
     value: Object.freeze({
       version: 1 as const,
+      read: (ctx: ExtensionContext, params: { jobId: string; action?: "read" | "recollect"; responseIndex?: number; messageId?: string }) =>
+        readTool.execute(`oracle-read-${crypto.randomUUID()}`, params, abortSignal, () => undefined, ctx),
       preflight: (ctx: ExtensionContext) =>
         preflightTool.execute(
           `oracle-shadow-preflight-${crypto.randomUUID()}`,
