@@ -146,6 +146,7 @@ import { createArchiveForTesting, mergeArchiveEntryGroupsForTesting, resolveExpa
 import { getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools, resolveChatGptConversationReference } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
+import platformSmokeConfig from "../platform-smoke.config.mjs";
 import { runPollerSanitySuite } from "./oracle-sanity-poller-suite.ts";
 import { createCommandCtx, createExtensionCtx, createPiHarness, removeDirRobust, resetOracleStateDir } from "./oracle-sanity-support.ts";
 
@@ -3994,7 +3995,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:platform:macos"] === "node scripts/platform-smoke.mjs run --target macos", "package.json should expose the macOS Crabbox platform smoke gate");
   assert(pkg.scripts?.["smoke:platform:ubuntu"] === "node scripts/platform-smoke.mjs run --target ubuntu", "package.json should expose the Ubuntu Crabbox platform smoke gate");
   assert(pkg.scripts?.["smoke:platform:windows-native"] === "node scripts/platform-smoke.mjs run --target windows-native", "package.json should expose the Windows native Crabbox platform smoke gate");
-  assert(pkg.scripts?.["smoke:platform:all"] === "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native", "package.json should run the required macOS, Ubuntu, and Windows native Crabbox gates together after doctor");
+  assert(pkg.scripts?.["smoke:platform:all"] === `npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target ${platformSmokeConfig.requiredTargets.join(",")}`, "package.json should run every required Crabbox target together after doctor");
   assert(pkg.files?.includes("platform-smoke.config.mjs") && pkg.files?.includes("scripts/platform-smoke.mjs") && pkg.files?.includes("scripts/platform-smoke"), "package files should include the Crabbox platform smoke harness");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:platform-smoke"), "full local verification should include platform smoke syntax checks");
