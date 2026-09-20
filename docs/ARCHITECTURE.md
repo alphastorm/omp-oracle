@@ -15,7 +15,7 @@ Compatibility target:
 - current extension lifecycle only; no backward-compatibility shims for removed `session_switch` / `session_fork` events
 
 Verification: [Test plan](TEST_PLAN.md) for isolated-session smoke and the auth recovery drill;
-[`docs/PLATFORM_SMOKE.md`](PLATFORM_SMOKE.md) for the Crabbox macOS/Ubuntu/Windows gate
+[`docs/PLATFORM_SMOKE.md`](PLATFORM_SMOKE.md) for the Crabbox macOS/Ubuntu gate
 (`npm run smoke:platform:all`); [Release](RELEASE.md) for the full gate and evidence ledger.
 
 ## Goal

@@ -4,7 +4,9 @@
 export default {
   packageName: "omp-oracle",
   artifactRoot: ".artifacts/platform-smoke",
-  requiredTargets: ["macos", "ubuntu", "windows-native"],
+  // windows-native stays an available target, but the fork owns no Parallels template, so it is
+  // not release-required. Windows native is upstream-validated at pi-oracle 0.7.20 only.
+  requiredTargets: ["macos", "ubuntu"],
   requiredSuites: ["platform-build", "real-extension"],
   workflows: {
     everyday: {

@@ -16,6 +16,7 @@ history is kept below the divider.
 - moved repository, issue, and GitHub installation metadata to the alphastorm-maintained `omp-oracle` fork while retaining upstream history
 - restructured the README and `docs/` to match the other `omp-*` projects: architecture, security model, compatibility, operations, test plan, platform smoke, release, and upstream pages replace the previous design, validation, drill, and platform-smoke documents
 - restarted versioning at `0.1.0` for the `omp-oracle` package; this first release is based on upstream `pi-oracle` 0.7.20
+- made the Crabbox release gate require the macOS and Ubuntu targets only; `windows-native` remains an available target, but the fork owns no Parallels lane, so Windows native support is declared and upstream-validated rather than fork-qualified
 
 ### Fixed
 - made relay cleanup verify physical target removal and retain durable ownership when the driver omits or fails to close a live target

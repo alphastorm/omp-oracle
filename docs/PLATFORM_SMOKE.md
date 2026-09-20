@@ -1,6 +1,6 @@
 # OMP Oracle platform smoke gate
 
-`omp-oracle` uses Crabbox for the local release-blocking platform gate. The gate runs on macOS, Ubuntu Linux, and native Windows and is meant to catch broken package installs, platform assumptions, and real `pi` tool-call failures before push or publish.
+`omp-oracle` uses Crabbox for the local release-blocking platform gate. The gate runs on macOS and Ubuntu Linux and is meant to catch broken package installs, platform assumptions, and real `pi` tool-call failures before push or publish. Native Windows remains an available target for maintainers with the Parallels template, but it is not release-required: the fork owns no Windows lane, and Windows native support is upstream-validated at `pi-oracle` 0.7.20 only.
 
 ## Source of truth
 
@@ -11,7 +11,7 @@
 - Real runtime smoke: [`../scripts/oracle-real-smoke.mjs`](../scripts/oracle-real-smoke.mjs)
 - Artifact root: `.artifacts/platform-smoke/` (gitignored)
 
-Required targets: `macos`, `ubuntu`, `windows-native`.
+Required targets: `macos`, `ubuntu` (`requiredTargets` in the config is the single authority; `windows-native` is available but optional).
 Required suites: `platform-build`, `real-extension`.
 Crabbox baseline: `0.26.0` or newer.
 

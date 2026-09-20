@@ -332,7 +332,7 @@ upload accepted and 200 MiB + 1 byte rejected.
 | | Current contract |
 | --- | --- |
 | Hosts | Oh My Pi and `pi`; `pi` 0.80.9 is the validated upstream baseline. OMP 18.2.6 is observed loading the extension as upstream `pi-oracle@0.7.20` and resolving this checkout as `omp-oracle` (`omp install --dry-run`); no job has run through the fork's build on OMP yet |
-| Platforms | macOS, Linux, Windows native, Chromium-family browsers |
+| Platforms | macOS and Linux fork-qualified through the Crabbox gate; Windows native declared (`package.json` `os`) and upstream-validated at `pi-oracle` 0.7.20, not re-qualified by the fork; Chromium-family browsers |
 | Providers | ChatGPT (presets above), Grok (`heavy`) |
 | Transports | Isolated seed profile (both providers); existing-Chrome relay (ChatGPT only) |
 | Package | `omp-oracle` from this repository; not on npm yet |
@@ -386,8 +386,8 @@ npm run verify:oracle        # everyday local gate; `npm test` is an alias
 | Publish/release gate | `npm run release:check` |
 
 `npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`: the local gate,
-fresh live ChatGPT preset proof for every canonical preset, then doctor-first macOS, Ubuntu, and
-Windows native Crabbox evidence from packed installs. Isolated-session smoke tests and the auth
+fresh live ChatGPT preset proof for every canonical preset, then doctor-first macOS and Ubuntu
+Crabbox evidence from packed installs (Windows native stays an available target, not a required one). Isolated-session smoke tests and the auth
 recovery drill are in the [test plan](docs/TEST_PLAN.md); the Crabbox gate is in
 [`docs/PLATFORM_SMOKE.md`](docs/PLATFORM_SMOKE.md); the full flow and evidence ledger are in
 [Release](docs/RELEASE.md).

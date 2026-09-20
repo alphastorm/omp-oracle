@@ -21,7 +21,7 @@ A persisted session is required on every host. `--no-session` runs report oracle
 
 | Requirement | Value |
 | --- | --- |
-| Operating systems | macOS, Linux, Windows native (`package.json` `os`); the Crabbox gate covers macOS, Ubuntu, and Windows native |
+| Operating systems | macOS, Linux, Windows native (`package.json` `os`). The fork's Crabbox gate requires macOS and Ubuntu; Windows native is upstream-validated at `pi-oracle` 0.7.20 and not re-qualified by the fork, because the fork owns no Windows lane |
 | Node.js | 22.19.0 or newer to install and run (`engines`); the platform smoke and release validation expect Node 24+ (`platform-smoke.config.mjs`) |
 | Browser | Google Chrome, Chromium, or another Chromium-family browser |
 | Local tools | `agent-browser` (0.35.0 or newer for relay mode) and `tar`; `zstd` for ChatGPT `.tar.zst` archives; `cp` on PATH or `PI_ORACLE_CP_PATH` for macOS APFS clone mode; Linux encrypted cookies may need `secret-tool` (GNOME) or `kwallet-query` + `dbus-send` (KDE) unless a safe-storage password override is set |
@@ -49,6 +49,9 @@ Known limits are part of the claim; read them before installing.
   not carry this fork's commits. Install from the GitHub URL or a local checkout until
   `omp-oracle` is published; do not keep both installed at once, or `/oracle` commands and
   `oracle_*` tools register twice.
+- **Windows native is declared, not fork-qualified.** The fork owns no Parallels lane, so the
+  release gate requires macOS and Ubuntu only; Windows native support rests on upstream's
+  `pi-oracle` 0.7.20 validation until a Windows lane exists.
 - **Fork changes are not yet matrix-qualified.** The relay transport and OMP host compatibility
   are covered by unit and sanity tests and by the observed OMP preflight above; the Crabbox
   platform matrix and the ChatGPT preset proof have not been re-run under the `omp-oracle` name.

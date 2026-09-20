@@ -8,7 +8,7 @@ the question; the full gate lives in [Release](RELEASE.md).
 | Local gate | `npm run verify:oracle` | Syntax and bundle checks, helper unit tests, both typechecks, the isolated sanity harness (config, locks, queueing, worker, tool schemas, documentation contracts), and `npm pack --dry-run` |
 | Isolated `pi` session smoke | [below](#isolated-pi-session-smoke) | The local extension loads through the real `pi` CLI; whole-repo archives exclude local tool state; symlink escapes are rejected; exercised agents give candid feedback |
 | Auth recovery drill | [below](#auth-recovery-drill) | A broken auth seed fails as a clean auth error, `/oracle-auth` repairs it, and the next job succeeds |
-| Platform matrix | [`docs/PLATFORM_SMOKE.md`](PLATFORM_SMOKE.md) | Packed install, load, and `oracle_submit` on macOS, Ubuntu, and Windows native through Crabbox |
+| Platform matrix | [`docs/PLATFORM_SMOKE.md`](PLATFORM_SMOKE.md) | Packed install, load, and `oracle_submit` on macOS and Ubuntu through Crabbox (Windows native available, not required) |
 | ChatGPT preset proof | `npm run release:proof:chatgpt-presets` | Fresh loaded-extension jobs for every canonical preset |
 
 Companion docs: [Architecture](ARCHITECTURE.md) · [Operations](OPERATIONS.md) ·

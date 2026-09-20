@@ -44,9 +44,10 @@ Crabbox harness code, or anything that may differ across macOS, Linux, and Windo
    isolated sanity harness, and `npm pack --dry-run`.
 2. `npm run release:proof:chatgpt-presets` — fresh live ChatGPT preset proof for every canonical
    preset through the loaded extension.
-3. `npm run smoke:platform:all` — doctor-first macOS, Ubuntu, and Windows native Crabbox suites
-   (`platform-build` and `real-extension`) using packed-install proof, not source-tree `pi -e`
-   loading.
+3. `npm run smoke:platform:all` — doctor-first macOS and Ubuntu Crabbox suites (`platform-build`
+   and `real-extension`) using packed-install proof, not source-tree `pi -e` loading.
+   `windows-native` is an available target but not release-required; see
+   [Compatibility](COMPATIBILITY.md#platforms-and-runtime).
 
 The order matches the release order: cheap harness checks, fresh live preset proof, doctor,
 full matrix, then artifact review.
@@ -102,8 +103,8 @@ Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS work
   from `node_modules/.bin/pi` inside the container, `pi list` showed `node_modules/omp-oracle`) and
   `real-extension` PASS (`run-1789871654549-uee638`) against `omp-oracle-platform-smoke:node24`.
 - OMP 18.2.6: `omp install --dry-run .` resolves the checkout as `omp-oracle`.
-- Not yet run by the fork: the macOS and Windows native Crabbox lanes, and the live ChatGPT
-  preset proof.
+- Not yet run by the fork: the macOS Crabbox lane and the live ChatGPT preset proof. The
+  Windows native lane is not release-required for the fork.
 
 ### Carried upstream evidence
 

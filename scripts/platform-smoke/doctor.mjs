@@ -181,12 +181,14 @@ export async function runDoctor(config) {
     compareVersions(versionLine, requiredVersion) >= 0 ? ok(`required version: ${requiredVersion}+`) : fail(`Crabbox version mismatch: need ${requiredVersion}+, got ${versionLine}`);
   }
   const providers = silent(cbox, ["providers"], { timeout: 30_000 }) ?? "";
-  for (const provider of ["ssh", "local-container", "parallels"]) {
+  const requiredTargets = config.requiredTargets ?? [];
+  const providerForTarget = { macos: "ssh", ubuntu: "local-container", "windows-native": "parallels" };
+  for (const provider of new Set(requiredTargets.map((target) => providerForTarget[target]).filter(Boolean))) {
     new RegExp(`^${provider}$`, "m").test(providers) ? ok(`provider available: ${provider}`) : fail(`crabbox providers missing ${provider}`);
   }
-  runCrabboxDoctor(cbox, "macOS static SSH", targetBaseArgs("macos", config), 120_000);
-  runCrabboxDoctor(cbox, "Windows native Parallels", targetBaseArgs("windows-native", config), 180_000);
-  runCrabboxDoctor(cbox, "local-container", targetBaseArgs("ubuntu", config), 120_000);
+  if (requiredTargets.includes("macos")) runCrabboxDoctor(cbox, "macOS static SSH", targetBaseArgs("macos", config), 120_000);
+  if (requiredTargets.includes("windows-native")) runCrabboxDoctor(cbox, "Windows native Parallels", targetBaseArgs("windows-native", config), 180_000);
+  if (requiredTargets.includes("ubuntu")) runCrabboxDoctor(cbox, "local-container", targetBaseArgs("ubuntu", config), 120_000);
 
   console.log("\n── Host tools ──");
   for (const [name, command] of [["Docker", "docker info --format '{{.ServerVersion}}'"], ["Node", "node --version"], ["npm", "npm --version"], ["git", "git --version"], ["tar", "tar --version"], ["rsync", "rsync --version"]]) {
@@ -198,7 +200,7 @@ export async function runDoctor(config) {
     const major = Number(nodeVersion.replace(/^v/, "").split(".")[0]);
     if (major < (config.nodeValidationMajor ?? 24)) fail(`Node ${nodeVersion}; need ${config.nodeValidationMajor ?? 24}+ for smoke validation`);
   }
-  verifyWindowsTemplate(config);
+  if (requiredTargets.includes("windows-native")) verifyWindowsTemplate(config);
 
   console.log("\n── Auth environment ──");
   const requiredAuth = requiredRealSmokeAuthEnv(config);
