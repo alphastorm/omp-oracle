@@ -16,6 +16,7 @@ session that asked gets one wake-up when it lands.
 **[Website](https://alphastorm.github.io/omp-oracle/)** · **[Changelog](CHANGELOG.md)**
 
 [![CI][ci-badge]][ci]
+[![npm][npm-badge]][npm]
 [![pi baseline][pi-badge]][compat]
 [![License][license-badge]][license]
 
@@ -23,6 +24,8 @@ session that asked gets one wake-up when it lands.
 [ci-badge]: https://img.shields.io/github/actions/workflow/status/alphastorm/omp-oracle/ci.yml?branch=main&label=CI&labelColor=0B0E11
 [compat]: docs/COMPATIBILITY.md
 [pi-badge]: https://img.shields.io/badge/pi%20baseline-0.80.9-1C232B?labelColor=0B0E11
+[npm]: https://www.npmjs.com/package/omp-oracle
+[npm-badge]: https://img.shields.io/npm/v/omp-oracle?label=npm&color=1C232B&labelColor=0B0E11
 [license]: LICENSE
 [license-badge]: https://img.shields.io/github/license/alphastorm/omp-oracle?color=1C232B&labelColor=0B0E11
 
@@ -33,9 +36,9 @@ secrets excluded from archives · results stay on disk · no telemetry</sub>
 
 > **Forked from [`fitchmultz/pi-oracle`](https://github.com/fitchmultz/pi-oracle) and renamed
 > `omp-oracle`.** Commands, tools, config, and saved jobs are unchanged; the fork adds an
-> existing-Chrome relay transport and Oh My Pi host compatibility. `pi-oracle` on npm is the
-> upstream package and does not carry these changes: install from this repository
-> ([below](#build-and-run)) and do not keep both installed.
+> existing-Chrome relay transport and Oh My Pi host compatibility. Install `omp-oracle`
+> ([below](#build-and-run)); `pi-oracle` on npm is the upstream package, does not carry these
+> changes, and must not stay installed alongside it.
 > [Upstream](docs/UPSTREAM.md) · [exact support and limits](docs/COMPATIBILITY.md).
 
 OMP Oracle is a local-first companion for Oh My Pi and `pi`. The host agent keeps control of
@@ -73,19 +76,21 @@ If the wake-up is missed, the result still lives on disk and can be read by job 
 On Oh My Pi:
 
 ```sh
-omp install https://github.com/alphastorm/omp-oracle
+omp install omp-oracle
 ```
 
 On `pi`:
 
 ```sh
-pi install https://github.com/alphastorm/omp-oracle
+pi install npm:omp-oracle
 ```
 
-`omp-oracle` is not published to npm yet; `pi-oracle` on npm is the upstream package. If you
-already have it, remove it first so `/oracle` and the `oracle_*` tools register once:
-`omp plugin uninstall pi-oracle` or `pi remove npm:pi-oracle`. To update a Git install, rerun the
-install with `--force` (OMP) or use `pi update --extensions`.
+`pi-oracle` on npm is the upstream package. If you already have it, remove it first so `/oracle`
+and the `oracle_*` tools register once: `omp plugin uninstall pi-oracle` or
+`pi remove npm:pi-oracle`. To follow the latest `main` instead of a release, install the GitHub
+URL (`omp install https://github.com/alphastorm/omp-oracle` or
+`pi install https://github.com/alphastorm/omp-oracle`); update a Git install by rerunning it with
+`--force` (OMP) or `pi update --extensions`.
 
 <details>
 <summary>Install from a local checkout</summary>
@@ -335,7 +340,7 @@ upload accepted and 200 MiB + 1 byte rejected.
 | Platforms | macOS and Linux fork-qualified through the Crabbox gate; Windows native declared (`package.json` `os`) and upstream-validated at `pi-oracle` 0.7.20, not re-qualified by the fork; Chromium-family browsers |
 | Providers | ChatGPT (presets above), Grok (`heavy`) |
 | Transports | Isolated seed profile (both providers); existing-Chrome relay (ChatGPT only) |
-| Package | `omp-oracle` from this repository; not on npm yet |
+| Package | `omp-oracle` on npm (first release `0.1.0`); the GitHub URL tracks `main` |
 
 Known limits are part of the claim:
 

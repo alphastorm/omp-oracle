@@ -51,16 +51,15 @@ Known limits are part of the claim; read them before installing.
   Older tier menus remain supported. The relay tab's composer keeps the last stop a job set.
 - **Experimental public beta.** Provider UI, auth, model controls, and artifact download behavior
   drift; release proof is re-run per release, not continuously.
-- **The `omp-oracle` name is not on npm yet.** `pi-oracle` on npm is the upstream package and does
-  not carry this fork's commits. Install from the GitHub URL or a local checkout until
-  `omp-oracle` is published; do not keep both installed at once, or `/oracle` commands and
-  `oracle_*` tools register twice.
+- **`pi-oracle` on npm is the upstream package**, not this fork; it must not stay installed
+  alongside `omp-oracle`, or `/oracle` commands and `oracle_*` tools register twice.
 - **Windows native is declared, not fork-qualified.** The fork owns no Parallels lane, so the
   release gate requires macOS and Ubuntu only; Windows native support rests on upstream's
   `pi-oracle` 0.7.20 validation until a Windows lane exists.
-- **Fork changes are not yet matrix-qualified.** The relay transport and OMP host compatibility
-  are covered by unit and sanity tests and by the observed OMP preflight above; the Crabbox
-  platform matrix and the ChatGPT preset proof have not been re-run under the `omp-oracle` name.
+- **Fork qualification covers what the release ledger names.** The relay transport and OMP host
+  compatibility are covered by unit and sanity tests, the live eight-preset ChatGPT proof through
+  the fork's build, and the macOS and Ubuntu Crabbox lanes recorded in the
+  [release ledger](RELEASE.md#fork-evidence-omp-oracle); nothing beyond those entries is claimed.
 - **A real ChatGPT or Grok web session is required** for the provider you use, in a local
   Chromium-family browser profile.
 - **Relay mode needs a capable relay.** Relay builds without `Target.getTargets` cannot serve

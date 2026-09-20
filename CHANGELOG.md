@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.1.0 - 2026-09-20
 
 ### Added
 - added an optional agent-scoped ChatGPT relay endpoint that drives one pinned, job-owned tab in an existing signed-in Chrome without copying cookies

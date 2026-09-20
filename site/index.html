@@ -89,10 +89,10 @@ saved to disk, and the session that asked gets one wake-up when it lands. Your o
 API key.</p>
 
 <div class="receipt">
-<strong>Install from the repository.</strong> <code>omp-oracle</code> is not on npm yet; <code>pi-oracle</code>
-on npm is the upstream package and does not carry this fork's changes.
-<pre><code>omp install https://github.com/alphastorm/omp-oracle   # Oh My Pi
-pi install https://github.com/alphastorm/omp-oracle    # pi</code></pre>
+<strong>Install.</strong> <code>pi-oracle</code> on npm is the upstream package and does not carry this
+fork's changes; remove it first if you have it.
+<pre><code>omp install omp-oracle        # Oh My Pi
+pi install npm:omp-oracle     # pi</code></pre>
 </div>
 
 <a class="cta" href="https://github.com/alphastorm/omp-oracle#build-and-run">Get started</a>
@@ -140,9 +140,8 @@ hosted control plane. Full model:
 <a href="https://github.com/fitchmultz/pi-oracle"><code>fitchmultz/pi-oracle</code></a> with an
 existing-Chrome relay transport and Oh My Pi host compatibility added. <code>pi</code> 0.80.9 is the
 validated upstream baseline; Oh My Pi 18.2.6 is observed loading the extension (upstream 0.7.20 build) and
-resolving this checkout as <code>omp-oracle</code>; no job has run through the fork's build on OMP yet. The
-fork's changes are covered by unit and sanity tests; the platform matrix and ChatGPT preset proof have not
-yet been re-run under the <code>omp-oracle</code> name. Evidence lives in the
+resolving this checkout as <code>omp-oracle</code>. The live ChatGPT proof for every preset and the Ubuntu
+packaged-install lane passed through the fork's build on 2026-09-20; the exact entries live in the
 <a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/RELEASE.md">release ledger</a>.</p>
 
 <h2>The OMP family</h2>

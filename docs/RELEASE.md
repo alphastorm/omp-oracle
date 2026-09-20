@@ -12,9 +12,9 @@ Companion docs: [Test plan](TEST_PLAN.md) · [Platform smoke](PLATFORM_SMOKE.md)
   its maintainer; it does not carry this fork's commits.
 - Version: the fork's own line, starting at `0.1.0`. It does not inherit upstream's `0.7.x`
   numbering; `0.1.0` is based on upstream `pi-oracle` 0.7.20 plus the changes listed under
-  `Unreleased` in [`CHANGELOG.md`](../CHANGELOG.md).
-- `omp-oracle` has not been published to npm yet. Until it is, the install path is the GitHub
-  URL or a local checkout ([README](../README.md#build-and-run)).
+  `0.1.0` in [`CHANGELOG.md`](../CHANGELOG.md).
+- `0.1.0` is the first `omp-oracle` release on npm. The GitHub URL install tracks `main`
+  ([README](../README.md#build-and-run)).
 - Runtime identifiers are unchanged by the rename: `/oracle*` commands, `oracle_*` tool names,
   `PI_ORACLE_*` environment variables, `/tmp/pi-oracle-state`, the job directory format, and the
   `omp.pi-oracle.programmatic.v1` bridge symbol.
@@ -108,8 +108,15 @@ Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS work
   composer (`Could not find model family control for instant`); after the slider driver landed,
   job `9d4012f3-e48b-45c7-93c6-66822b3fdd29` set `Instant (1 of 5)`, uploaded, and completed with
   both response markers in 40 s. Diagnostics: `.artifacts/ui-drift-2026-09-20/`.
-- Not yet run by the fork: the macOS Crabbox lane and the live ChatGPT preset proof. The
-  Windows native lane is not release-required for the fork.
+- Live eight-preset ChatGPT proof through the fork's build and the relay transport (2026-09-20,
+  `npm run release:proof:chatgpt-presets` accepted): `pro_standard` `61006224`, `pro_extended`
+  `d6b3b72a`, `thinking_light` `92c9871f`, `thinking_standard` `4afd8411`, `thinking_extended`
+  `9115eb5e`, `thinking_heavy` `7332f139`, `instant` `7b941e0c`, `instant_auto_switch`
+  `d3605d00`; every job completed with `PRESET <preset> OK` and `PACKAGE omp-oracle`, Pro
+  presets on the single `Pro` stop. The proof is re-run against the release commit before
+  publishing, because the checker binds jobs to the current HEAD.
+- The macOS Crabbox lane runs inside `npm run release:check` at publish time; the Windows native
+  lane is not release-required for the fork.
 
 ### Carried upstream evidence
 
