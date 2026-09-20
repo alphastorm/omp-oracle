@@ -39,7 +39,7 @@ function testPackedInstallCommandRendering() {
   assert.doesNotMatch(command, /npm test/, "platform-build should not run the full local iteration gate on every target");
   assert.match(command, /npm pack --silent/, "platform-build should pack the package");
   assert.match(command, /npm install --no-save/, "platform-build should install the packed tarball");
-  assert.match(command, /install -l \.\/node_modules\/pi-oracle/, "platform-build should install through pi's package path");
+  assert.match(command, new RegExp(`install -l \\./node_modules/${config.packageName}`), "platform-build should install through pi's package path");
   assert.doesNotMatch(command, /\bpi\s+(?:-e|--extension)\s+\./, "release proof must not use pi -e/--extension source shortcuts");
 }
 

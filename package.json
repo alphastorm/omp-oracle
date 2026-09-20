@@ -1,15 +1,20 @@
 {
-  "name": "pi-oracle",
+  "name": "omp-oracle",
   "version": "0.7.20",
-  "description": "ChatGPT and Grok web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
+  "description": "Asynchronous ChatGPT and Grok web-oracle jobs for Oh My Pi and pi: isolated browser auth, durable background jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
-  "author": "Mitch Fultz (https://github.com/fitchmultz)",
+  "author": "alphastorm (https://github.com/alphastorm)",
+  "contributors": [
+    "Mitch Fultz (https://github.com/fitchmultz)"
+  ],
   "type": "module",
   "keywords": [
     "pi-package",
     "pi",
     "pi-extension",
+    "omp",
+    "oh-my-pi",
     "extension",
     "chatgpt",
     "grok",

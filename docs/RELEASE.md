@@ -1,0 +1,215 @@
+# OMP Oracle release
+
+How a change becomes a published `omp-oracle` release, and the evidence ledger behind the
+current state. The gate is local and Crabbox-driven; hosted CI runs only the cheap local gate.
+
+Companion docs: [Test plan](TEST_PLAN.md) · [Platform smoke](PLATFORM_SMOKE.md) ·
+[Architecture](ARCHITECTURE.md) · [Upstream](UPSTREAM.md) · [Changelog](../CHANGELOG.md)
+
+## Package identity
+
+- npm name: `omp-oracle`. The `pi-oracle` package on npm is the upstream project published by
+  its maintainer; it does not carry this fork's commits.
+- Version: `package.json` tracks the upstream version the fork is based on (`0.7.20`) plus the
+  unreleased changes listed in [`CHANGELOG.md`](../CHANGELOG.md).
+- `omp-oracle` has not been published to npm yet. Until it is, the install path is the GitHub
+  URL or a local checkout ([README](../README.md#build-and-run)).
+- Runtime identifiers are unchanged by the rename: `/oracle*` commands, `oracle_*` tool names,
+  `PI_ORACLE_*` environment variables, `/tmp/pi-oracle-state`, the job directory format, and the
+  `omp.pi-oracle.programmatic.v1` bridge symbol.
+
+## Validation workflow
+
+Use the narrowest workflow that proves the change:
+
+| Situation | Command(s) |
+| --- | --- |
+| Everyday local iteration | `npm run verify:oracle` |
+| Platform-focused syntax/invariant sanity | `npm run check:platform-smoke`, `npm run sanity:oracle:platform` |
+| Platform-sensitive runtime changes | `npm run smoke:platform:doctor`, then a focused `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` |
+| Platform matrix proof | `npm run smoke:platform:all` |
+| ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` |
+| Publish/release gate | `npm run release:check` |
+
+`npm test` runs `npm run verify:oracle`; it is not a separate gate. Platform-sensitive changes
+include archive behavior, process cleanup, runtime/browser profile handling, package metadata,
+Crabbox harness code, or anything that may differ across macOS, Linux, and Windows.
+
+## Release gate
+
+`npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`:
+
+1. `npm run verify:oracle` — syntax and bundle checks, helper unit tests, both typechecks, the
+   isolated sanity harness, and `npm pack --dry-run`.
+2. `npm run release:proof:chatgpt-presets` — fresh live ChatGPT preset proof for every canonical
+   preset through the loaded extension.
+3. `npm run smoke:platform:all` — doctor-first macOS, Ubuntu, and Windows native Crabbox suites
+   (`platform-build` and `real-extension`) using packed-install proof, not source-tree `pi -e`
+   loading.
+
+The order matches the release order: cheap harness checks, fresh live preset proof, doctor,
+full matrix, then artifact review.
+
+### ChatGPT preset proof
+
+Before a release, run live jobs through the loaded extension for every ChatGPT preset in
+`ORACLE_SUBMIT_PRESETS`. Each prompt must make the saved response contain the exact markers
+`PRESET <preset> OK` and `PACKAGE omp-oracle`. After every job has completed, save the job
+ids/job directories in `.artifacts/chatgpt-preset-proof/latest.json`; `validatedAt` must be
+later than the completed jobs. Start from the checked, intentionally non-valid template:
+
+```bash
+mkdir -p .artifacts/chatgpt-preset-proof
+node scripts/oracle-chatgpt-preset-proof.mjs template > .artifacts/chatgpt-preset-proof/latest.json
+npm run release:proof:chatgpt-presets
+```
+
+The checker fails if the proof is missing, stale, tied to a different package name, version, or
+git head, references jobs that completed before the current commit, or lacks actual persisted
+ChatGPT `.tar.zst` job state and response text for any canonical preset.
+
+Ordinary pre-commit smoke runs can use `instant` or `thinking_light`; release proof must cover
+every canonical preset through the loaded extension.
+
+### Real runtime suite defaults
+
+The real runtime suite defaults to deterministic installed-tool execution so platform proof
+stays bounded. Provider/model defaults remain `zai/glm-5.2` for doctor/config and optional
+model-agent debugging; override with `PI_ORACLE_REAL_TEST_PROVIDER` and
+`PI_ORACLE_REAL_TEST_MODEL`. For inner-loop source loading only, use `npm run smoke:real:source`;
+it is not release proof. Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower
+model-agent path. The optional second real-agent negative symlink check is opt-in via
+`PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1`; `npm run sanity:oracle` covers archive/symlink rejection
+by default.
+
+## Evidence ledger
+
+The entries below are carried from the upstream `pi-oracle` design document. They were recorded
+against the upstream package identity and the Pi baseline named in each entry, on the upstream
+maintainer's machines. The fork has not yet re-run the platform matrix or the preset proof under
+the `omp-oracle` name; what has been observed on Oh My Pi is recorded in
+[Compatibility](COMPATIBILITY.md#hosts).
+
+### Current implementation status
+
+Implemented in code for the pivot and concurrency redesign:
+
+- config now uses `browser.*` + `auth.*`
+- `/oracle-auth` now syncs real-Chrome ChatGPT cookies into the authenticated seed profile instead of opening a manual-login browser
+- `oracle_submit` supports follow-ups via persisted `chatUrl`
+- job state no longer stores CDP verification fields
+- workers now run with per-job runtime sessions and per-job runtime profile clones
+- runtime admission is controlled by runtime leases and `browser.maxConcurrentJobs`
+- queued jobs are workerless and do not consume runtime or conversation leases until promotion
+- follow-up jobs now acquire conversation leases
+- persisted job state now records explicit lifecycle phases instead of relying only on coarse statuses
+- poller notifications now use per-job notification claims rather than broad global scan serialization
+- worker now uses a structured ChatGPT page-state classifier
+- worker now downloads artifacts directly with `agent-browser download <ref> <dest>`
+- poller scans are now best-effort/non-fatal with per-session in-flight guards
+- worker heartbeats during artifact downloads, writes artifact manifests incrementally, and reopens the saved conversation before artifact capture/download
+- artifact-only responses are treated as valid completion content
+- the repo now includes a repeatable sanity harness: `npm run sanity:oracle`
+- the repo now includes a safe expired-auth recovery drill: [`docs/TEST_PLAN.md`](TEST_PLAN.md)
+- worker closes the isolated browser, removes the runtime profile, and releases leases in `finally`
+
+Retained from the earlier MVP:
+
+- `/oracle`, `/oracle-followup`, `/oracle-read`, `/oracle-status`, `/oracle-cancel`, `/oracle-clean`
+- `oracle_auth`, `oracle_submit`, `oracle_read`, `oracle_cancel`
+- detached background worker model
+- `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` state layout
+- shell-safe archive creation using tar streams: `zstd` compression for ChatGPT and gzip compression for Grok
+- private permissions and atomic writes
+- stale-worker reconciliation
+- upload ordering: attach → confirm → fill → send
+- current-turn response anchoring
+- plain-text canonical response extraction
+- wake-the-agent poller integration
+- unique archive filenames per job
+- worker PID identity checks using recorded process start time
+- composer-scoped upload confirmation
+- stable `chatUrl` capture after send
+- redacted `oracle_read` details and same-project job scoping
+- serialized poller scans
+
+### Live validation status
+
+Live-validated after the concurrency redesign:
+
+- `/oracle-auth` happy path still works against the seed profile
+- headless normal oracle runs still work using per-job runtime clones
+- two concurrent runs in different projects work with isolated runtimes
+- two concurrent runs in the same project but different `pi` sessions work when they target different conversations
+- same-conversation concurrent follow-up rejection works and fails fast with a clear lease error
+- runtime profile cleanup works on completion and cancellation
+- runtime/conversation lease cleanup works on completion and cancellation
+- global browser args overrides (for example `--disable-gpu`) apply to real jobs
+- artifact-producing runs work with direct `download <ref> <dest>`
+- multi-artifact runs complete, target the correct `pi` session, and persist both downloaded files with correct contents
+- the poller no longer needs the worker to stay alive just to observe completion for artifact-producing runs
+- expired/missing auth now fails as a clean auth-related error instead of generic UI/config drift
+- `/oracle-auth` repairs the seed profile and a post-repair probe succeeds again
+- live auth recovery also exposed and corrected a real source-profile misconfiguration during validation; the configured browser profile must actually contain the active ChatGPT session cookies
+
+### Known remaining work
+
+Still to verify live after this pivot:
+
+- full ChatGPT preset release matrix evidence must be refreshed before any release; `npm run release:proof:chatgpt-presets` blocks release without one completed loaded-extension ChatGPT job for every canonical preset
+- optional richer terminal semantics for partial artifact failure (`complete_with_artifact_errors`) in more live scenarios
+
+### Production readiness criteria
+
+This architecture is now live-validated for the core release path:
+
+- no interaction with the user’s real Chrome during normal jobs
+- no focus disruption during normal jobs
+- the seed profile survives browser restarts and can be cloned into runtime profiles repeatedly
+- different projects / sessions can run in parallel without co-mingled data
+- same-conversation follow-ups are rejected while another job owns that conversation lease
+- artifact capture works without `chrome://downloads`
+- artifact-only responses and multi-artifact responses both complete correctly
+- same-thread follow-ups reopen correctly from persisted `chatUrl`
+- failure modes are clearly classified as auth / challenge / outage / UI drift
+- expired/missing auth now fails cleanly, `/oracle-auth` repairs the seed profile, and the post-repair probe succeeds again
+
+#### Current readiness summary
+
+Current release blockers for the validated scope:
+- release is blocked until fresh loaded-extension ChatGPT preset proof passes `npm run release:proof:chatgpt-presets` for every canonical `ORACLE_SUBMIT_PRESETS` id
+
+Remaining non-blocking hardening work:
+- broaden live proof of the new lifecycle/state-machine model across more degraded paths
+- broaden live proof of notification-claim semantics under more concurrent completions
+- extend regression-harness coverage for browser/download failure classes
+- polish partial-artifact terminal semantics (`complete_with_artifact_errors`)
+- keep hardening model-selection verification against future ChatGPT UI variation
+
+Recent proof points:
+- Pi 0.80.7 local gate: `npm run verify:oracle` passed on 2026-07-14, including syntax/bundle checks, both typechecks, the isolated sanity harness, and `npm pack --dry-run`
+- Pi 0.80.7 safe loader smokes: `.artifacts/real-smoke/run-1784068526377-67yb2l` passed source loading, and `.artifacts/real-smoke/run-1784068527234-t2a5xm` passed packed-install loading through the real Pi CLI; both executed `/oracle-status` without creating an external oracle job or requiring provider credentials
+- Pi 0.80.6 local gate: `npm run verify:oracle` passed three consecutive runs on 2026-07-11; each run completed syntax/bundle checks, both typechecks, the isolated sanity harness, and `npm pack --dry-run` without an `ENOTEMPTY` cleanup failure
+- Pi 0.80.6 safe loader smokes: `.artifacts/real-smoke/run-1783810473367-cn72at` passed source loading, and `.artifacts/real-smoke/run-1783810475290-hj0pfs` passed packed-install loading through the real Pi CLI; both recorded `pi --version` as 0.80.6 and executed `/oracle-status` without creating an external oracle job or requiring provider credentials
+- Pi 0.80.2 local gate: `npm run verify:oracle` passed on 2026-06-24 after the JSON command output, prompt-manifest, schema, and lazy Chrome-probe audit fixes
+- Pi 0.80.2 isolated extension smokes: `.artifacts/real-smoke/run-1782321054924-jnq0x3` passed source proof, and `.artifacts/real-smoke/run-1782321056224-yuq5a2` passed packed-install proof
+- Pi 0.80.2 JSON command smoke: `pi --no-extensions -e ./extensions/oracle/index.ts --mode json --no-session --no-approve "/oracle-status"` emitted displayed `oracle-command-output` JSON events
+- Pi 0.79.10 local gate: `npm run verify:oracle` passed on 2026-06-22 after the 0.79.10 baseline refresh and `CONFIG_DIR_NAME` cleanup
+- Pi 0.79.10 isolated extension smokes: `.artifacts/real-smoke/run-1782137209549-0xe67z` passed packed-install proof, and `.artifacts/real-smoke/run-1782137217821-95a1po` passed source model-agent proof
+- Pi 0.79.10 platform artifacts: `.artifacts/platform-smoke/run-1782137574391-7lay68` (macOS platform-build), `.artifacts/platform-smoke/run-1782137619352-gku7jz` (macOS real-extension), `.artifacts/platform-smoke/run-1782137587082-d7kg4p` (Ubuntu platform-build), `.artifacts/platform-smoke/run-1782137619176-lgxezy` (Ubuntu real-extension), `.artifacts/platform-smoke/run-1782137625964-66z0oc` (Windows native platform-build), `.artifacts/platform-smoke/run-1782137752969-pbmdj1` (Windows native real-extension)
+- Pi 0.79.10 isolated agent feedback: `.artifacts/isolated-agent-feedback/run-1782137385` confirmed local extension loading and useful `oracle_preflight` output after the path-label polish
+- Pi 0.79.1 release gate: `npm run release:check` passed on 2026-06-11 after the project-trust, prompt-history, ChatGPT selector, and send-acceptance updates, including `verify:oracle` plus Crabbox macOS, Ubuntu, and Windows native `platform-build` and `real-extension` suites
+- Pi 0.79.1 platform artifacts: `.artifacts/platform-smoke/run-1781196218405-311wzs` (macOS platform-build), `.artifacts/platform-smoke/run-1781196261807-eb0391` (macOS real-extension), `.artifacts/platform-smoke/run-1781196230636-ze1hai` (Ubuntu platform-build), `.artifacts/platform-smoke/run-1781196265638-kxiwh9` (Ubuntu real-extension), `.artifacts/platform-smoke/run-1781196255488-ucuf35` (Windows native platform-build), `.artifacts/platform-smoke/run-1781196369098-4qlzjs` (Windows native real-extension)
+- Pi 0.79.1 live source-extension send-acceptance smoke: new-chat job `4b98776f-d422-4bfb-8a6a-7aef73c31bf6` reached `https://chatgpt.com/c/6a2ac99d-fc5c-83e8-88d7-5e1e8f427499` and completed; same-thread follow-up job `abb4f590-96a1-4aab-b91a-c0a7cc15a162` completed on the unchanged conversation URL after send-acceptance evidence
+- Pi 0.79.0 release gate: `npm run release:check` passed on 2026-06-08, including `verify:oracle` plus Crabbox macOS, Ubuntu, and Windows native `platform-build` and `real-extension` suites
+- Pi 0.79.0 platform artifacts: `.artifacts/platform-smoke/run-1780938522145-50q2f2` (macOS platform-build), `.artifacts/platform-smoke/run-1780938572090-bi87g5` (macOS real-extension), `.artifacts/platform-smoke/run-1780938542847-quridb` (Ubuntu platform-build), `.artifacts/platform-smoke/run-1780938587248-c8uo4c` (Ubuntu real-extension), `.artifacts/platform-smoke/run-1780938585007-l0xapp` (Windows native platform-build), `.artifacts/platform-smoke/run-1780938820527-c1j8tt` (Windows native real-extension)
+- Pi 0.79.0 isolated local-extension model-agent smoke: `.artifacts/real-smoke/run-1780935835596-pfbn5o` passed with `PI_ORACLE_REAL_TEST_MODEL_AGENT=1 npm run smoke:real:source`
+- Pi 0.79.0 packed-install smoke: `.artifacts/real-smoke/run-1780935825537-pmna07` passed with `npm run smoke:real:packed`
+- expired-auth drill fail path: `a2460bc1-7d89-4041-b67d-39680d310325`
+- `/oracle-auth` repair evidence: the per-run `/tmp/pi-oracle-auth-*/oracle-auth.log` bundle path printed by `/oracle-auth`
+- expired-auth drill post-repair success: `fa26a2a7-0057-4a21-b3e0-71c1d020facf`
+- successful multi-artifact completion: `b6b3599c-6b91-4315-adfa-8a83aa5eda9b`
+- repo-owned sanity harness: `npm run sanity:oracle`
+- real installed-extension smoke source of truth: `scripts/oracle-real-smoke.mjs`; required release proof runs packed-install mode (`npm run smoke:real:packed`), asserts Pi 0.80.9, and executes `/oracle-status` through Pi's installed-package loader without provider credentials or an external oracle job; optional slower model-agent submission debugging remains behind `PI_ORACLE_REAL_TEST_MODEL_AGENT=1`; source mode (`npm run smoke:real:source`) is inner-loop/debug only
+- macOS, Ubuntu, and Windows native package/build/runtime smoke source of truth: [`docs/PLATFORM_SMOKE.md`](PLATFORM_SMOKE.md); use `npm run verify:oracle` for everyday local iteration, `npm run smoke:platform:doctor` plus a focused target/suite run for platform-sensitive changes, `npm run smoke:platform:all` for doctor-first platform matrix evidence, and `npm run release:check` for the full local-plus-platform release gate
+- release gate: `npm run release:check`, also used by `prepublishOnly`, combines static verification, fresh loaded-extension ChatGPT preset proof via `npm run release:proof:chatgpt-presets`, and all required Crabbox platform smokes

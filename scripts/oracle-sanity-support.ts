@@ -437,7 +437,7 @@ export async function createJobForTest(
     jobId,
     {
       prompt: "sanity",
-      files: ["docs/ORACLE_DESIGN.md"],
+      files: ["docs/ARCHITECTURE.md"],
       selection: resolveOracleSubmitPreset(preset),
       requestSource: options?.requestSource ?? "tool",
       followUpToJobId: options?.followUpToJobId,

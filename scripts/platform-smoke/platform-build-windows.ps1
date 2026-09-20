@@ -1,5 +1,5 @@
 param(
-  [string]$PackageName = "pi-oracle",
+  [string]$PackageName = "omp-oracle",
   [int]$NodeValidationMajor = 24
 )
 
@@ -20,7 +20,7 @@ function Write-SectionFile {
   Write-Output "--- $Name END ---"
 }
 
-Write-Output "Starting pi-oracle platform-build in $(Get-Location) at $(Get-Date -Format o)"
+Write-Output "Starting $PackageName platform-build in $(Get-Location) at $(Get-Date -Format o)"
 $SourceRoot = (Get-Location).Path
 $RunRoot = Join-Path $SourceRoot (Join-Path ".platform-smoke-runs" ("platform-build-" + (Get-Date -Format "yyyyMMddTHHmmssZ") + "-" + $PID))
 $PackDir = Join-Path $RunRoot "pack"

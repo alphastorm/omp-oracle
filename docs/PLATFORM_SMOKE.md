@@ -1,6 +1,6 @@
-# pi-oracle Crabbox platform smoke
+# OMP Oracle platform smoke gate
 
-`pi-oracle` uses Crabbox for the local release-blocking platform gate. The gate runs on macOS, Ubuntu Linux, and native Windows and is meant to catch broken package installs, platform assumptions, and real `pi` tool-call failures before push or publish.
+`omp-oracle` uses Crabbox for the local release-blocking platform gate. The gate runs on macOS, Ubuntu Linux, and native Windows and is meant to catch broken package installs, platform assumptions, and real `pi` tool-call failures before push or publish.
 
 ## Source of truth
 
@@ -14,6 +14,8 @@
 Required targets: `macos`, `ubuntu`, `windows-native`.
 Required suites: `platform-build`, `real-extension`.
 Crabbox baseline: `0.26.0` or newer.
+
+Companion docs: [Test plan](TEST_PLAN.md) · [Release](RELEASE.md)
 
 ## Required local setup
 
@@ -30,7 +32,7 @@ crabbox providers
 Target setup:
 
 - macOS: Remote Login enabled; noninteractive `ssh $USER@localhost` works; `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` are on the SSH PATH.
-- Ubuntu: Docker is running and the configured image (`PI_ORACLE_SMOKE_UBUNTU_IMAGE`, default `pi-oracle-platform-smoke:node24`) has `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` on PATH. Build the local image when needed with `docker build -t pi-oracle-platform-smoke:node24 -f scripts/platform-smoke/Dockerfile.ubuntu .`.
+- Ubuntu: Docker is running and the configured image (`PI_ORACLE_SMOKE_UBUNTU_IMAGE`, default `omp-oracle-platform-smoke:node24`) has `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` on PATH. Build the local image when needed with `docker build -t omp-oracle-platform-smoke:node24 -f scripts/platform-smoke/Dockerfile.ubuntu .`.
 - Windows native: Parallels has stopped source VM `pi-extension-windows-template` and the configured power-off snapshot (`crabbox-ready` by default for this repo). The template must have OpenSSH, PowerShell, Git, Node/npm, `tar`, `zstd`, and `agent-browser` on PATH. Do not bake API keys, browser sessions, project checkouts, `.pi` state, artifacts, or secrets into the template.
 
 Real runtime suite auth:
@@ -91,9 +93,9 @@ On each required target, `platform-build`:
 5. runs `npm pack`;
 6. creates a fresh target-local pi project;
 7. runs `npm install --no-save <packed tarball>`;
-8. runs `pi install -l ./node_modules/pi-oracle --approve` so Pi 0.79+ project-trust gating intentionally trusts the temporary fixture;
+8. runs `pi install -l ./node_modules/omp-oracle --approve` so Pi 0.79+ project-trust gating intentionally trusts the temporary fixture;
 9. runs `pi list --approve`;
-10. asserts the installed package came from `node_modules/pi-oracle` and did not use `pi -e` / source-extension shortcuts.
+10. asserts the installed package came from `node_modules/omp-oracle` and did not use `pi -e` / source-extension shortcuts.
 
 ## What `real-extension` proves
 
@@ -101,7 +103,7 @@ On each required target, `platform-build`:
 
 1. packs this checkout with `npm pack`;
 2. installs the tarball into a clean pi project;
-3. runs `pi install -l ./node_modules/pi-oracle --approve`;
+3. runs `pi install -l ./node_modules/omp-oracle --approve`;
 4. asserts `pi list --approve` shows the packed install path;
 5. executes `oracle_submit` from the installed package path, not source `pi -e`;
 6. asserts whole-project archive creation and default exclusions.

@@ -906,7 +906,7 @@ export async function cancelOracleJob(id: string, reason = "Cancelled by user"):
 
 function readExtensionProvenance(cwd: string): OracleExtensionProvenance {
   const sourcePath = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
-  let packageName = "pi-oracle";
+  let packageName = "omp-oracle";
   let packageVersion = "unknown";
   try {
     const packageJson = JSON.parse(readFileSync(join(sourcePath, "package.json"), "utf8")) as { name?: string; version?: string };

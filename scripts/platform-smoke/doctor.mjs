@@ -1,4 +1,4 @@
-// Preflight checks for the pi-oracle Crabbox platform smoke gate.
+// Preflight checks for the omp-oracle Crabbox platform smoke gate.
 
 import { execFileSync, execSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
@@ -71,7 +71,7 @@ function targetBaseArgs(targetName, config) {
     return ["--provider", "ssh", "--target", "macos", "--static-host", host, "--static-user", user, "--static-port", "22", "--static-work-root", workRoot];
   }
   if (targetName === "ubuntu") {
-    const image = env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24";
+    const image = env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "omp-oracle-platform-smoke:node24";
     return ["--provider", "local-container", "--target", "linux", "--local-container-image", image];
   }
   const vm = windowsVmName(config);
@@ -165,7 +165,7 @@ export async function runDoctor(config) {
   ok(`Crabbox binary = ${resolveCommand(cbox) ?? cbox}${env("PI_ORACLE_SMOKE_CRABBOX") || env("PLATFORM_SMOKE_CRABBOX") ? " (env override)" : " (PATH)"}`);
   ok(`PI_ORACLE_SMOKE_MAC_HOST = ${env("PI_ORACLE_SMOKE_MAC_HOST") || env("PLATFORM_SMOKE_MAC_HOST") || "localhost"}`);
   ok(`PI_ORACLE_SMOKE_MAC_USER = ${env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER")}`);
-  ok(`PI_ORACLE_SMOKE_UBUNTU_IMAGE = ${env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24"}`);
+  ok(`PI_ORACLE_SMOKE_UBUNTU_IMAGE = ${env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "omp-oracle-platform-smoke:node24"}`);
   ok(`PI_ORACLE_SMOKE_WINDOWS_VM = ${windowsVmName(config)}`);
   ok(`PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT = ${windowsSnapshotName(config)}`);
 

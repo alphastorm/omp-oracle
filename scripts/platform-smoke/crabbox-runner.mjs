@@ -1,5 +1,5 @@
 /**
- * Thin Crabbox CLI wrapper for pi-oracle's local platform smoke targets.
+ * Thin Crabbox CLI wrapper for omp-oracle's local platform smoke targets.
  */
 
 import { spawn } from "node:child_process";
@@ -60,7 +60,7 @@ export function buildTargetBaseArgs(targetName, config = {}) {
     case "macos": {
       const host = env("PI_ORACLE_SMOKE_MAC_HOST") || env("PLATFORM_SMOKE_MAC_HOST") || "localhost";
       const user = env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER");
-      const workRoot = env("PI_ORACLE_SMOKE_MAC_WORK_ROOT") || env("PLATFORM_SMOKE_MAC_WORK_ROOT") || `/Users/${env("USER")}/crabbox/${config.packageName ?? "pi-oracle"}`;
+      const workRoot = env("PI_ORACLE_SMOKE_MAC_WORK_ROOT") || env("PLATFORM_SMOKE_MAC_WORK_ROOT") || `/Users/${env("USER")}/crabbox/${config.packageName ?? "omp-oracle"}`;
       return [
         "--provider", "ssh",
         "--target", "macos",
@@ -71,7 +71,7 @@ export function buildTargetBaseArgs(targetName, config = {}) {
       ];
     }
     case "ubuntu": {
-      const image = env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24";
+      const image = env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "omp-oracle-platform-smoke:node24";
       return [
         "--provider", "local-container",
         "--target", "linux",
@@ -82,7 +82,7 @@ export function buildTargetBaseArgs(targetName, config = {}) {
       const vm = env("PI_ORACLE_SMOKE_WINDOWS_VM") || env("PLATFORM_SMOKE_WINDOWS_VM") || config.windowsParallels?.sourceVm || "pi-extension-windows-template";
       const snapshot = env("PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT") || env("PLATFORM_SMOKE_WINDOWS_SNAPSHOT") || config.windowsParallels?.snapshot || "crabbox-ready";
       const user = env("PI_ORACLE_SMOKE_WINDOWS_USER") || env("PLATFORM_SMOKE_WINDOWS_USER") || env("USER");
-      const workRoot = env("PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT") || env("PLATFORM_SMOKE_WINDOWS_WORK_ROOT") || `C:\\crabbox\\${config.packageName ?? "pi-oracle"}`;
+      const workRoot = env("PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT") || env("PLATFORM_SMOKE_WINDOWS_WORK_ROOT") || `C:\\crabbox\\${config.packageName ?? "omp-oracle"}`;
       return [
         "--provider", "parallels",
         "--target", "windows",

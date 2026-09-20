@@ -1,4 +1,4 @@
-// @rust-exception rationale: pi-oracle sanity coverage imports TypeScript extension modules directly; rewriting this harness in Rust would block exercising the platform-native Pi extension surface.
+// @rust-exception rationale: omp-oracle sanity coverage imports TypeScript extension modules directly; rewriting this harness in Rust would block exercising the platform-native Pi extension surface.
 // Purpose: Run local regression checks for the pi oracle extension.
 // Responsibilities: Exercise config, locking, queueing, worker, tool schema, and documentation contracts without remote CI.
 // Scope: Sanity-test orchestration only; production behavior remains in extensions/oracle and prompts/docs.
@@ -555,7 +555,7 @@ async function createJobForTest(
     jobId,
     {
       prompt: "sanity",
-      files: ["docs/ORACLE_DESIGN.md"],
+      files: ["docs/ARCHITECTURE.md"],
       selection: resolveOracleSubmitPreset(preset),
       requestSource: options?.requestSource ?? "tool",
       followUpToJobId: options?.followUpToJobId,
@@ -570,7 +570,7 @@ async function createJobForTest(
   const created = readJob(jobId);
   assert(created, "test job should exist after creation");
   assert(created.extensionProvenance?.schemaVersion === 1, "created oracle jobs should record extension provenance for release proof");
-  assert(created.extensionProvenance?.packageName === "pi-oracle", "extension provenance should record the package name");
+  assert(created.extensionProvenance?.packageName === "omp-oracle", "extension provenance should record the package name");
   assert(created.extensionProvenance?.sourcePath === join(import.meta.dirname, ".."), "extension provenance should record the loaded extension source root");
   await writeFile(created.archivePath, "sanity archive\n", { mode: 0o600 });
   return jobId;
@@ -1177,7 +1177,7 @@ async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): P
     thinkingJobId,
     {
       prompt: "sanity",
-      files: ["docs/ORACLE_DESIGN.md"],
+      files: ["docs/ARCHITECTURE.md"],
       selection: resolveOracleSubmitPreset(thinkingPreset),
       requestSource: "tool",
     },
@@ -1204,7 +1204,7 @@ async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): P
     instantJobId,
     {
       prompt: "sanity",
-      files: ["docs/ORACLE_DESIGN.md"],
+      files: ["docs/ARCHITECTURE.md"],
       selection: resolveOracleSubmitPreset(instantPreset),
       requestSource: "tool",
     },
@@ -1230,7 +1230,7 @@ async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): P
     instantAutoSwitchJobId,
     {
       prompt: "sanity",
-      files: ["docs/ORACLE_DESIGN.md"],
+      files: ["docs/ARCHITECTURE.md"],
       selection: resolveOracleSubmitPreset(instantAutoSwitchPreset),
       requestSource: "tool",
     },
@@ -3593,8 +3593,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const supportSource = await readFile(new URL("./oracle-sanity-support.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
   const followUpPromptSource = await readFile(new URL("../prompts/oracle-followup.md", import.meta.url), "utf8");
-  const designSource = await readFile(new URL("../docs/ORACLE_DESIGN.md", import.meta.url), "utf8");
-  const recoveryDrillSource = await readFile(new URL("../docs/ORACLE_RECOVERY_DRILL.md", import.meta.url), "utf8");
+  const designSource = await readFile(new URL("../docs/ARCHITECTURE.md", import.meta.url), "utf8");
+  const recoveryDrillSource = await readFile(new URL("../docs/TEST_PLAN.md", import.meta.url), "utf8");
+  const operationsSource = await readFile(new URL("../docs/OPERATIONS.md", import.meta.url), "utf8");
   const readmeSource = await readFile(new URL("../README.md", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
     files?: string[];
@@ -3750,8 +3751,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
   assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
   assert(readmeSource.includes("context-rich relevant archive up to the selected provider's upload ceiling"), "README should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
-  assert(readmeSource.includes("docs/platform-smoke.md") && readmeSource.includes("npm run smoke:platform:all"), "README should document the Crabbox macOS/Ubuntu/Windows platform smoke gate");
-  assert(designSource.includes("docs/platform-smoke.md") && designSource.includes("npm run smoke:platform:all"), "design docs should link the macOS/Ubuntu/Windows platform smoke source of truth");
+  assert(readmeSource.includes("docs/PLATFORM_SMOKE.md") && readmeSource.includes("npm run smoke:platform:all"), "README should document the Crabbox macOS/Ubuntu/Windows platform smoke gate");
+  assert(designSource.includes("docs/PLATFORM_SMOKE.md") && designSource.includes("npm run smoke:platform:all"), "architecture doc should link the macOS/Ubuntu/Windows platform smoke source of truth");
   assert(readmeSource.includes("retryable archive-selection failure"), "README should explain that archive-too-large local packing failures are retryable and should auto-narrow before surfacing to the user");
   assert(readmeSource.includes("omit `preset` and use the configured default model"), "README should explain the default-preset bias for /oracle prompt ergonomics");
   assert(readmeSource.includes("Archive README.md plus any nearby docs or implementation files that help answer accurately"), "README should include a narrow /oracle example that still keeps relevant surrounding context");
@@ -3771,8 +3772,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("/oracle-clean <job-id|all>"), "README should document the oracle-clean command");
   assert(readmeSource.includes("recently woken terminal jobs may stay retained briefly"), "README command summary should explain that oracle-clean can briefly retain terminal jobs after wake-up delivery");
   assert(readmeSource.includes("returns the next eligible cleanup time"), "README should explain that oracle-clean returns a retry-after hint when post-send retention grace blocks cleanup");
-  assert(readmeSource.includes("### `/oracle-clean` refuses a terminal job right after completion"), "README troubleshooting should explain oracle-clean retention-grace refusals");
-  assert(readmeSource.includes("Retry after ..."), "README troubleshooting should mention the oracle-clean retry-after hint");
+  assert(operationsSource.includes("### `/oracle-clean` refuses a terminal job right after completion"), "operations troubleshooting should explain oracle-clean retention-grace refusals");
+  assert(operationsSource.includes("Retry after ..."), "operations troubleshooting should mention the oracle-clean retry-after hint");
   assert(readmeSource.includes("## Available providers and presets"), "README should document available oracle preset ids");
   assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
   assert(readmeSource.includes("250 MiB for ChatGPT") && designSource.includes("250 MiB for ChatGPT") && promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "README/design/prompts should use MiB wording for ChatGPT upload ceiling");

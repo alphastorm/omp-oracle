@@ -1,23 +1,29 @@
-# pi-oracle Project Instructions
+# omp-oracle Project Instructions
 
 This file contains project-specific guidance for this repository.
 
 ## Project map
-- `extensions/oracle/index.ts` registers the pi extension.
+- `extensions/oracle/index.ts` registers the extension and the OMP programmatic bridge.
 - `extensions/oracle/lib/` contains the agent-facing tools, slash commands, config, queue/job state, runtime/profile coordination, and poller logic.
-- `extensions/oracle/worker/` contains the detached browser worker, auth bootstrap, browser UI helpers, cookie policy, and artifact heuristics.
+- `extensions/oracle/worker/` contains the detached browser worker, auth bootstrap, relay driver, browser UI helpers, cookie policy, and artifact heuristics.
 - `extensions/oracle/shared/` contains cross-process lifecycle, observability, process, and state-coordination helpers used by both extension and worker code.
 - `prompts/` contains the `/oracle` and `/oracle-followup` prompt templates.
-- `scripts/oracle-sanity.ts` is the main regression/source-contract sanity harness; `npm run verify:oracle` is the local full gate.
-- `README.md` is the user-facing entry point; `docs/ORACLE_DESIGN.md` is the durable design/source-of-truth detail.
+- `scripts/oracle-sanity.ts` is the main regression/source-contract sanity harness; it also pins documentation contracts in `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, and `docs/TEST_PLAN.md`. `npm run verify:oracle` is the local full gate.
+- `README.md` is the user-facing entry point. `docs/ARCHITECTURE.md` is the durable design source of truth; `docs/SECURITY.md`, `docs/COMPATIBILITY.md`, `docs/OPERATIONS.md`, `docs/TEST_PLAN.md`, `docs/PLATFORM_SMOKE.md`, `docs/RELEASE.md`, and `docs/UPSTREAM.md` follow the layout of the other `omp-*` repositories.
+- `site/` is the GitHub Pages source; `.github/workflows/` holds the CI local gate and the Pages deploy.
+
+## Naming
+- The npm package is `omp-oracle`; `pi-oracle` on npm is the upstream package and must not be presented as an install path for this fork.
+- Refer to the maintainer org by its GitHub handle, `alphastorm`, never a stylized form.
+- Runtime identifiers keep their upstream names (`PI_ORACLE_*` environment variables, `/tmp/pi-oracle-state`, `/tmp/pi-oracle-auth-*`, the `omp.pi-oracle.programmatic.v1` symbol); do not rename them for cosmetics.
 
 ## Single-operator ownership
-- Treat this repository as single-operator: no human or external agent is working here except the current pi agent.
+- Treat this repository as single-operator: no human or external agent is working here except the current agent.
 - Assume every lingering change, background process, temp file, queue entry, job directory, or other artifact was created by a prior version of you or by one of your delegated runs.
 - You own reconciliation and cleanup for that state. Do not attribute unexplained repo state to another person.
 
 ## Extension testing feedback
-- Pre-commit requirement for any code changes: always test with isolated `pi` agent sessions that load this local version of the extension.
+- Pre-commit requirement for any code changes: always test with isolated agent sessions that load this local version of the extension (`docs/TEST_PLAN.md`).
 - Use those isolated sessions to validate the changed behavior works as expected end-to-end, not just through local unit/sanity coverage.
 - For these isolated-session validation runs, use the `instant` or `thinking_light` preset.
 - During those tests, feel free to ask the agents you are exercising for suggestions and feedback about the tool.

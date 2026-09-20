@@ -1,5 +1,5 @@
 /**
- * Artifact helpers for the pi-oracle Crabbox platform smoke gate.
+ * Artifact helpers for the omp-oracle Crabbox platform smoke gate.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";

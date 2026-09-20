@@ -5,9 +5,12 @@
 ### Added
 - added an optional agent-scoped ChatGPT relay endpoint that drives one pinned, job-owned tab in an existing signed-in Chrome without copying cookies
 - exposed the existing oracle preflight and submit contract through the OMP programmatic bridge while preserving all agent-facing tool names and durable job fields
+- added a GitHub Actions local gate, a GitHub Pages site, Dependabot, and repository security/contributing policies
 
 ### Changed
-- moved repository, issue, and GitHub installation metadata to the AlphaStorm-maintained `omp-oracle` fork while retaining the `pi-oracle` package identity and upstream history
+- renamed the npm package to `omp-oracle` so the install path reaches this fork; `pi-oracle` on npm remains the upstream package. Commands, tools, config keys, `PI_ORACLE_*` environment variables, the job directory format, and the `omp.pi-oracle.programmatic.v1` bridge symbol are unchanged
+- moved repository, issue, and GitHub installation metadata to the alphastorm-maintained `omp-oracle` fork while retaining upstream history
+- restructured the README and `docs/` to match the other `omp-*` projects: architecture, security model, compatibility, operations, test plan, platform smoke, release, and upstream pages replace the previous design, validation, drill, and platform-smoke documents
 
 ### Fixed
 - made relay cleanup verify physical target removal and retain durable ownership when the driver omits or fails to close a live target

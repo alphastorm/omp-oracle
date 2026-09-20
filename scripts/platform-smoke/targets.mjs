@@ -1,5 +1,5 @@
 /**
- * Cross-platform smoke suites for pi-oracle.
+ * Cross-platform smoke suites for omp-oracle.
  * The suites prove the package builds, packs, installs, loads, and runs through pi's package path.
  */
 
@@ -114,7 +114,7 @@ export function buildRealExtensionCommand(targetName = "ubuntu", config = {}) {
   ].join("\n");
 }
 
-export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "pi-oracle", nodeValidationMajor = 24) {
+export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "omp-oracle", nodeValidationMajor = 24) {
   if (targetName === "windows-native") {
     return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\platform-smoke\\platform-build-windows.ps1 -PackageName ${packageName} -NodeValidationMajor ${nodeValidationMajor}`;
   }
@@ -123,7 +123,7 @@ export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "
   if (targetName === "macos") {
     lines.push('if [ -d "$HOME/.local/share/mise/installs/node/24/bin" ]; then export PATH="$HOME/.local/share/mise/installs/node/24/bin:$PATH"; fi');
   }
-  lines.push('echo "Starting pi-oracle platform-build in $(pwd) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"');
+  lines.push(`echo "Starting ${packageName} platform-build in $(pwd) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"`);
   lines.push('RUN_ROOT=".platform-smoke-runs/platform-build-$(date -u +%Y%m%dT%H%M%SZ)-$$"');
   lines.push('SOURCE_ROOT="$(pwd)"');
   lines.push('PACK_DIR="$SOURCE_ROOT/$RUN_ROOT/pack"');
@@ -219,12 +219,12 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
   if (!["platform-build", "real-extension"].includes(suiteName)) throw new Error(`unknown suite: ${suiteName}`);
   const runId = makeRunId();
   const suiteDir = createSuiteDir(config.artifactRoot, runId, targetName, suiteName);
-  const slug = `${config.packageName ?? "pi-oracle"}-${targetName}`;
+  const slug = `${config.packageName ?? "omp-oracle"}-${targetName}`;
   writeFileSync(resolve(suiteDir, "target.json"), JSON.stringify({ targetName, platform: platformForTarget(targetName), slug, runId, writtenAt: new Date().toISOString() }, null, 2));
   writeFileSync(resolve(suiteDir, "suite.json"), JSON.stringify({ suiteName, writtenAt: new Date().toISOString() }, null, 2));
 
   const command = suiteName === "platform-build"
-    ? buildPlatformBuildCommand(targetName, config.packageName ?? "pi-oracle", config.nodeValidationMajor ?? 24)
+    ? buildPlatformBuildCommand(targetName, config.packageName ?? "omp-oracle", config.nodeValidationMajor ?? 24)
     : buildRealExtensionCommand(targetName, config);
   writeCommand(suiteDir, command);
 
@@ -265,7 +265,7 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
   if (violations.length > 0) writeFileSync(resolve(suiteDir, "redaction-violations.json"), JSON.stringify(violations, null, 2));
 
   const stdout = result.stdout;
-  const packageName = config.packageName ?? "pi-oracle";
+  const packageName = config.packageName ?? "omp-oracle";
   let checks;
   let expectedFiles;
   if (suiteName === "platform-build") {
@@ -301,7 +301,7 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
       { id: "real-smoke-exit-zero", fn: () => result.code === 0, error: `exit ${result.code}` },
       { id: "real-smoke-doctor", fn: () => stdout.includes("Oracle real smoke doctor") && stdout.includes(`provider: ${provider}`) },
       { id: "real-smoke-marker", fn: () => stdout.includes("Oracle real smoke passed:") },
-      { id: "real-smoke-packed-install", fn: () => stdout.includes("mode=packed") && stdout.includes("extension=./node_modules/pi-oracle") },
+      { id: "real-smoke-packed-install", fn: () => stdout.includes("mode=packed") && stdout.includes(`extension=./node_modules/${packageName}`) },
       { id: "real-smoke-no-source-extension", fn: () => !stdout.includes("extensions/oracle/index.ts") && !/\bpi\s+(?:-e|--extension)\s+extensions\/oracle/.test(stdout) },
       { id: "no-secrets", fn: () => violations.length === 0, error: "redaction violations found" },
     ];
@@ -318,7 +318,7 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
 }
 
 export async function runTargetSuites(config, targetName, suiteNames) {
-  const slug = `${config.packageName ?? "pi-oracle"}-${targetName}`;
+  const slug = `${config.packageName ?? "omp-oracle"}-${targetName}`;
   console.log(`  warmup ${targetName}...`);
   const warmup = await warmupLease(config, targetName, slug);
   if (!warmup.ok) {
@@ -404,7 +404,7 @@ function failTransportSuite(suiteDir, targetName, suiteName, result, phase) {
 function createWarmupFailureResult(config, targetName, suiteName, warmup) {
   const runId = makeRunId();
   const suiteDir = createSuiteDir(config.artifactRoot, runId, targetName, suiteName);
-  const slug = `${config.packageName ?? "pi-oracle"}-${targetName}`;
+  const slug = `${config.packageName ?? "omp-oracle"}-${targetName}`;
   writeFileSync(resolve(suiteDir, "target.json"), JSON.stringify({ targetName, platform: platformForTarget(targetName), slug, runId, writtenAt: new Date().toISOString() }, null, 2));
   writeFileSync(resolve(suiteDir, "suite.json"), JSON.stringify({ suiteName, writtenAt: new Date().toISOString() }, null, 2));
   writeCommand(suiteDir, `crabbox warmup ${targetName}`);

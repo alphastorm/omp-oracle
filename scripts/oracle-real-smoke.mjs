@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Purpose: Run real isolated pi-agent smoke tests against pi-oracle.
+// Purpose: Run real isolated pi-agent smoke tests against omp-oracle.
 // Default mode is packed-install release proof. Source mode is inner-loop/debug only.
 
 import { spawn } from "node:child_process";
@@ -12,7 +12,7 @@ const DEFAULT_PROVIDER = "zai";
 const DEFAULT_MODEL = "glm-5.2";
 const DEFAULT_TIMEOUT_MS = 180_000;
 const EXPECTED_PI_VERSION = "0.80.9";
-const PACKAGE_NAME = "pi-oracle";
+const PACKAGE_NAME = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).name;
 
 function usage() {
   console.log(`Usage: node scripts/oracle-real-smoke.mjs <doctor|run> [--mode packed|source]

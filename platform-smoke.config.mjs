@@ -1,8 +1,8 @@
-// Platform smoke configuration for pi-oracle.
+// Platform smoke configuration for omp-oracle.
 // Crabbox is used as the local cross-platform release/readiness gate.
 
 export default {
-  packageName: "pi-oracle",
+  packageName: "omp-oracle",
   artifactRoot: ".artifacts/platform-smoke",
   requiredTargets: ["macos", "ubuntu", "windows-native"],
   requiredSuites: ["platform-build", "real-extension"],
@@ -31,7 +31,7 @@ export default {
     source: "https://github.com/openclaw/crabbox",
     minVersion: "0.26.0",
   },
-  ubuntuContainerImage: "pi-oracle-platform-smoke:node24",
+  ubuntuContainerImage: "omp-oracle-platform-smoke:node24",
   ubuntuContainerBaseImage: "cimg/node:24.16",
   windowsParallels: {
     sourceVm: "pi-extension-windows-template",
