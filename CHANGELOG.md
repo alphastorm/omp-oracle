@@ -1,5 +1,9 @@
 # Changelog
 
+Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the new package
+identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
+history is kept below the divider.
+
 ## Unreleased
 
 ### Added
@@ -11,12 +15,18 @@
 - renamed the npm package to `omp-oracle` so the install path reaches this fork; `pi-oracle` on npm remains the upstream package. Commands, tools, config keys, `PI_ORACLE_*` environment variables, the job directory format, and the `omp.pi-oracle.programmatic.v1` bridge symbol are unchanged
 - moved repository, issue, and GitHub installation metadata to the alphastorm-maintained `omp-oracle` fork while retaining upstream history
 - restructured the README and `docs/` to match the other `omp-*` projects: architecture, security model, compatibility, operations, test plan, platform smoke, release, and upstream pages replace the previous design, validation, drill, and platform-smoke documents
+- restarted versioning at `0.1.0` for the `omp-oracle` package; this first release is based on upstream `pi-oracle` 0.7.20
 
 ### Fixed
 - made relay cleanup verify physical target removal and retain durable ownership when the driver omits or fails to close a live target
 - supported current versioned Pro controls and the `Power` plus checked `Latest` transition without treating a closed model label as effort proof
 - closed compact model menus by clicking the empty composer when Escape does not dismiss them on continuation pages
 - kept Node worker launch, project-trust handling, and transient ChatGPT 403 classification compatible with current OMP runtimes
+
+---
+
+The entries below are inherited upstream `pi-oracle` releases (`fitchmultz/pi-oracle`), kept for
+provenance. They were published under the `pi-oracle` npm name, not as `omp-oracle`.
 
 ## 0.7.20 - 2026-07-28
 

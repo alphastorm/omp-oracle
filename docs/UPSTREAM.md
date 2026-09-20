@@ -50,8 +50,9 @@ The exact list per release is in [`CHANGELOG.md`](../CHANGELOG.md).
   [`docs/PLATFORM_SMOKE.md`](PLATFORM_SMOKE.md).
 - Fixes that are not OMP-specific are candidates to send back upstream. The relay transport and
   the OMP bridge stay in the fork unless upstream wants them.
-- Version numbers follow upstream's until the fork publishes its first `omp-oracle` release;
-  from then on the fork's `CHANGELOG.md` is the authority.
+- Version numbers restart at `0.1.0` for the new package identity; they do not continue
+  upstream's `0.7.x` line. The fork's `CHANGELOG.md` records which upstream version each
+  release is based on, and the inherited upstream history stays below its own divider there.
 
 `omp-oracle` is a community project. It is not affiliated with or endorsed by the Oh My Pi
 maintainers, the `pi-oracle` maintainer, OpenAI, or xAI.

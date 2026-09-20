@@ -10,8 +10,9 @@ Companion docs: [Test plan](TEST_PLAN.md) · [Platform smoke](PLATFORM_SMOKE.md)
 
 - npm name: `omp-oracle`. The `pi-oracle` package on npm is the upstream project published by
   its maintainer; it does not carry this fork's commits.
-- Version: `package.json` tracks the upstream version the fork is based on (`0.7.20`) plus the
-  unreleased changes listed in [`CHANGELOG.md`](../CHANGELOG.md).
+- Version: the fork's own line, starting at `0.1.0`. It does not inherit upstream's `0.7.x`
+  numbering; `0.1.0` is based on upstream `pi-oracle` 0.7.20 plus the changes listed under
+  `Unreleased` in [`CHANGELOG.md`](../CHANGELOG.md).
 - `omp-oracle` has not been published to npm yet. Until it is, the install path is the GitHub
   URL or a local checkout ([README](../README.md#build-and-run)).
 - Runtime identifiers are unchanged by the rename: `/oracle*` commands, `oracle_*` tool names,
@@ -84,10 +85,31 @@ by default.
 
 ## Evidence ledger
 
+Fork entries come first; entries carried from the upstream `pi-oracle` design document follow
+under their own heading and were recorded against the upstream package identity.
+
+### Fork evidence (omp-oracle)
+
+Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation
+(2026-09-20). Artifact run ids live under the gitignored `.artifacts/` root.
+
+- Local gate: `npm run verify:oracle` green on macOS (Node 26) and inside `cimg/node:24.16`
+  (Node 24.16.0); the same gate passed on the first hosted CI run.
+- Packed install through pi 0.80.9 on macOS: `npm run smoke:real:packed` installed
+  `./node_modules/omp-oracle` via `pi install -l --approve`, `pi list` showed the packed path, and
+  `/oracle-status` executed through the installed package (`.artifacts/real-smoke/run-1789870710142-vyc342`).
+- Ubuntu Crabbox lane: `platform-build` PASS (`run-1789871615787-33if6p`, packed tarball installed
+  from `node_modules/.bin/pi` inside the container, `pi list` showed `node_modules/omp-oracle`) and
+  `real-extension` PASS (`run-1789871654549-uee638`) against `omp-oracle-platform-smoke:node24`.
+- OMP 18.2.6: `omp install --dry-run .` resolves the checkout as `omp-oracle`.
+- Not yet run by the fork: the macOS and Windows native Crabbox lanes, and the live ChatGPT
+  preset proof.
+
+### Carried upstream evidence
+
 The entries below are carried from the upstream `pi-oracle` design document. They were recorded
 against the upstream package identity and the Pi baseline named in each entry, on the upstream
-maintainer's machines. The fork has not yet re-run the platform matrix or the preset proof under
-the `omp-oracle` name; what has been observed on Oh My Pi is recorded in
+maintainer's machines. What has been observed on Oh My Pi is recorded in
 [Compatibility](COMPATIBILITY.md#hosts).
 
 ### Current implementation status
