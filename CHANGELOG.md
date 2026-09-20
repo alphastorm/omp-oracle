@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.2.0 - 2026-09-20
 
 ### Added
 - added the `deep_research` composer-tool preset: the worker leaves the model picker alone, enables Deep research from the composer tools menu and verifies its pill, attaches the archive, sends, and reads the finished report out of ChatGPT's research widget. The widget is a cross-origin App iframe, so the worker arms CDP frame capture (`Target.setAutoAttach`, which is not retroactive) on its pinned relay tab before sending and polls the attached frame until `Research completed in` appears; relay transport only. Failures are named: `deep_research_clarification_requested` (the model replied instead of starting), `deep_research_toggle_not_found`, and `deep_research_report_unreadable` (isolated profile, frame never attached, or timeout), each with the conversation URL where one exists

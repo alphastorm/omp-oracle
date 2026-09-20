@@ -11,9 +11,9 @@ Companion docs: [Test plan](TEST_PLAN.md) · [Platform smoke](PLATFORM_SMOKE.md)
 - npm name: `omp-oracle`. The `pi-oracle` package on npm is the upstream project published by
   its maintainer; it does not carry this fork's commits.
 - Version: the fork's own line, starting at `0.1.0`. It does not inherit upstream's `0.7.x`
-  numbering; `0.1.0` is based on upstream `pi-oracle` 0.7.20 plus the changes listed under
-  `0.1.0` in [`CHANGELOG.md`](../CHANGELOG.md).
-- `0.1.0` is the first `omp-oracle` release on npm. The GitHub URL install tracks `main`
+  numbering; `0.1.0` was based on upstream `pi-oracle` 0.7.20, and later releases add the changes
+  listed per version in [`CHANGELOG.md`](../CHANGELOG.md).
+- The GitHub URL install tracks `main`; npm carries the released versions
   ([README](../README.md#build-and-run)).
 - Runtime identifiers are unchanged by the rename: `/oracle*` commands, `oracle_*` tool names,
   `PI_ORACLE_*` environment variables, `/tmp/pi-oracle-state`, the job directory format, and the
