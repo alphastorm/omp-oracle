@@ -10,10 +10,11 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
     .filter((node) => node.textContent?.trim() === "ChatGPT said:");
   const headingRoots = headings.map((heading) => heading.nextElementSibling);
   const responseRoots = headingRoots.some((node) => (node?.textContent || '').trim()) ? headingRoots : nodes;
+  const rootIds = (node) => new Set([node.getAttribute("data-message-id"), node.closest("[data-message-id]")?.getAttribute("data-message-id"),
+    ...[...node.querySelectorAll("[data-message-id]")].map((child) => child.getAttribute("data-message-id"))].filter(Boolean));
   const rootId = (node) => {
     if (!node) return undefined;
-    const ids = new Set([node.getAttribute("data-message-id"), node.closest("[data-message-id]")?.getAttribute("data-message-id"),
-      ...[...node.querySelectorAll("[data-message-id]")].map((child) => child.getAttribute("data-message-id"))].filter(Boolean));
+    const ids = rootIds(node);
     return ids.size === 1 ? [...ids][0] : undefined;
   };
   const matches = messageId && !report ? responseRoots.filter((node) => rootId(node) === messageId) : [];
@@ -21,6 +22,10 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
   const root = report ? doc.querySelector('[data-report-id], [data-testid="research-report"], main, article') || doc.body
     : messageId ? matches[0] : responseRoots[responseIndex];
   if (!root) throw new Error("Bound response root is absent; whole-conversation capture is forbidden.");
+  // A positional root that spans several message identities is not one turn: refuse it rather
+  // than bind a content hash to an unknown mixture. A root with no identity at all (UI drift)
+  // still binds positionally by content hash, which recollection then refuses unless it matches.
+  if (!report && rootIds(root).size > 1) throw new Error("Bound response root spans several message IDs; refusing an ambiguous turn.");
   const actualId = rootId(root);
   if (messageId && actualId !== messageId) throw new Error("Bound response message ID does not match.");
   const safeUrl = (value) => {
@@ -215,25 +220,30 @@ export function armDownloadRegistry() {
   const targets = [window];
   try { if (frames[0]?.document) targets.push(frames[0]); } catch { /* cross-origin child: its own session arms it */ }
   const map = window.__oracleDownloadRegistry?.map || new Map();
-  let armed = 0;
+  // The top realm remembers every realm it armed; frame order at disarm time is irrelevant.
+  const armedRealms = window.__oracleDownloadRegistry?.armed || [];
   for (const target of targets) {
-    if (target.__oracleDownloadRegistry) { armed += 1; continue; }
+    if (target.__oracleDownloadRegistry) continue;
     const original = target.URL.createObjectURL;
     target.URL.createObjectURL = function (object) {
       const url = original.call(target.URL, object);
       if (object && typeof object.arrayBuffer === 'function') map.set(url, object);
       return url;
     };
-    target.__oracleDownloadRegistry = { map, restore: () => { target.URL.createObjectURL = original; delete target.__oracleDownloadRegistry; } };
-    armed += 1;
+    target.__oracleDownloadRegistry = { map, armed: armedRealms, restore: () => { target.URL.createObjectURL = original; delete target.__oracleDownloadRegistry; } };
+    armedRealms.push(target);
   }
-  return armed;
+  return armedRealms.length;
 }
 
 export function disarmDownloadRegistry() {
-  const targets = [window];
-  try { if (frames[0]?.document) targets.push(frames[0]); } catch { /* cross-origin child */ }
-  for (const target of targets) target.__oracleDownloadRegistry?.restore();
+  const armedRealms = window.__oracleDownloadRegistry?.armed || [];
+  let restored = 0;
+  for (const target of [...armedRealms]) {
+    try { target.__oracleDownloadRegistry?.restore(); restored += 1; } catch { /* realm already gone */ }
+  }
+  armedRealms.length = 0;
+  return restored;
 }
 
 export async function readRegisteredDownload(url) {
@@ -246,10 +256,16 @@ export async function readRegisteredDownload(url) {
   return btoa(binary);
 }
 
+const CAPTURE_LIMIT_BYTES = 25 * 1024 * 1024;
+
 export function decodeDataUrl(url) {
   const match = /^data:([^,]*?)(;base64)?,([\s\S]*)$/.exec(url);
   if (!match) throw new Error('Malformed data URL download.');
-  return match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8');
+  // Base64 inflates by 4/3 and percent-encoding by up to 3x; bound the encoded length before decoding.
+  if (match[3].length > CAPTURE_LIMIT_BYTES * 3) throw new Error('Download exceeds capture limit.');
+  const bytes = match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8');
+  if (bytes.length > CAPTURE_LIMIT_BYTES) throw new Error('Download exceeds capture limit.');
+  return bytes;
 }
 
 function frameTreeIds(node) {
@@ -281,16 +297,19 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
       await evaluateOrThrow(cdp, sessionId, `(${armDownloadRegistry.toString()})()`);
       armedRealms.push(sessionId);
     }
+    // Only downloads that begin at or after activation are candidates; anything observed while
+    // arming (Page.enable, frame discovery, registry hooks) is not caused by the export control.
+    const activationBoundary = events.length;
     const activation = await activate();
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const deadline = Date.now() + timeoutMs;
     let begin;
     while (!begin && Date.now() < deadline) {
-      begin = events.find((event) => event.method === 'Page.downloadWillBegin' && sessions.includes(event.sessionId || '') && accepted.has(event.params.frameId));
+      begin = events.slice(activationBoundary).find((event) => event.method === 'Page.downloadWillBegin' && sessions.includes(event.sessionId || '') && accepted.has(event.params.frameId));
       if (!begin) { await sleep(100); onWait?.(); }
     }
     if (!begin) {
-      const foreign = events.find((event) => event.method === 'Page.downloadWillBegin');
+      const foreign = events.slice(activationBoundary).find((event) => event.method === 'Page.downloadWillBegin');
       throw new Error(foreign ? 'A download started outside the bound frame tree; refusing to collect it.' : 'The native export did not start a browser download.');
     }
     let final;

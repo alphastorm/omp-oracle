@@ -145,3 +145,40 @@ test('native download collection binds to the tab main frame or bound report tre
   const silent = fakeRelay([]);
   await assert.rejects(collectNativeDownload({ cdp: silent.cdp, pageSessionId: 'P', frameSessionId: 'F', activate: silent.activate, timeoutMs: 300 }), /did not start a browser download/);
 });
+
+test('native download collection ignores downloads observed before activation and caps data URLs', async () => {
+  const report = '# Report\n';
+  const data = (text) => 'data:text/markdown;charset=utf-8,' + encodeURIComponent(text);
+  const listeners = new Map();
+  const emit = (method, sessionId, params) => { for (const listener of listeners.get(method) || []) listener({ method, sessionId, params }); };
+  const cdp = {
+    on(method, listener) { const set = listeners.get(method) || new Set(); set.add(listener); listeners.set(method, set); return () => set.delete(listener); },
+    async evaluate() { return undefined; },
+    async send(method, params, sessionId) {
+      if (method === 'Page.enable' && sessionId === 'P') {
+        // A download that begins while arming is not caused by the export control.
+        emit('Page.downloadWillBegin', 'P', { frameId: 'MAIN', guid: 'early', url: data('# Early\n'), suggestedFilename: 'early.md' });
+        emit('Page.downloadProgress', 'P', { guid: 'early', totalBytes: 8, receivedBytes: 8, state: 'completed' });
+      }
+      if (method === 'Page.getFrameTree') return sessionId === 'P' ? { frameTree: { frame: { id: 'MAIN' } } } : { frameTree: { frame: { id: 'REPORT' } } };
+      if (method === 'Runtime.evaluate') return { result: { value: 1 } };
+      return {};
+    },
+  };
+  const activate = async () => {
+    emit('Page.downloadWillBegin', 'P', { frameId: 'MAIN', guid: 'export', url: data(report), suggestedFilename: 'report.md' });
+    emit('Page.downloadProgress', 'P', { guid: 'export', totalBytes: Buffer.byteLength(report), receivedBytes: Buffer.byteLength(report), state: 'completed' });
+    return { activated: true };
+  };
+  const collected = await collectNativeDownload({ cdp, pageSessionId: 'P', frameSessionId: 'F', activate, timeoutMs: 2_000 });
+  assert.equal(collected.native.guid, 'export');
+  assert.equal(Buffer.from(collected.bytesBase64, 'base64').toString(), report);
+
+  const oversized = 'data:text/markdown;base64,' + Buffer.alloc(25 * 1024 * 1024 + 1).toString('base64');
+  const bigActivate = async () => {
+    emit('Page.downloadWillBegin', 'P', { frameId: 'MAIN', guid: 'big', url: oversized, suggestedFilename: 'big.md' });
+    emit('Page.downloadProgress', 'P', { guid: 'big', totalBytes: 25 * 1024 * 1024 + 1, receivedBytes: 25 * 1024 * 1024 + 1, state: 'completed' });
+    return { activated: true };
+  };
+  await assert.rejects(collectNativeDownload({ cdp, pageSessionId: 'P', frameSessionId: 'F', activate: bigActivate, timeoutMs: 2_000 }), /exceeds capture limit/);
+});

@@ -604,9 +604,11 @@ async function terminateBrowserProcess() {
 // session name during that window is served by the dying daemon and its tab is orphaned, and the
 // next command finds a vanished socket (observed live as "Connection refused"). Only a listed
 // session is closed, and teardown is complete only once the driver no longer lists the session.
+// An unreadable inventory is an error, never evidence of absence.
 async function agentBrowserSessionListed(sessionName) {
   const result = await spawnCommand(AGENT_BROWSER_BIN, ["session", "list"], { allowFailure: true, timeoutMs: 5_000 });
-  return result.code === 0 && String(result.stdout || "").split("\n").some((line) => line.trim() === sessionName);
+  if (result.code !== 0) throw new Error(`agent-browser session inventory is unavailable: ${result.stderr || result.stdout || `exit code ${result.code}`}`);
+  return String(result.stdout || "").split("\n").some((line) => line.trim() === sessionName);
 }
 
 async function waitForAgentBrowserSessionTeardown(sessionName) {
@@ -2169,7 +2171,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
               `Deep Research did not start in ${conversation}; the assistant replied instead: ${targetText.slice(0, 300)}`,
             );
           }
-          const report = await waitForDeepResearchReport(job, timeoutAt, baselineAssistantCount);
+          const report = await waitForDeepResearchReport(job, timeoutAt, { responseIndex: baselineAssistantCount });
           return { responseIndex: baselineAssistantCount, responseText: report };
         }
         return { responseIndex: baselineAssistantCount, responseText: targetText };
@@ -2205,14 +2207,14 @@ async function armDeepResearchFrameCapture(job) {
   await log("Armed frame capture on the job-owned relay tab for the Deep Research widget");
 }
 
-async function waitForDeepResearchReport(job, timeoutAt, responseIndex) {
+async function waitForDeepResearchReport(job, timeoutAt, binding) {
   const cdp = deepResearchCdp;
   const conversation = job.chatUrl || (await currentUrl(job).catch(() => "")) || "(unknown)";
   if (!cdp) throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but frame capture was not armed; open the conversation for the report.`);
   const frameDeadline = Math.min(timeoutAt, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS);
   let frame;
   while (!frame && Date.now() < frameDeadline) {
-    frame = await boundResearchFrame(job, responseIndex).catch(() => undefined);
+    frame = await boundResearchFrame(job, binding).catch(() => undefined);
     if (!frame) await sleep(1000);
   }
   if (!frame) {
@@ -2277,9 +2279,11 @@ async function captureBoundTurn(job, binding) {
   return { captured, binding: { ...binding, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
 }
 
-async function boundResearchFrame(job, responseIndex) {
+// `binding` is the current turn binding, including a message ID learned moments ago by
+// captureBoundTurn; a persisted snapshot could be positional-only and select the wrong frame.
+async function boundResearchFrame(job, binding) {
   if (!deepResearchCdp || !deepResearchPageSession) throw new Error("Research frame capture is not armed.");
-  const turn = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex, messageId: job.collectionBinding?.messageId })};`));
+  const turn = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex: binding.responseIndex, messageId: binding.messageId })};`));
   if (!turn?.frames?.length) throw new Error("No research iframe exists in the bound assistant turn.");
   const documentNode = await deepResearchCdp.send("DOM.getDocument", {}, deepResearchPageSession);
   const frameIds = [];
@@ -2351,7 +2355,7 @@ async function collectBoundResult(job, binding, fallbackText = "") {
     // Bind before collection: a later download failure can be retried without sending.
     await mutateJob((latest) => ({ ...latest, collectionBinding: binding }));
     if (job.selection.tool === "deep_research") {
-      frame = await boundResearchFrame(job, binding.responseIndex);
+      frame = await boundResearchFrame(job, binding);
       const report = await deepResearchCdp.evaluate(frame.sessionId, captureExpression({ report: true }, true));
       const completionText = await deepResearchCdp.evaluate(frame.sessionId, DEEP_RESEARCH_REPORT_EXPRESSION);
       if (!report?.rawHtml || !parseDeepResearchWidgetText(completionText).completed) throw new Error("Bound research frame is not a completed report.");
@@ -2447,7 +2451,9 @@ async function collectBoundResult(job, binding, fallbackText = "") {
     }
   } catch (error) {
     inspection = "failed";
-    binding = job.collectionBinding || binding;
+    // Keep whatever binding is durably persisted right now: a message ID learned by this pass and
+    // saved before the failure survives, and a wrong explicit binding never replaces a saved one.
+    binding = currentJob?.collectionBinding || job.collectionBinding || binding;
     requiredMissing.push("bound_response_capture");
     optionalMissing.push("capture_error:" + redactTransportSecrets(error.message || String(error)));
   }
@@ -2504,7 +2510,8 @@ async function run() {
     }));
     await closeBrowser(currentJob);
 
-    const seedGeneration = currentJob.config.browser.chatGptRelayEndpoint ? undefined : await cloneSeedProfileToRuntime(currentJob);
+    // A profile clone can outlast the reconciler's stale-heartbeat window; keep heartbeating.
+    const seedGeneration = currentJob.config.browser.chatGptRelayEndpoint ? undefined : await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "launching_browser", {
       at: new Date().toISOString(),
       source: "oracle:worker",
@@ -2673,6 +2680,9 @@ async function runRecollection() {
     let binding = currentJob.collectionBinding;
     if (!binding?.messageId && !binding?.turnSha256) {
       if (!Number.isInteger(explicit?.responseIndex) || explicit.responseIndex < 0 || !explicit.messageId) throw new Error("Legacy recollection requires an explicit responseIndex and messageId.");
+      // A saved positional index is still a fact about this job: an explicit pair may add the
+      // message identity for that turn, never move the binding to another turn.
+      if (Number.isInteger(binding?.responseIndex) && explicit.responseIndex !== binding.responseIndex) throw new Error("Recollection cannot move the saved turn index; supply the messageId of that turn.");
       binding = { conversationId: currentJob.conversationId, responseIndex: explicit.responseIndex, messageId: explicit.messageId };
     } else if (explicit && (explicit.responseIndex !== binding.responseIndex || explicit.messageId !== binding.messageId)) throw new Error("Recollection cannot replace an existing turn binding.");
     if (!binding.conversationId || conversationIdFromUrl(currentJob.chatUrl) !== binding.conversationId) throw new Error("Recollection requires the job's exact saved conversation URL.");
@@ -2691,13 +2701,41 @@ async function runRecollection() {
       // A completed job with cleanupPending and a worker is judged by lastCleanupAt, then heartbeatAt.
       // Retire the stale cleanup timestamp and heartbeat throughout, or an extension poller kills
       // this live worker as a stale terminal-cleanup worker mid-collection (observed live).
-      await mutateJob((job) => ({ ...job, runtimeSessionName: `oracle-${randomUUID()}`,
+      // The predecessor's provenance is persisted, not held in memory, so a killed worker loses nothing.
+      await mutateJob((job) => ({ ...job, runtimeSessionName: `oracle-${randomUUID()}`, recollectionPriorWorker: priorWorker,
         workerPid: process.pid, workerStartedAt: readProcessStartedAt(process.pid), cleanupPending: true, heartbeatAt: at, lastCleanupAt: undefined }));
       acquired = true;
     });
+    // After a clean teardown the predecessor's identity returns; after a warning the fresh
+    // identity stays persisted so terminal-cleanup reconciliation retries against the resources
+    // that actually exist, and the predecessor remains recorded in recollectionPriorWorker.
+    const finalizeRecollection = async (warnings) => {
+      await mutateJob((job) => {
+        const prior = job.recollectionPriorWorker || priorWorker;
+        const lastCleanupAt = new Date().toISOString();
+        if (warnings.length > 0) {
+          return { ...job, cleanupPending: true, cleanupWarnings: [...new Set([...(prior.cleanupWarnings || []), ...(job.cleanupWarnings || []), ...warnings])], lastCleanupAt };
+        }
+        const { recollectionPriorWorker, ...rest } = job;
+        return { ...rest, ...prior, cleanupPending: prior.cleanupPending === true,
+          cleanupWarnings: prior.cleanupWarnings?.length ? [...new Set(prior.cleanupWarnings)] : undefined, lastCleanupAt };
+      });
+    };
+    const onSignal = (signal) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      void (async () => {
+        await log(`Received ${signal} during recollection, cleaning up oracle runtime`).catch(() => undefined);
+        const warnings = await cleanupRuntime(currentJob).catch((error) => [`Runtime cleanup failed on ${signal}: ${error instanceof Error ? error.message : String(error)}`]);
+        await finalizeRecollection(warnings).catch(() => undefined);
+        process.exit(0);
+      })();
+    };
+    process.on("SIGTERM", () => onSignal("SIGTERM"));
+    process.on("SIGINT", () => onSignal("SIGINT"));
     try {
       await ensurePrivateDir(join(jobDir, "logs"));
-      if (!currentJob.config.browser.chatGptRelayEndpoint) await cloneSeedProfileToRuntime(currentJob);
+      if (!currentJob.config.browser.chatGptRelayEndpoint) await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
       // Arm before navigation; only the newly owned tab is touched.
       await launchBrowser(currentJob, "about:blank");
       if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);
@@ -2708,21 +2746,17 @@ async function runRecollection() {
         try { await captureBoundTurn(currentJob, binding); ready = true; break; } catch { await sleep(500); }
       }
       if (!ready) throw new Error("The exact bound assistant turn could not be reacquired.");
-      if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding.responseIndex);
+      if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
       await collectBoundResult(currentJob, binding);
       await mutateJob((job) => ({ ...job, recollectionError: undefined }));
     } catch (error) {
+      if (shuttingDown) return;
       const message = redactTransportSecrets(error.message || String(error));
       await log("Recollection failed: " + message);
       await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,
         collectionRequiredMissing: [...new Set([...(job.collectionRequiredMissing || []), "bound_response_capture"])] }));
     } finally {
-      if (acquired) {
-        const warnings = await cleanupRuntime(currentJob);
-        await mutateJob((job) => ({ ...job, ...priorWorker, cleanupPending: warnings.length > 0 || priorWorker.cleanupPending === true,
-          cleanupWarnings: priorWorker.cleanupWarnings?.length || warnings.length ? [...new Set([...(priorWorker.cleanupWarnings || []), ...warnings])] : undefined,
-          lastCleanupAt: new Date().toISOString() }));
-      }
+      if (acquired && !shuttingDown) await finalizeRecollection(await cleanupRuntime(currentJob));
     }
   });
 }

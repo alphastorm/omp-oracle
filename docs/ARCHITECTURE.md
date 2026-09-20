@@ -582,23 +582,37 @@ behavior. Visible labels are display metadata, never authoritative filenames.
 `oracle_read({ jobId, action: "recollect" })` retries collection of an already completed job
 without sending anything: the worker's separate `--recollect` entrypoint never reaches configure,
 upload, composer, or send. Jobs completed before binding existed require the observed
-`responseIndex` and `messageId` together; the latest turn is never inferred, and an explicit
-binding can never replace a saved one. Recollection opens a fresh `oracle-<uuid>` driver session
-(the original tab is gone, and a longer suffix would exceed macOS's 103-byte Unix socket path),
-arms frame capture before navigating, reacquires the exact turn, collects, then restores the
-original runtime provenance after cleanup. Earlier usable bytes always survive: a failed
-recollection records `recollectionError`, marks `bound_response_capture` missing, and keeps the
-previous `response.md` and validated artifacts.
+`responseIndex` and `messageId` together; the latest turn is never inferred, an explicit pair may
+add the identity of a saved positional turn but never move it, and an explicit binding can never
+replace a saved exact one. Recollection opens a fresh `oracle-<uuid>` driver session (the original
+tab is gone, and a longer suffix would exceed macOS's 103-byte Unix socket path), arms frame
+capture before navigating, reacquires the exact turn, collects, and finalizes. Earlier usable
+bytes always survive: a failed recollection records `recollectionError`, marks
+`bound_response_capture` missing, and keeps the previous `response.md` and validated artifacts;
+a message identity learned before a later failure stays persisted.
 
 While a recollection runs, the completed job is terminal, cleanup-pending, and has a live worker.
 Terminal-cleanup reconciliation judges such a worker by `lastCleanupAt` before `heartbeatAt`, so
-admission retires the predecessor's `lastCleanupAt` and heartbeats throughout; otherwise an
-extension poller in any live session would terminate the worker mid-collection as a stale
-cleanup worker. Browser teardown also waits until the driver no longer lists the session before
-returning, because `agent-browser close` returns while its daemon is still serving: a same-name
-command in that window is served by the dying daemon and its tab is orphaned. A session the driver
-does not list is never closed (the driver would spawn a daemon and a stray tab just to close it),
-and a relay target the inventory no longer lists never reaches the driver at all.
+admission retires the predecessor's `lastCleanupAt` and heartbeats throughout (profile cloning on
+the isolated transport included); otherwise an extension poller in any live session would
+terminate the worker mid-collection as a stale cleanup worker. Admission also persists the
+predecessor's provenance as `recollectionPriorWorker` rather than holding it in memory: after a
+warning-free teardown the predecessor identity is restored and the record removed, while after a
+cleanup warning the fresh identity stays persisted so reconciliation retries against the resources
+that actually exist. SIGTERM/SIGINT during recollection run the same cleanup and finalization.
+
+Browser teardown waits until the driver no longer lists the session before returning, because
+`agent-browser close` returns while its daemon is still serving: a same-name command in that
+window is served by the dying daemon and its tab is orphaned. A session the driver does not list
+is never closed (the driver would spawn a daemon and a stray tab just to close it), an unreadable
+driver inventory is a cleanup error rather than evidence of absence, and a relay target the
+inventory no longer lists never reaches the driver at all.
+
+Identity limits are explicit. A positional root that spans several message identities is refused
+even on first capture. A root that carries no `data-message-id` at all (attribute drift) binds
+positionally by content hash because its index was observed live at completion; recollection then
+refuses that index-only binding unless the hash still matches, so drift degrades to a refused
+recollection rather than to a different turn.
 
 ## Same-thread follow-ups
 

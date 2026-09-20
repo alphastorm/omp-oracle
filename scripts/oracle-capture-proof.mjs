@@ -49,6 +49,10 @@ try {
   assert.equal(shifted.codeBlocks[0].text, exact, 'Exact message identity must survive a shifted positional index');
   await assert.rejects(evaluate(captureExpression({ responseIndex: 1, messageId: 'missing' })), /message ID/);
   await assert.rejects(evaluate(captureExpression({ responseIndex: 99 })), /root is absent/);
+  // A positional root spanning two message identities is not one turn, even on first capture.
+  await evaluate(`document.querySelector('[data-message-id=new]').insertAdjacentHTML('beforeend', '<div data-message-id="other">stray</div>')`);
+  await assert.rejects(evaluate(captureExpression({ responseIndex: 1 })), /spans several message IDs/);
+  await evaluate(`document.querySelector('[data-message-id=other]').remove()`);
 
   // Exercise production persistence/collection functions, not a reimplementation. Browser reads
   // and clicks use the real isolated page; only the saved conversation URL is synthetic.
@@ -63,7 +67,7 @@ try {
   const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','redactTransportSecrets','validateArtifactBytes','jobDir','evalPage','currentUrl','conversationIdFromUrl'];
   // The browser adapter retains dead session identities and enforces the Unix socket limit.
   // Collection itself still executes production functions against real Chromium above.
-  const factory = new Function(...dependencyNames, `let currentJob;
+  const factory = new Function(...dependencyNames, `let currentJob; let shuttingDown=false;
     const retiredSessions=new Set();
     const jobId='synthetic', ORACLE_STATE_DIR='synthetic';
     async function mutateJob(fn) { currentJob=fn(currentJob); return currentJob; }
@@ -76,19 +80,21 @@ try {
     function randomUUID() { return crypto.randomUUID(); }
     async function log() {}
     async function heartbeat() {}
+    async function withHeartbeatWhile(task) { return task(); }
     const admissions = [];
+    let nextCleanupWarnings = [];
     async function launchBrowser(job) {
-      admissions.push({ cleanupPending: job.cleanupPending, lastCleanupAt: job.lastCleanupAt, heartbeatAt: job.heartbeatAt, workerPid: job.workerPid });
+      admissions.push({ cleanupPending: job.cleanupPending, lastCleanupAt: job.lastCleanupAt, heartbeatAt: job.heartbeatAt, workerPid: job.workerPid, priorWorker: job.recollectionPriorWorker });
       if(retiredSessions.has(job.runtimeSessionName)) throw Error('tab_gone: bound tab is gone');
       if(Buffer.byteLength('/tmp/agent-browser-501/'+job.runtimeSessionName+'.sock')>103) throw Error('Socket path too long');
     }
     async function agentBrowser(_job, command) { if(command!=='open') throw Error('No send permitted'); }
-    async function cleanupRuntime(job) { retiredSessions.add(job.runtimeSessionName); return []; }
+    async function cleanupRuntime(job) { retiredSessions.add(job.runtimeSessionName); const warnings = nextCleanupWarnings; nextCleanupWarnings = []; return warnings; }
     ${declarations.map((node) => node.getText(tree)).join('\n')}
     return {
       admissions,
       collect:async(job,binding)=>{currentJob=job;await collectBoundResult(job,binding);return currentJob;},
-      recollect:async(job)=>{currentJob=job;retiredSessions.add(job.runtimeSessionName);await runRecollection();return currentJob;}
+      recollect:async(job, warnings=[])=>{currentJob=job;retiredSessions.add(job.runtimeSessionName);nextCleanupWarnings=warnings;await runRecollection();return currentJob;}
     };`);
   const worker = factory(createHash,existsSync,readFile,writeFile,rename,chmod,mkdir,join,basename,captureExpression,captureDownload,collectionOutcome,redactTransportSecrets,validateArtifactBytes,jobDir,async (_job, expression) => {
     let result = await evaluate(expression);
@@ -126,7 +132,22 @@ try {
   assert.equal(admission.cleanupPending, true);
   assert.equal(admission.lastCleanupAt, undefined, 'A stale predecessor cleanup timestamp would mark the live worker stale');
   assert(Date.now() - Date.parse(admission.heartbeatAt) < 10_000, 'Admission starts a fresh heartbeat');
+  assert.equal(admission.priorWorker.runtimeSessionName, completed.runtimeSessionName, 'Predecessor provenance is persisted, not held in memory');
+  assert.equal(reopened.recollectionPriorWorker, undefined, 'A clean teardown retires the persisted predecessor record');
   assert.equal(await readFile(reopened.responsePath, 'utf8'), exact);
+  // A teardown warning keeps the fresh identity persisted for terminal-cleanup reconciliation and
+  // keeps the predecessor recorded, instead of restoring an identity whose resources are gone.
+  const warned = await worker.recollect({ ...reopened, lastCleanupAt: staleCleanupAt }, ['Browser close warning during cleanup: synthetic']);
+  assert.equal(warned.collectionStatus, 'complete');
+  assert.equal(warned.cleanupPending, true);
+  assert.deepEqual(warned.cleanupWarnings, ['Browser close warning during cleanup: synthetic']);
+  assert.notEqual(warned.runtimeSessionName, completed.runtimeSessionName, 'The fresh session stays persisted while its cleanup is pending');
+  assert.equal(warned.recollectionPriorWorker.runtimeSessionName, completed.runtimeSessionName, 'The predecessor is still recorded');
+  // A recollection that learns the exact identity and then fails keeps that identity durably.
+  const learned = { ...second, collectionBinding: { conversationId: 'synthetic', responseIndex: 1 }, selection: { provider: 'chatgpt', tool: 'deep_research' } };
+  const learnedButFailed = await worker.collect(learned, learned.collectionBinding);
+  assert.equal(learnedButFailed.collectionStatus, 'partial');
+  assert.equal(learnedButFailed.collectionBinding.messageId, 'new', 'A message ID learned before a later frame failure must survive');
   const partial = await worker.collect(second, { ...binding, messageId: 'wrong' });
   assert.equal(partial.collectionStatus, 'partial');
   assert(partial.collectionRequiredMissing.includes('bound_response_capture'));
@@ -142,16 +163,16 @@ try {
   const teardownDeclarations = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && teardownNames.has(node.name?.text));
   assert.equal(teardownDeclarations.length, teardownNames.size);
   const teardown = new Function(`const AGENT_BROWSER_BIN='driver', AGENT_BROWSER_CLOSE_TIMEOUT_MS=2000; let cleaningUpBrowser=false, browserStarted=true, deepResearchCdp, currentJob;
-    const calls=[]; let listedUntil=0;
+    const calls=[]; let listedUntil=0; let inventoryBroken=false;
     function browserBaseArgs(job){ return ['--session', job.runtimeSessionName]; }
     async function terminateBrowserProcess(){}
     async function spawnCommand(_bin, args){ calls.push({ at: Date.now(), args });
-      if (args[0]==='session') return { code:0, stdout: Date.now() < listedUntil ? 'Active sessions:\\n  '+currentSession+'\\n' : 'Active sessions:\\n' };
+      if (args[0]==='session') return inventoryBroken ? { code:1, stdout:'', stderr:'daemon inventory unavailable' } : { code:0, stdout: Date.now() < listedUntil ? 'Active sessions:\\n  '+currentSession+'\\n' : 'Active sessions:\\n' };
       if (args.at(-1)==='close') { listedUntil = Date.now()+300; return { code:0, stdout:'✓ Browser closed' }; }
       throw new Error('unexpected driver call '+args.join(' ')); }
     let currentSession='oracle-live';
     ${teardownDeclarations.map((node) => node.getText(tree)).join('\n')}
-    return { calls, run: async (job, listed) => { currentSession=job.runtimeSessionName; listedUntil = listed ? Date.now()+60_000 : 0; browserStarted=true; await closeBrowser(job); } };`)();
+    return { calls, run: async (job, listed, broken=false) => { currentSession=job.runtimeSessionName; listedUntil = listed ? Date.now()+60_000 : 0; inventoryBroken=broken; browserStarted=true; await closeBrowser(job); } };`)();
   const relayJob = { runtimeSessionName: 'oracle-live', config: { browser: { chatGptRelayEndpoint: 'http://127.0.0.1:9224' } } };
   const closeStartedAt = Date.now();
   await teardown.run(relayJob, true);
@@ -162,6 +183,9 @@ try {
   teardown.calls.length = 0;
   await teardown.run({ ...relayJob, runtimeSessionName: 'oracle-unlisted' }, false);
   assert(!teardown.calls.some((call) => call.args.at(-1) === 'close'), 'an unlisted session is never closed: the driver would spawn a daemon and a stray tab for it');
+  teardown.calls.length = 0;
+  await assert.rejects(teardown.run(relayJob, true, true), /inventory is unavailable/, 'an unreadable inventory is an error, never evidence that the daemon is gone');
+  assert(!teardown.calls.some((call) => call.args.at(-1) === 'close'), 'no blind close is issued when the inventory cannot be read');
 
   await evaluate(`document.body.innerHTML='<article data-message-author-role="assistant" data-message-id="rich"><h1>Report</h1><p><a href="https://example.invalid/primary?x=1#evidence">Primary</a></p><ul><li>First</li><li>Second</li></ul><table><tr><th>Metric</th><th>Value</th></tr><tr><td>ARR</td><td>forecast</td></tr></table><a download href="https://example.invalid/file?X-Amz-Signature=DO_NOT_PERSIST">Download</a></article>'`);
   await evaluate(`const literal=document.createElement('code');literal.textContent='https://example.invalid/literal?case=inline#source';document.querySelector('article').append(literal);`);
