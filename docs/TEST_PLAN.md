@@ -46,6 +46,21 @@ pi --approve --no-extensions -e "$REPO/extensions/oracle/index.ts"
 
 That ensures the session is exercising the in-repo code, not a globally installed package. `--approve` is intentional for this isolated workflow on Pi 0.79+: the test fixture is this trusted checkout, and non-interactive/scripted validation must not block on the project-trust prompt.
 
+On Oh My Pi the launcher owns extension arguments and refuses `-e`; the equivalent non-interactive
+route is the standard launcher in print mode:
+
+```bash
+env PI_CODING_AGENT_DIR="$TEST1_AGENT" PI_ORACLE_JOBS_DIR="$TEST1_JOBS" PI_TELEMETRY=0 \
+  omp --standard --cwd "$REPO" -p --auto-approve --session-dir "$TEST1_SESSIONS" \
+  --model <model id> --thinking low --no-extensions -e "$REPO/extensions/oracle/index.ts" "$PROMPT1" < /dev/null
+```
+
+Three details matter: print mode waits forever on an open piped stdin (`readPipedInput`), so close
+it; `oracle_submit` refuses `--no-session`, so keep a persisted `--session-dir`; and the isolated
+`PI_CODING_AGENT_DIR` carries no model configuration, so put a `models.yml` for the chosen model in
+it (a zero-cost local model works). `npm run release:proof:chatgpt-presets:run` automates exactly
+this route for the release preset proof.
+
 The local extension now intercepts TUI `/oracle` and `/oracle-followup` before prompt-template expansion, re-injects the compact slash request as the visible user message for prompt-history/up-arrow recall, and reads the in-repo prompt files as hidden dispatch instructions, so do not pass `--prompt-template` for normal local-extension validation. In print/json/rpc modes, the extension contributes the prompt templates itself.
 
 Do not add this repository's GitHub URL to `.pi/settings.json` just to test local oracle changes. If you already keep upstream `npm:pi-oracle` or a published `omp-oracle` installed globally, mixing that package with a project-local git package creates two distinct package identities and can trigger prompt/tool conflicts. Use the explicit CLI extension flag above instead.

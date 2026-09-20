@@ -4,6 +4,14 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+- bind identity-less turns by their normalized text instead of the sanitized HTML, whose class attributes churn between renders: an index-only binding now recollects the same content and still refuses changed content
+
+### Added
+- `npm run release:proof:chatgpt-presets:run`: submits the live eight-preset proof through isolated OMP print-mode sessions and writes the proof file the release checker validates; the Oh My Pi source-loading route is documented in the test plan
+
 ## 0.3.0 - 2026-09-20
 
 ### Added

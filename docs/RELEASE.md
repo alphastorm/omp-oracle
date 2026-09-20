@@ -56,9 +56,21 @@ full matrix, then artifact review.
 
 Before a release, run live jobs through the loaded extension for every ChatGPT preset in
 `ORACLE_SUBMIT_PRESETS`. Each prompt must make the saved response contain the exact markers
-`PRESET <preset> OK` and `PACKAGE omp-oracle`. After every job has completed, save the job
-ids/job directories in `.artifacts/chatgpt-preset-proof/latest.json`; `validatedAt` must be
-later than the completed jobs. Start from the checked, intentionally non-valid template:
+`PRESET <preset> OK` and `PACKAGE omp-oracle`. The runner submits one such job per canonical
+preset from isolated OMP print-mode sessions (isolated agent dir, sessions, jobs, and state under
+`/tmp/omp-oracle-proof`; relay transport; this checkout's extension source), waits for each to
+complete, writes `.artifacts/chatgpt-preset-proof/latest.json`, and runs the checker:
+
+```bash
+PI_ORACLE_PROOF_MODEL=<omp model id> PI_ORACLE_PROOF_MODELS_YML=<models.yml for that model> \
+  npm run release:proof:chatgpt-presets:run
+```
+
+`PI_ORACLE_PROOF_MODEL` is the model the isolated session uses to call `oracle_submit` (a zero-cost
+local model is fine); its `models.yml` is copied into the isolated agent dir because that dir has no
+other configuration. Pass preset ids as arguments to rerun a subset; a partial rerun keeps the
+other presets' entries from the existing proof file. The manual equivalent starts from the checked,
+intentionally non-valid template:
 
 ```bash
 mkdir -p .artifacts/chatgpt-preset-proof
