@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.3.2 - 2026-09-21
 
 ### Fixed
 - stop returning a silently truncated ChatGPT response, and stop hanging on a finished one. Chrome gives a hidden tab no rendering opportunities and ChatGPT appends streamed tokens from that loop, so the job-owned relay tab stops materializing the turn whenever it sits behind another tab or an occluded window; the stop control still clears, because it follows the network stream rather than the DOM, so a frozen partial turn read as a finished one and was captured as the whole response with `collectionStatus: complete`. Generation state is now the authority for "finished", and the streamed read is only a lower bound: the worker reloads the persisted conversation and re-reads the bound turn, which renders correctly even while hidden, keeping whichever read is longer and logging any characters recovered
