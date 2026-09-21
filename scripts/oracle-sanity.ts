@@ -50,7 +50,7 @@ import {
   stripChatGptResponseChrome,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
-import { assistantSnapshotSlice, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
+import { assistantSnapshotSlice, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
 import {
   buildConversationLeaseMetadata,
   buildRuntimeLeaseMetadata,
@@ -5872,6 +5872,23 @@ function testChatGptFlowHelpers(): void {
   const secondStableState = nextStableValueState(firstStableState, "https://chatgpt.com/c/abc");
   const resetStableState = nextStableValueState(secondStableState, "https://chatgpt.com/c/xyz");
   assert(firstStableState.stableCount === 1 && secondStableState.stableCount === 2 && resetStableState.stableCount === 1, "stable-value helpers should increment matching observations and reset on change");
+
+  // A stop control that outlives its stream: observed live on 2026-09-21, the generation POST
+  // returned 200 at t+14 s and `Stop answering` stayed mounted for 31 minutes over a fully
+  // rendered turn, so the worker sat until the completion timeout. The bounded escape reloads the
+  // conversation once the text has been non-empty and unchanged for the stale window.
+  const staleAfterMs = 120_000;
+  const thinking = nextStaleStopState(undefined, { stopControl: true, text: "", now: 0, staleAfterMs });
+  assert(!thinking.stale && thinking.since === undefined, "an empty turn under a live stop control must never age into a stale control (long thinking phases)");
+  const first = nextStaleStopState(thinking, { stopControl: true, text: "PRESET instant OK", now: 10_000, staleAfterMs });
+  const held = nextStaleStopState(first, { stopControl: true, text: "PRESET instant OK", now: 10_000 + staleAfterMs - 1, staleAfterMs });
+  assert(first.since === 10_000 && !first.stale && held.since === 10_000 && !held.stale, "unchanged text keeps the first observation time and stays live until the stale window elapses");
+  const stale = nextStaleStopState(held, { stopControl: true, text: "PRESET instant OK", now: 10_000 + staleAfterMs, staleAfterMs });
+  assert(stale.stale, "a stop control over text unchanged for the whole stale window is stale");
+  const grew = nextStaleStopState(held, { stopControl: true, text: "PRESET instant OK\nPACKAGE", now: 10_000 + staleAfterMs, staleAfterMs });
+  assert(!grew.stale && grew.since === 10_000 + staleAfterMs, "text that changed restarts the window: a live turn is never reloaded mid-render");
+  const cleared = nextStaleStopState(held, { stopControl: false, text: "PRESET instant OK", now: 10_000 + staleAfterMs, staleAfterMs });
+  assert(!cleared.stale && cleared.since === undefined, "a cleared stop control resets the tracker");
 }
 
 async function testRunnerAndSmokeFailureContracts(): Promise<void> {

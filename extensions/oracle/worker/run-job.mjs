@@ -52,7 +52,7 @@ import {
   autoSwitchToThinkingSelectionVisible,
   stripChatGptResponseChrome,
 } from "./chatgpt-ui-helpers.mjs";
-import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
@@ -2122,6 +2122,10 @@ async function chatGptStopControlPresent(job) {
 // pass, which stays correct while hidden, so the streamed read is only ever a lower bound.
 const RELOAD_RECONCILE_TIMEOUT_MS = 45_000;
 const RELOAD_RECONCILE_POLL_MS = 1_000;
+// A stop control that outlives its stream (see nextStaleStopState) would otherwise hold the job
+// until the full completion timeout. Two minutes of unchanged non-empty text is far longer than
+// any pause between rendered tokens of a live turn, and a reload of a live turn is harmless.
+const STALE_STOP_CONTROL_MS = 120_000;
 
 async function reconcileStreamedTurn(job, responseIndex, streamedText) {
   const conversationUrl = job.chatUrl;
@@ -2157,6 +2161,8 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let lastCompletionSignature = "";
   let stableCount = 0;
   let retriedAfterFailure = false;
+  /** @type {import("./chatgpt-flow-helpers.d.mts").OracleStaleStopState | undefined} */
+  let staleStop;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
@@ -2194,6 +2200,22 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       throw new Error(`${isGrokJob(job) ? "Grok" : "ChatGPT"} response failed: ${responseFailureText}`);
     }
 
+    // Deep Research holds its stop control for the whole run by design and reads the report from
+    // the widget frame; Grok has no stale-control history. Only plain ChatGPT turns self-heal here.
+    if (!isGrokJob(job) && job.selection.tool !== "deep_research" && job.chatUrl && isConversationPathUrl(job.chatUrl)) {
+      staleStop = nextStaleStopState(staleStop, { stopControl: hasStopStreaming, text: targetText, now: Date.now(), staleAfterMs: STALE_STOP_CONTROL_MS });
+      if (staleStop.stale) {
+        await log(`Stop control still present after ${Math.round((Date.now() - (staleStop.since ?? Date.now())) / 1000)} s with the turn unchanged; reloading the conversation to re-read generation state`);
+        await agentBrowser(job, "open", job.chatUrl).catch(async (error) => {
+          await log(`Conversation reload failed, continuing to poll: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        staleStop = undefined;
+        lastCompletionSignature = "";
+        stableCount = 0;
+        await sleep(job.config.worker.pollMs);
+        continue;
+      }
+    }
     let completionSignature;
     if (!hasStopStreaming && targetText && (hasTargetCopyResponse || isGrokJob(job))) {
       completionSignature = deriveAssistantCompletionSignature({

@@ -6,6 +6,7 @@
 
 /** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleStableValueState} OracleStableValueState */
 /** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleSendAcceptanceState} OracleSendAcceptanceState */
+/** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleStaleStopState} OracleStaleStopState */
 
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 
@@ -155,4 +156,23 @@ export function nextStableValueState(state, nextValue) {
     lastValue: nextValue,
     stableCount: state?.lastValue === nextValue ? (state?.stableCount ?? 0) + 1 : 1,
   };
+}
+
+/**
+ * Track a stop control that has outlived its stream. ChatGPT's composer can keep `Stop answering`
+ * mounted after `/backend-api/f/conversation` has returned 200 and the turn is fully rendered
+ * (observed 2026-09-21: the stream finished at t+14 s, the control stayed for 31 minutes). The
+ * control stays the authority for "finished", so the caller never completes on such a turn
+ * directly; once the bound turn's text has been non-empty and unchanged for `staleAfterMs` with
+ * the control still present, the caller reloads the conversation, which re-renders the committed
+ * turn without the stale control (or with a live one, if generation really is still running).
+ * Empty text never ages: a long thinking phase legitimately shows the control with no text.
+ * @param {Partial<OracleStaleStopState> | undefined} state
+ * @param {{ stopControl: boolean; text: string; now: number; staleAfterMs: number }} input
+ * @returns {OracleStaleStopState}
+ */
+export function nextStaleStopState(state, { stopControl, text, now, staleAfterMs }) {
+  if (!stopControl || !text) return { text: "", since: undefined, stale: false };
+  const since = state?.text === text && typeof state.since === "number" ? state.since : now;
+  return { text, since, stale: now - since >= staleAfterMs };
 }

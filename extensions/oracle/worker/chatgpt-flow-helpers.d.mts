@@ -3,6 +3,12 @@ export interface OracleStableValueState {
   stableCount: number;
 }
 
+export interface OracleStaleStopState {
+  text: string;
+  since: number | undefined;
+  stale: boolean;
+}
+
 export interface OracleSendAcceptanceState {
   url?: string;
   urlKnown?: boolean;
@@ -23,3 +29,7 @@ export declare function nextStableValueState(
   state: Partial<OracleStableValueState> | undefined,
   nextValue: string,
 ): OracleStableValueState;
+export declare function nextStaleStopState(
+  state: Partial<OracleStaleStopState> | undefined,
+  input: { stopControl: boolean; text: string; now: number; staleAfterMs: number },
+): OracleStaleStopState;
