@@ -143,6 +143,8 @@ relay option and skip `/oracle-auth` for ChatGPT:
 
 Each relay job owns one pinned tab and closes it on cleanup. Requirements and behavior:
 [Operations → Existing-Chrome relay](docs/OPERATIONS.md#existing-chrome-relay-chatgpt-only).
+For a separate work account without changing personal Chrome, use a
+[dedicated persistent Chrome profile over native CDP](docs/OPERATIONS.md#dedicated-account-in-persistent-chrome).
 
 ### 4. Submit a tiny job
 

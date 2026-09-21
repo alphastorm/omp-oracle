@@ -226,6 +226,12 @@ Per job:
 
 ## Existing-Chrome relay transport
 
+The same endpoint option can attach directly to native Chrome CDP on a dedicated persistent
+user-data directory. The wire protocol and per-job tab ownership are unchanged; account
+isolation comes from Chrome’s separate storage, not an account switcher. See
+[dedicated-account setup](OPERATIONS.md#dedicated-account-in-persistent-chrome). The worker
+does not own that browser process or verify a configured email identity.
+
 The fork adds an opt-in ChatGPT transport that drives the user's already signed-in Chrome through a CDP relay instead of cloning cookies into an isolated profile. It is enabled only by the agent-level `browser.chatGptRelayEndpoint` option (for example `http://127.0.0.1:9224`); project config cannot set it, and it applies to ChatGPT only. Grok keeps the isolated-profile route. Without the option, behavior is unchanged.
 
 - The relay must expose CDP target discovery (`Target.getTargets`), creation, attachment, and closure. Older OMP relay builds without `Target.getTargets` cannot serve `agent-browser`; use `agent-browser` 0.35.0 or newer with pinned-tab support.

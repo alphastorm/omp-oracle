@@ -93,6 +93,45 @@ option:
 - Preflight checks transport reachability, not login. Finish login or human verification in
   Chrome; `oracle_auth` refuses cookie import in relay mode.
 
+### Dedicated account in persistent Chrome
+
+For work/personal account separation, use a separate Chrome **user-data directory**, not
+ChatGPT’s account picker in a shared profile. Tabs and windows in one profile share auth state.
+The existing `browser.chatGptRelayEndpoint` option also accepts native Chrome CDP; no OMP relay
+extension or cookie import is needed in this dedicated browser.
+
+On macOS, launch a separate Chrome process with persistent storage and a loopback-only endpoint:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/Library/Application Support/omp-oracle/diligence-chrome" \
+  --remote-debugging-address=127.0.0.1 --remote-debugging-port=9333 \
+  --no-first-run --no-default-browser-check --new-window https://chatgpt.com/
+```
+
+Sign in to ChatGPT only as the intended account in that window; Chrome sync is unnecessary.
+Then set the agent-level config (preserving any other settings):
+
+```json
+{ "browser": { "chatGptRelayEndpoint": "http://127.0.0.1:9333" } }
+```
+
+- This routes all Oracle ChatGPT calls to that browser. Grok and the general OMP browser relay
+  are unchanged. Do not connect the dedicated profile’s relay extension to the personal relay.
+- Keep this Chrome process running for jobs. After quitting or rebooting, relaunch with the
+  same command; login persists in its user-data directory. Oracle does not start this external
+  browser and does not fall back to personal Chrome if its endpoint is unavailable.
+- This is a persistent, account-isolated browser with per-job owned tabs, **not** the default
+  disposable per-job seed clones. Do not point it at your personal Chrome user-data directory.
+- Oracle checks login readiness, not an expected email. Keep only the intended account signed
+  in and verify it before uploading. The CDP port can control that browser; keep it on loopback.
+- Existing conversation links stay with their original account; changing endpoints does not
+  transfer history or make old-account follow-ups accessible.
+- Native CDP has been exercised with an Instant upload/response/cleanup and cross-origin frame
+  capture. It supplies the transport used by Deep Research, but a complete Deep Research run
+  and native report export on this setup have not yet been exercised. The default seed-clone
+  path still does not support Deep Research frame capture.
+
 ## Cookie sources
 
 ### Linux

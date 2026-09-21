@@ -7,6 +7,7 @@ history is kept below the divider.
 ## Unreleased
 
 ### Fixed
+- wait for an acknowledged owned-tab close to disappear from Chrome target discovery before releasing runtime ownership; native Chrome can remove the target asynchronously. The bounded wait never reissues close and still rejects a target that remains live
 - bind identity-less turns by their normalized text instead of the sanitized HTML, whose class attributes churn between renders: an index-only binding now recollects the same content and still refuses changed content
 
 ### Added

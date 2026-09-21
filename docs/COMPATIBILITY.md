@@ -29,6 +29,11 @@ A persisted session is required on every host. `--no-session` runs report oracle
 
 ## Providers
 
+The existing-Chrome endpoint also accepts native loopback Chrome CDP with a separate persistent
+user-data directory. Instant upload/response/owned-tab cleanup and cross-origin frame capture
+were exercised on macOS; a full Deep Research/export run on native CDP remains unverified.
+This is not the default isolated seed-clone transport; see [setup](OPERATIONS.md#dedicated-account-in-persistent-chrome).
+
 | Provider | Selection | Archive format | Upload ceiling | Auth transports |
 | --- | --- | --- | --- | --- |
 | ChatGPT | `preset` (canonical ids in `ORACLE_SUBMIT_PRESETS`; human-readable labels are normalized) | `.tar.zst` | 250 MiB | Isolated seed profile, or existing-Chrome relay |

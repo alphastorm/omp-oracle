@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { setTimeout as sleep } from "node:timers/promises";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
 
 const runFile = promisify(execFile);
@@ -63,8 +64,14 @@ export async function closeRelayTab({ binary, sessionName, endpoint, targetId })
   // The driver can omit a live target or acknowledge a rejected close. Always
   // verify the relay inventory before discarding the durable owned identity.
   await assertRelayReady(endpoint);
-  if (await relayTargetListed(endpoint, targetId)) {
-    throw new Error("The job-owned relay tab remains open after cleanup.");
+  // Native Chrome can acknowledge close before target discovery removes the tab.
+  // Wait only after an owned close; never retry the close or select another tab.
+  const deadline = Date.now() + 2000;
+  while (await relayTargetListed(endpoint, targetId)) {
+    if (!owned || Date.now() >= deadline) {
+      throw new Error("The job-owned relay tab remains open after cleanup.");
+    }
+    await sleep(100);
   }
 }
 
