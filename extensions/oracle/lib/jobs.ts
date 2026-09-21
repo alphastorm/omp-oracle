@@ -5,8 +5,9 @@
 // Invariants/Assumptions: Job mutations happen under per-job locks, worker identity checks defend against PID reuse, and persisted jobs remain the source of truth.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import { isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -695,8 +696,9 @@ export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
 }
 
 export async function sha256File(path: string): Promise<string> {
-  const buffer = await readFile(path);
-  return createHash("sha256").update(buffer).digest("hex");
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
 }
 
 export async function tryClaimNotification(jobId: string, claimedBy: string, now = new Date().toISOString()): Promise<OracleJob | undefined> {

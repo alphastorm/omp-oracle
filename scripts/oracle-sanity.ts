@@ -4378,6 +4378,10 @@ async function testGrokArchiveUsesGzipTarFormat(config: OracleConfig): Promise<v
     });
     assert(archive.archiveBytes > 0, "Grok tar.gz archive creation should report a non-empty archive size");
     assert(listArchiveEntries(archivePath).includes("README.md"), "Grok tar.gz archives should remain normal tar archives that providers can extract without zstd");
+    assert(
+      archive.sha256 === createHash("sha256").update(await readFile(archivePath)).digest("hex"),
+      "the reported archive sha256 must be the digest of the bytes on disk (artifact matching and the release checker compare it)",
+    );
 
     const runtime = {
       runtimeId: `runtime-${randomUUID()}`,
