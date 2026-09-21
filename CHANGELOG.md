@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.3.3 - 2026-09-21
 
 ### Fixed
 - the release preset proof runner defaulted the relay endpoint to `http://127.0.0.1:9224`, the personal browser relay, whenever `PI_ORACLE_PROOF_RELAY` was unset; the extension itself has no relay default, so this invented one silently routed eight live ChatGPT jobs to whichever account that browser held. The endpoint now comes from `PI_ORACLE_PROOF_RELAY` or from `browser.chatGptRelayEndpoint` in the operator's agent-scope `oracle.json` (the account real jobs use), is printed with its source before the first submit, and is refused when neither is set; `--dry-run` resolves everything without submitting
