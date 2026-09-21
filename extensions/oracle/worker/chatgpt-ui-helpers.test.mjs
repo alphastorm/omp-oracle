@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
-import { classifyDeepResearchTurn, effortSelectionVisible, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel } from "./chatgpt-ui-helpers.mjs";
+import { classifyDeepResearchTurn, effortSelectionVisible, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotHasUsableComposerControls, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel } from "./chatgpt-ui-helpers.mjs";
 
 test("a versioned Pro button opens configuration without attesting its effort", () => {
   const snapshot = '- button "6 Pro" [expanded=false, ref=e48]';
@@ -45,6 +45,29 @@ test("the slider-based Thinking effort menu is recognized only when open", () =>
   ].join("\n");
   assert.equal(snapshotHasPowerSliderMenu(open), true);
   assert.equal(snapshotHasPowerSliderMenu('- button "Extra High" [expanded=false, ref=e117]'), false);
+});
+
+// Observed live on 2026-09-21: thinking_standard and thinking_extended both applied their power
+// stop, then failed after the full settle timeout because ChatGPT left the compact intelligence
+// menu mounted with its composer opener already reporting expanded=false.
+test("a compact intelligence menu contradicted by its collapsed opener is stale, not open UI", () => {
+  const stale = [
+    '- textbox "Chat with ChatGPT" [ref=e70]',
+    '- button "Add files and more" [expanded=false, ref=e69]',
+    '- button "Medium" [expanded=false, ref=e73]',
+    '- menu "Medium" [ref=e2] clickable [onclick]',
+    '- menuitem "Select model" [expanded=false, ref=e15]',
+    '- menuitem "Power" [ref=e5]',
+  ].join("\n");
+  assert.equal(snapshotHasModelConfigurationUi(stale), false);
+  assert.equal(snapshotHasUsableComposerControls(stale), true);
+
+  // The same node while the popup is genuinely open still blocks the composer.
+  assert.equal(snapshotHasModelConfigurationUi(stale.replace("[expanded=false, ref=e73]", "[expanded=true, ref=e73]")), true);
+
+  // Without an opener to contradict it, the menu is still treated as open.
+  const noOpener = stale.split("\n").filter((line) => !line.includes('button "Medium"')).join("\n");
+  assert.equal(snapshotHasModelConfigurationUi(noOpener), true);
 });
 
 test("the slider description yields the current stop, and anything else yields nothing", () => {

@@ -257,8 +257,31 @@ function hasRemovableComposerModelChip(entries) {
   );
 }
 
+// ChatGPT can leave a compact intelligence menu mounted after the popup closes: the menu node
+// outlives it while the composer opener already reports expanded=false. The opener owns the
+// aria-expanded contract, so a menu contradicted by its own collapsed opener is a stale node,
+// not open configuration UI. Treating it as open strands every reader that waits for it to go.
+function hasCollapsedOpenerFor(entries, menuLabel) {
+  const label = normalizeText(menuLabel);
+  if (!label) return false;
+  return entries.some(
+    (entry) => entry.kind === "button"
+      && normalizeText(entry.label) === label
+      && /\bexpanded=false\b/.test(String(entry.line || "")),
+  );
+}
+
+function hasOpenCompactIntelligenceMenu(entries) {
+  return entries.some(
+    (entry) => !entry.disabled
+      && entry.kind === "menu"
+      && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label))
+      && !hasCollapsedOpenerFor(entries, entry.label),
+  );
+}
+
 function hasCompactIntelligenceMenuContext(entries) {
-  return entries.some((entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)))
+  return hasOpenCompactIntelligenceMenu(entries)
     || entries.some((entry) => !entry.disabled && entry.kind === "menuitemradio" && checkedState(entry) === true && compactSelectionFromEntry(entry, entries));
 }
 
@@ -654,9 +677,7 @@ export function snapshotHasModelConfigurationUi(snapshot) {
     (entry) => !entry.disabled && entry.kind === "menuitem" && normalizeText(entry.label).startsWith("Effort ") && !String(entry.line || "").includes("expanded=true"),
   );
   if (hasCollapsedEffortOptions && visibleCompactControls.length === 0) return false;
-  const hasCompactIntelligenceMenu = entries.some(
-    (entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)),
-  );
+  const hasCompactIntelligenceMenu = hasOpenCompactIntelligenceMenu(entries);
   const hasIntelligenceHeading = entries.some((entry) => entry.kind === "heading" && normalizeText(entry.label) === "Intelligence" && !entry.disabled);
   const hasEffortCombobox = entries.some(
     (entry) => entry.kind === "combobox" && EFFORT_LABELS.has(entry.value || "") && !entry.disabled,

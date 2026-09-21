@@ -9,6 +9,7 @@ history is kept below the divider.
 ### Fixed
 - wait for an acknowledged owned-tab close to disappear from Chrome target discovery before releasing runtime ownership; native Chrome can remove the target asynchronously. The bounded wait never reissues close and still rejects a target that remains live
 - bind identity-less turns by their normalized text instead of the sanitized HTML, whose class attributes churn between renders: an index-only binding now recollects the same content and still refuses changed content
+- stop failing a job whose model settings were already applied: ChatGPT can leave the compact intelligence menu mounted after it closes, with the composer opener already reporting `expanded=false`. That stale node read as open configuration UI, so the worker waited out the whole settle timeout and failed with `Could not verify requested model settings after configuration`, and the same clause also blocked the composer chip from confirming the selection. The opener now owns the `aria-expanded` contract; a menu with no opener to contradict it is still treated as open
 
 ### Added
 - `npm run release:proof:chatgpt-presets:run`: submits the live eight-preset proof through isolated OMP print-mode sessions and writes the proof file the release checker validates; the Oh My Pi source-loading route is documented in the test plan
