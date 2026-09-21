@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveNodeExecutable } from "../shared/process-helpers.mjs";
-import { rename, rm, stat } from "node:fs/promises";
+import { readFile, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createArchive, type ArchiveCreationResult, type ArchiveSizeBreakdownRow } from "./archive.js";
@@ -1191,7 +1191,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         let responsePreview: string | undefined;
         let responseAvailable = false;
         try {
-          const response = await import("node:fs/promises").then((fs) => fs.readFile(current.responsePath || "", "utf8"));
+          const response = await readFile(current.responsePath || "", "utf8");
           responsePreview = response.slice(0, 4000);
           responseAvailable = true;
         } catch {

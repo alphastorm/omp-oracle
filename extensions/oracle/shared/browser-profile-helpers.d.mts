@@ -36,7 +36,6 @@ export function chromiumKeychainSupportedOnPlatform(platform?: OraclePlatform): 
 export function chromeUserAgentPlatformToken(platform?: OraclePlatform): string | undefined;
 export function pathInsideOrEqual(childPath: string, parentPath: string): boolean;
 export function resolvePathThroughExistingAncestorsSync(pathValue: string): string | undefined;
-export function protectedCookieSourcePaths(cookieSources?: { chromeProfile?: string; chromeCookiePath?: string }): string[];
 export function knownBrowserUserDataPathMatch(
   pathValue: string,
   options?: BrowserPathOptions & {

@@ -17,7 +17,6 @@ export declare function matchesCompactIntelligenceControlLabel(label: string | u
 export declare function matchesCompactIntelligenceOpenerLabel(label: string | undefined): boolean;
 export declare function requestedEffortLabel(selection: OracleUiSelection): string | undefined;
 export declare function effortSelectionVisible(snapshot: string, effortLabel: string | undefined): boolean;
-export declare function thinkingChipVisible(snapshot: string): boolean;
 export declare function snapshotHasClosedCompactSelection(snapshot: string, selection: OracleUiSelection): boolean;
 export declare function snapshotHasModelConfigurationUi(snapshot: string): boolean;
 export declare const POWER_SLIDER_TIER_LABELS: readonly string[];

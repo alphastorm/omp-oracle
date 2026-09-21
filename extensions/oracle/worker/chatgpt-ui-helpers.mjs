@@ -487,14 +487,6 @@ export function effortSelectionVisible(snapshot, effortLabel) {
   });
 }
 
-/**
- * @param {string} snapshot
- * @returns {boolean}
- */
-export function thinkingChipVisible(snapshot) {
-  return /button "(?:Light|Standard|Extended|Heavy)(?: thinking)?(?:, click to remove)?"/i.test(snapshot);
-}
-
 function hasCurrentPowerEffortMenu(entries) {
   const hasExpandedEffortOpener = entries.some(
     (entry) => !entry.disabled && entry.kind === "button" && normalizeText(entry.label) === "Thinking effort" && /\bexpanded=true\b/.test(String(entry.line || "")),

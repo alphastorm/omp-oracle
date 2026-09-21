@@ -85,100 +85,29 @@ function normalizeOracleSubmitPresetLookupKey(value: string): string {
     .replace(/\s+/g, " ");
 }
 
-function splitOracleSubmitPresetWords(value: string): string[] {
-  return value
-    .trim()
-    .replace(/[_-]+/g, " ")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-function lowercaseWords(words: readonly string[]): string[] {
-  return words.map((word) => word.toLowerCase());
-}
-
-function titleCaseWords(words: readonly string[]): string[] {
-  return words.map((word) => (word ? `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}` : word));
-}
-
-function buildOracleSubmitPresetSeparatorVariants(words: readonly string[]): string[] {
-  const normalizedWords = words.map((word) => word.trim()).filter(Boolean);
-  if (normalizedWords.length === 0) return [];
-
-  const variants = new Set<string>();
-  const build = (index: number, current: string): void => {
-    if (index >= normalizedWords.length) {
-      variants.add(current);
-      return;
-    }
-    for (const separator of [" ", "-"] as const) {
-      build(index + 1, `${current}${separator}${normalizedWords[index]}`);
-    }
-  };
-
-  build(1, normalizedWords[0]!);
-  return [...variants];
-}
-
-function buildOracleSubmitPresetJoinVariants(words: readonly string[]): string[] {
-  const normalizedWords = words.map((word) => word.trim()).filter(Boolean);
-  if (normalizedWords.length === 0) return [];
-
-  const lowercase = lowercaseWords(normalizedWords);
-  const titleWords = titleCaseWords(lowercase);
-  return [
-    ...buildOracleSubmitPresetSeparatorVariants(normalizedWords),
-    ...buildOracleSubmitPresetSeparatorVariants(lowercase),
-    ...buildOracleSubmitPresetSeparatorVariants(titleWords),
-  ];
-}
-
-function buildOracleSubmitPresetAliases(id: OracleSubmitPresetId, preset: OracleSubmitPreset): string[] {
-  const idWords = splitOracleSubmitPresetWords(id);
-  const labelWords = splitOracleSubmitPresetWords(preset.label);
-  return [
-    id,
-    ...buildOracleSubmitPresetJoinVariants(idWords),
-    preset.label,
-    preset.label.toLowerCase(),
-    ...buildOracleSubmitPresetJoinVariants(labelWords),
-  ].filter(Boolean);
-}
-
-function buildOracleSubmitPresetLookupArtifacts(): {
-  acceptedInputs: readonly string[];
-  lookup: ReadonlyMap<string, OracleSubmitPresetId>;
-} {
-  const lookup = new Map<string, OracleSubmitPresetId>();
-  const aliases = new Set<string>();
-
+// Lookup keys come from the canonical id and the authored label only. The normalizer already
+// collapses case, `_`/`-`, punctuation, and whitespace, so every separator or case variant of either
+// resolves to one of those two keys.
+function buildOracleSubmitPresetLookup(): Readonly<Record<string, OracleSubmitPresetId>> {
+  const lookup: Record<string, OracleSubmitPresetId> = {};
   for (const [id, preset] of Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, OracleSubmitPreset][]) {
-    for (const alias of buildOracleSubmitPresetAliases(id, preset)) {
+    for (const alias of [id, preset.label]) {
       const normalized = normalizeOracleSubmitPresetLookupKey(alias);
-      if (!normalized) continue;
-      const existing = lookup.get(normalized);
+      const existing = lookup[normalized];
       if (existing && existing !== id) {
         throw new Error(`Conflicting oracle_submit preset alias: ${alias} matches both ${existing} and ${id}`);
       }
-      lookup.set(normalized, id);
-      if (alias !== id) aliases.add(alias);
+      lookup[normalized] = id;
     }
   }
-
-  return {
-    acceptedInputs: Object.freeze([...ORACLE_SUBMIT_PRESET_IDS, ...[...aliases].sort((left, right) => left.localeCompare(right))]),
-    lookup,
-  };
+  return Object.freeze(lookup);
 }
 
-const ORACLE_SUBMIT_PRESET_LOOKUP_ARTIFACTS = buildOracleSubmitPresetLookupArtifacts();
-
-export const ORACLE_SUBMIT_PRESET_ACCEPTED_INPUTS = ORACLE_SUBMIT_PRESET_LOOKUP_ARTIFACTS.acceptedInputs;
+const ORACLE_SUBMIT_PRESET_LOOKUP = buildOracleSubmitPresetLookup();
 
 export function coerceOracleSubmitPresetId(value: string): OracleSubmitPresetId {
   const normalized = normalizeOracleSubmitPresetLookupKey(value);
-  const presetId = ORACLE_SUBMIT_PRESET_LOOKUP_ARTIFACTS.lookup.get(normalized);
+  const presetId = ORACLE_SUBMIT_PRESET_LOOKUP[normalized];
   if (presetId) return presetId;
   throw new Error(
     `Unknown oracle_submit preset: ${value}. Use one of the canonical ids (${ORACLE_SUBMIT_PRESET_IDS.join(", ")}) or a matching preset label.`,

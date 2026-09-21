@@ -6,12 +6,12 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
-import { access, cp as copyDirectory, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, cp as copyDirectory, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
-import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
+import { isTrackedProcessAlive, resolveAgentBrowserBinary } from "../shared/process-helpers.mjs";
 import { assertRelayReady, closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import type { OracleConfig, OracleProvider } from "./config.js";
 import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
@@ -354,12 +354,6 @@ export function getSeedGeneration(config: OracleConfig): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-export async function writeSeedGeneration(config: OracleConfig, value = new Date().toISOString()): Promise<string> {
-  await mkdir(config.browser.authSeedProfileDir, { recursive: true, mode: 0o700 });
-  await writeFile(join(config.browser.authSeedProfileDir, SEED_GENERATION_FILE), `${value}\n`, { encoding: "utf8", mode: 0o600 });
-  return value;
 }
 
 function activeJobExists(jobId: string): boolean {

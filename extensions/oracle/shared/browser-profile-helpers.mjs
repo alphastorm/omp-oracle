@@ -219,14 +219,6 @@ function protectedPathsForCookieDb(cookiePath) {
   return [profileDir, dirname(profileDir)];
 }
 
-/**
- * @param {{ chromeProfile?: string; chromeCookiePath?: string } | undefined} cookieSources
- * @returns {string[]}
- */
-export function protectedCookieSourcePaths(cookieSources) {
-  return protectedCookieSourcePathEntries(cookieSources).map((entry) => entry.path);
-}
-
 function protectedCookieSourcePathEntries(cookieSources) {
   if (!cookieSources) return [];
   const roots = [];
