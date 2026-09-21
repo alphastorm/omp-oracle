@@ -108,6 +108,7 @@ import {
   markJobNotified,
   pruneTerminalOracleJobs,
   ORACLE_WAKEUP_POST_SEND_RETENTION_MS,
+  readExtensionProvenance,
   readJob,
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
@@ -1246,6 +1247,26 @@ async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): P
   assert(instantAutoSwitchJob?.selection?.autoSwitchToThinking === true, "instant auto-switch presets should enable autoSwitchToThinking");
   assert(instantAutoSwitchJob?.selection?.effort === undefined, "instant auto-switch jobs should not persist effort");
   await cleanupJob(instantAutoSwitchJobId);
+}
+
+// An installed package has no repository. Before this contract the reader borrowed the *project's*
+// HEAD whenever the extension root had none, so a job run from ~/.omp/plugins recorded the
+// checkout's commit and `git` printed "fatal: not a git repository" into the session.
+async function testExtensionProvenanceOmitsGitHeadOutsideCheckout(): Promise<void> {
+  const checkout = readExtensionProvenance();
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: join(import.meta.dirname, ".."), encoding: "utf8" }).trim();
+  assert(checkout.gitHead === head, "a source-loaded extension should record its own checkout HEAD");
+
+  const packageRoot = await mkdtemp(join(tmpdir(), `oracle-sanity-provenance-${randomUUID()}-`));
+  try {
+    await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "omp-oracle", version: "9.9.9-fixture" }));
+    const installed = readExtensionProvenance(packageRoot);
+    assert(installed.packageVersion === "9.9.9-fixture", "provenance should read the package version from the extension root it was loaded from");
+    assert(installed.sourcePath === packageRoot, "provenance should record the loaded extension root");
+    assert(installed.gitHead === undefined, "an extension root without a repository must not borrow the project's git HEAD");
+  } finally {
+    await rm(packageRoot, { recursive: true, force: true });
+  }
 }
 
 async function testOracleSubmitPresetGuardrails(): Promise<void> {
@@ -5959,6 +5980,7 @@ async function runPlatformSanity(): Promise<void> {
   await testAuthBootstrapReportsEffectiveConfigPaths(config);
   await testProjectConfigRespectsExplicitProjectDistrust();
   await testJobCreationPersistsSelectionSnapshot(config);
+  await testExtensionProvenanceOmitsGitHeadOutsideCheckout();
 
   sanityProgress("platform archive/process/helpers");
   await testArchiveDefaultExclusions();
@@ -6005,6 +6027,7 @@ async function main() {
   await testAuthBootstrapReportsEffectiveConfigPaths(config);
   await testProjectConfigRespectsExplicitProjectDistrust();
   await testJobCreationPersistsSelectionSnapshot(config);
+  await testExtensionProvenanceOmitsGitHeadOutsideCheckout();
   sanityProgress("submit/preflight/status");
   await testOracleSubmitPresetGuardrails();
   await testOraclePreflightReportsBlockingReadinessStates();

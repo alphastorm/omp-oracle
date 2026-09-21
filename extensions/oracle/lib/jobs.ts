@@ -918,8 +918,9 @@ export async function cancelOracleJob(id: string, reason = "Cancelled by user"):
   });
 }
 
-function readExtensionProvenance(cwd: string): OracleExtensionProvenance {
-  const sourcePath = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+const EXTENSION_SOURCE_PATH = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+
+export function readExtensionProvenance(sourcePath = EXTENSION_SOURCE_PATH): OracleExtensionProvenance {
   let packageName = "omp-oracle";
   let packageVersion = "unknown";
   try {
@@ -931,12 +932,13 @@ function readExtensionProvenance(cwd: string): OracleExtensionProvenance {
     // unusual loader; release proof rejects unknown versions.
   }
 
+  // `gitHead` names the checkout a source-loaded extension runs from. An installed package has no
+  // repository (npm records gitHead only in the registry manifest, not in the tarball), and the
+  // project's own HEAD says nothing about the extension, so the field is omitted rather than borrowed.
   let gitHead: string | undefined;
-  try {
-    gitHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourcePath, encoding: "utf8" }).trim();
-  } catch {
+  if (existsSync(join(sourcePath, ".git"))) {
     try {
-      gitHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+      gitHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourcePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     } catch {
       gitHead = undefined;
     }
@@ -998,7 +1000,7 @@ export async function createJob(
     originSessionFile: sessionFile,
     requestSource: input.requestSource,
     selection: input.selection,
-    extensionProvenance: readExtensionProvenance(cwd),
+    extensionProvenance: readExtensionProvenance(),
     followUpToJobId: input.followUpToJobId,
     chatUrl: input.chatUrl,
     conversationId,
