@@ -595,6 +595,19 @@ export function snapshotHasPowerSliderMenu(snapshot) {
 }
 
 /**
+ * Whether the thinking-effort picker closed on the requested stop. Stepping down to Instant from a
+ * thinking tier can close the whole picker (observed 2026-09-21 right after `thinking_heavy`): the
+ * Power slider unmounts mid-stepping and the composer pill already reads the target, which the
+ * driver must accept as "set", not as a lost control.
+ * @param {string} snapshot
+ * @param {OracleUiSelection} selection
+ * @returns {boolean}
+ */
+export function powerSliderClosedIntoSelection(snapshot, selection) {
+  return !snapshotHasPowerSliderMenu(snapshot) && snapshotHasClosedCompactSelection(snapshot, selection);
+}
+
+/**
  * @param {string | undefined} description
  * @returns {{ label: string; index: number; count: number } | undefined}
  */

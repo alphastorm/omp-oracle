@@ -40,6 +40,7 @@ import {
   matchesCompactIntelligenceOpenerLabel,
   matchesModelConfigurationOpener,
   matchesRequestedModelControlLabel,
+  powerSliderClosedIntoSelection,
   snapshotCanSafelySkipModelConfiguration,
   snapshotHasClosedCompactSelection,
   snapshotHasModelConfigurationUi,
@@ -5600,6 +5601,25 @@ function testChatGptUiHelpers(): void {
   assert(
     snapshotHasClosedCompactSelection(closedInstantComposerSnapshot, { modelFamily: "instant", autoSwitchToThinking: true }),
     "closed compact Instant composer pills should verify instant auto-switch when the compact UI omits the legacy auto-switch control",
+  );
+  // Captured 2026-09-21 from a failed `instant` job that followed `thinking_heavy`: stepping the
+  // Power slider down to Instant closed the whole picker, the slider unmounted, and the composer
+  // pill already read Instant. The driver read that as a lost control and failed the job.
+  const pickerClosedOnInstantSnapshot = [
+    '- heading "What’s on the agenda today?" [level=1, ref=e111]',
+    '- generic [ref=e112] clickable [onclick]',
+    '  - button "Add files and more" [expanded=false, ref=e113]',
+    '  - textbox "Chat with ChatGPT" [ref=e114]',
+    '  - button "Instant" [expanded=false, ref=e117]',
+    '  - button "Start dictation" [ref=e115]',
+  ].join("\n");
+  assert(
+    powerSliderClosedIntoSelection(pickerClosedOnInstantSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "a picker that closed on the requested Instant stop is a configured composer, not a lost slider",
+  );
+  assert(
+    !powerSliderClosedIntoSelection(pickerClosedOnInstantSnapshot, { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }),
+    "a closed Instant pill never satisfies a thinking target",
   );
   assert(
     !snapshotCanSafelySkipModelConfiguration('- button "Pro" [expanded=false, ref=e106]', { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),

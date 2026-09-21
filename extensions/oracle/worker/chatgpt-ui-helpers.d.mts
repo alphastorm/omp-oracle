@@ -21,6 +21,7 @@ export declare function snapshotHasClosedCompactSelection(snapshot: string, sele
 export declare function snapshotHasModelConfigurationUi(snapshot: string): boolean;
 export declare const POWER_SLIDER_TIER_LABELS: readonly string[];
 export declare function snapshotHasPowerSliderMenu(snapshot: string): boolean;
+export declare function powerSliderClosedIntoSelection(snapshot: string, selection: OracleUiSelection): boolean;
 export declare function parsePowerSliderDescription(description: string | undefined): { label: string; index: number; count: number } | undefined;
 export declare function powerSliderTargetLabel(selection: OracleUiSelection): string;
 export declare function powerSliderStepKey(currentLabel: string, targetLabel: string): "ArrowLeft" | "ArrowRight" | undefined;

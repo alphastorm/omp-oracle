@@ -37,6 +37,7 @@ import {
   isDeepResearchMenuEntry,
   parseDeepResearchWidgetText,
   parsePowerSliderDescription,
+  powerSliderClosedIntoSelection,
   powerSliderStepKey,
   powerSliderTargetLabel,
   snapshotHasDeepResearchPill,
@@ -1703,7 +1704,13 @@ async function configurePowerSlider(job) {
       await agentBrowser(job, "press", key);
       await agentBrowser(job, "wait", "250");
       state = await readPowerSliderState(job);
-      if (!state) throw new Error("Lost the ChatGPT thinking-effort slider while stepping");
+      if (!state) {
+        if (powerSliderClosedIntoSelection(await snapshotText(job), job.selection)) {
+          await log(`Thinking-effort picker closed on ${target}; the composer already reads it`);
+          return;
+        }
+        throw new Error("Lost the ChatGPT thinking-effort slider while stepping");
+      }
       if (state.index === before) throw new Error(`Thinking-effort slider did not move toward ${target} from ${state.label}`);
     }
   }
