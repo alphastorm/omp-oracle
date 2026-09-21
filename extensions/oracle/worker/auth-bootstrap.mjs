@@ -4,18 +4,15 @@
 // Usage: Spawned by /oracle-auth to prepare the shared auth seed profile used by future oracle jobs.
 // Invariants/Assumptions: Runs against a local Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
 import { withLock } from "./state-locks.mjs";
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
-import {
-  assertNotKnownBrowserUserDataPath,
-  sweetCookieSafeStoragePasswordScrubbedEnv,
-} from "../shared/browser-profile-helpers.mjs";
-import { resolveAgentBrowserBinary } from "../shared/process-helpers.mjs";
+import { assertNotKnownBrowserUserDataPath } from "../shared/browser-profile-helpers.mjs";
+import { resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
 import { getOracleStateDir } from "../shared/state-path-helpers.mjs";
+import { sleep } from "../shared/time-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
@@ -116,10 +113,6 @@ function authConfigSummary() {
   return lines.join("\n");
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function initDiagnosticsBundle() {
   if (DIAGNOSTICS_DIR) return;
   DIAGNOSTICS_DIR = await mkdtemp(join(tmpdir(), "pi-oracle-auth-"));
@@ -144,77 +137,14 @@ async function log(message) {
   await chmod(LOG_PATH, 0o600).catch(() => undefined);
 }
 
-function killProcessTree(child) {
-  if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
-    return;
-  }
-  child.kill("SIGTERM");
-}
-
-function killProcess(child) {
-  if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
-    return;
-  }
-  child.kill("SIGKILL");
-}
-
 /**
+ * Auth-worker commands default to the env-tunable agent-browser deadline and kill grace.
  * @param {string} command
  * @param {string[]} args
- * @param {import("node:child_process").SpawnOptions & { timeoutMs?: number; input?: string | Buffer; allowFailure?: boolean }} [options]
- * @returns {Promise<{ code: number | null; stdout: string; stderr: string }>}
+ * @param {import("../shared/process-helpers.d.mts").OracleRunCommandOptions} [options]
  */
 function spawnCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const { timeoutMs = AGENT_BROWSER_COMMAND_TIMEOUT_MS, input, allowFailure, ...spawnOptions } = options;
-    const child = spawn(command, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      ...spawnOptions,
-      env: sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env),
-      shell: spawnOptions.shell ?? process.platform === "win32",
-    });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let killTimer;
-    let killGraceTimer;
-    if (typeof timeoutMs === "number" && timeoutMs > 0) {
-      killTimer = setTimeout(() => {
-        timedOut = true;
-        killProcessTree(child);
-        killGraceTimer = setTimeout(() => killProcess(child), AGENT_BROWSER_KILL_GRACE_MS);
-        killGraceTimer.unref?.();
-      }, timeoutMs);
-      killTimer.unref?.();
-    }
-    if (input) child.stdin.end(input);
-    else child.stdin.end();
-    child.stdout.on("data", (data) => {
-      stdout += String(data);
-    });
-    child.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    child.on("error", (error) => {
-      clearTimeout(killTimer);
-      clearTimeout(killGraceTimer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(killTimer);
-      clearTimeout(killGraceTimer);
-      if (timedOut) {
-        const error = new Error(stderr || stdout || `${command} timed out after ${timeoutMs}ms`);
-        if (allowFailure) resolve({ code, stdout: stdout.trim(), stderr: error.message });
-        else reject(error);
-        return;
-      }
-      if (code === 0 || allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
-      else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
-    });
-  });
+  return runCommand(command, args, { timeoutMs: AGENT_BROWSER_COMMAND_TIMEOUT_MS, killGraceMs: AGENT_BROWSER_KILL_GRACE_MS, ...options });
 }
 
 function targetBrowserBaseArgs(options = {}) {
@@ -595,7 +525,7 @@ async function readSourceCookies() {
   // Sweet Cookie reads Linux safe-storage overrides directly from process.env.
   // Keep the worker's environment stable for the rest of this short-lived
   // bootstrap process, but scrub every helper/browser subprocess via
-  // spawnCommand's sweetCookieSafeStoragePasswordScrubbedEnv().
+  // runCommand's sweetCookieSafeStoragePasswordScrubbedEnv().
   const { cookies, warnings } = await readRawSourceCookies();
 
   if (warnings.length) {

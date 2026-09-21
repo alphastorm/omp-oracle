@@ -8,12 +8,98 @@ import { spawn, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
+import { sleep } from "./time-helpers.mjs";
 
 /** @typedef {import("./process-helpers.d.mts").OracleTrackedProcessOptions} OracleTrackedProcessOptions */
 /** @typedef {import("./process-helpers.d.mts").OracleDetachedProcessHandle} OracleDetachedProcessHandle */
+/** @typedef {import("./process-helpers.d.mts").OracleRunCommandOptions} OracleRunCommandOptions */
+/** @typedef {import("./process-helpers.d.mts").OracleRunCommandResult} OracleRunCommandResult */
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const DEFAULT_KILL_GRACE_MS = 2_000;
+
+/**
+ * Ask a child and its descendants to stop: SIGTERM, or `taskkill /t` on Windows where signals
+ * do not reach a shell-spawned tree.
+ * @param {import("node:child_process").ChildProcess} child
+ */
+export function killProcessTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGTERM");
+}
+
+/**
+ * Force a child to stop: SIGKILL, or `taskkill /f` on Windows.
+ * @param {import("node:child_process").ChildProcess} child
+ */
+export function killProcess(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGKILL");
+}
+
+/**
+ * Run a child process to completion with a bounded lifetime. The environment is always scrubbed
+ * of safe-storage passwords; on Windows the command runs through the shell. A `timeoutMs` first
+ * terminates the process tree, then force-kills it after `killGraceMs`; the promise settles only
+ * once the child has closed. A non-zero exit or timeout rejects unless `allowFailure` is set, in
+ * which case the result carries the exit code and, for a timeout, the timeout message as stderr.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {OracleRunCommandOptions} [options]
+ * @returns {Promise<OracleRunCommandResult>}
+ */
+export function runCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const { timeoutMs, killGraceMs = DEFAULT_KILL_GRACE_MS, input, allowFailure = false, ...spawnOptions } = options;
+    const child = spawn(command, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      ...spawnOptions,
+      env: sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env),
+      shell: spawnOptions.shell ?? process.platform === "win32",
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    /** @type {NodeJS.Timeout | undefined} */
+    let killTimer;
+    /** @type {NodeJS.Timeout | undefined} */
+    let killGraceTimer;
+    if (typeof timeoutMs === "number" && timeoutMs > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        killProcessTree(child);
+        killGraceTimer = setTimeout(() => killProcess(child), killGraceMs);
+        killGraceTimer.unref?.();
+      }, timeoutMs);
+      killTimer.unref?.();
+    }
+    if (input) child.stdin?.end(input);
+    else child.stdin?.end();
+    child.stdout?.on("data", (data) => { stdout += String(data); });
+    child.stderr?.on("data", (data) => { stderr += String(data); });
+    child.on("error", (error) => {
+      clearTimeout(killTimer);
+      clearTimeout(killGraceTimer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(killTimer);
+      clearTimeout(killGraceTimer);
+      if (timedOut) {
+        const message = stderr || stdout || `${command} timed out after ${timeoutMs}ms`;
+        if (allowFailure) resolve({ code, stdout: stdout.trim(), stderr: message, timedOut });
+        else reject(new Error(message));
+        return;
+      }
+      if (code === 0 || allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim(), timedOut });
+      else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
+    });
+  });
 }
 export function resolveNodeExecutable() {
   const configured = process.env.PI_ORACLE_NODE_PATH?.trim();

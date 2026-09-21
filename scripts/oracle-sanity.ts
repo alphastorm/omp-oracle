@@ -89,7 +89,7 @@ import {
   scrubSweetCookieSafeStoragePasswordEnv,
   sweetCookieSafeStoragePasswordScrubbedEnv,
 } from "../extensions/oracle/shared/browser-profile-helpers.mjs";
-import { isTrackedProcessAlive, spawnDetachedNodeProcess, terminateTrackedProcess } from "../extensions/oracle/shared/process-helpers.mjs";
+import { isTrackedProcessAlive, runCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../extensions/oracle/shared/process-helpers.mjs";
 import {
   acquireLock as acquireWorkerStateLock,
   createLease as createWorkerStateLease,
@@ -4187,9 +4187,9 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(authBootstrapSource.includes("PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS"), "auth bootstrap should allow shorter timeout overrides for close-time smoke tests");
   assert(authBootstrapSource.includes("isAbsolute(targetDir)"), "auth bootstrap should accept platform-native absolute paths, including Windows drive-letter paths");
   assert(authBootstrapSource.includes("Object.hasOwn(maybeOptions, \"timeoutMs\")"), "auth bootstrap targetCommand should accept explicit timeout overrides");
-  assert(authBootstrapSource.includes("timed out after"), "auth bootstrap subprocess wrapper should report timeout failures clearly");
+  assert(!authBootstrapSource.includes("function killProcessTree") && !workerSource.includes("function killProcessTree") && !runtimeSource.includes("function killProcessTree"), "subprocess lifetime handling lives once, in the shared process helpers; a worker or runtime copy would reopen the class fixed in 0.3.3");
   assert(!authBootstrapSource.includes("scrubSweetCookieSafeStoragePasswordEnv"), "auth bootstrap should avoid mutating process.env while handling Sweet Cookie safe-storage overrides");
-  assert(workerSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "worker helper subprocesses should scrub safe-storage passwords while preserving caller-provided env vars");
+  assert(sharedProcessSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "the shared subprocess runner should scrub safe-storage passwords while preserving caller-provided env vars");
   assert(workerSource.includes("Launching isolated Chrome directly for agent-browser attach"), "worker should launch the isolated Chrome runtime itself instead of depending on global agent-browser daemon launch options");
   assert(workerSource.includes('"connect", endpoint'), "worker should attach agent-browser to the worker-owned Chrome DevTools endpoint so non-oracle sessions can remain active");
   assert(workerSource.includes('"open", url'), "worker should navigate the connected oracle session without relaunch-scoped agent-browser flags after attaching to worker-owned Chrome");
@@ -4198,9 +4198,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("browser.args cannot override oracle-managed Chrome launch isolation flag"), "worker should reject browser args that can override profile or DevTools isolation");
   assert(!workerSource.includes('[...browserBaseArgs(job, { withLaunchOptions: true, mode }), "open", url]'), "worker should not launch oracle browsers through agent-browser open with launch-scoped flags that conflict with unrelated sessions");
   assert(!runtimeSource.includes("assertNoForeignAgentBrowserSessions"), "submit preflight should not reject unrelated active agent-browser sessions now that worker-owned Chrome attach avoids global daemon takeover");
-  assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "auth bootstrap subprocesses should scrub safe-storage passwords while preserving caller-provided env vars");
   assert(browserProfileHelpersSource.includes('readFileSync(localStatePath, "utf8")'), "browser profile helpers should read Chromium Local State as utf8 text directly");
-  assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv"), "auth bootstrap should still scrub Sweet Cookie safe-storage passwords from helper subprocess environments");
   assert(authBootstrapSource.includes("Effective oracle auth config:"), "auth bootstrap failures should report the effective auth config path for the active agent dir");
   assert(!authBootstrapSource.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap should not hardcode the default global config path in user-facing remediation guidance");
   assert(stateLocksSource.includes("state-coordination-helpers.mjs"), "worker state-lock wrappers should delegate to the shared state coordination helper module");
@@ -4815,6 +4813,33 @@ async function testSharedProcessHelpers(): Promise<void> {
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
   }
+
+  // The one subprocess runner every worker and the extension use: stdin, env scrubbing, exit
+  // codes, timeouts, and the allowFailure contract. Replaces the source pins that used to guard
+  // each hand-rolled copy.
+  const node = process.execPath;
+  const echoed = await runCommand(node, ["-e", "process.stdin.on('data', (d) => process.stdout.write(String(d).toUpperCase()))"], { input: "piped\n" });
+  assert(echoed.code === 0 && echoed.stdout === "PIPED" && !echoed.timedOut, "runCommand should pipe input to stdin and return trimmed stdout");
+  const env = await runCommand(node, ["-e", "console.log(JSON.stringify({ secret: process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD ?? null, kept: process.env.ORACLE_SANITY_KEPT ?? null }))"], {
+    env: { ...process.env, SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD: "hunter2", ORACLE_SANITY_KEPT: "yes" },
+  });
+  assert(env.stdout === JSON.stringify({ secret: null, kept: "yes" }), "runCommand should scrub safe-storage passwords from the child environment and keep every other caller-provided variable");
+  await assertRejects(
+    () => runCommand(node, ["-e", "process.stderr.write('boom'); process.exit(3)"]),
+    "runCommand should reject a non-zero exit with the child's stderr",
+    "boom",
+  );
+  const tolerated = await runCommand(node, ["-e", "process.exit(3)"], { allowFailure: true });
+  assert(tolerated.code === 3 && !tolerated.timedOut, "allowFailure should resolve with the non-zero exit code");
+  const startedAt = Date.now();
+  await assertRejects(
+    () => runCommand(node, ["-e", "setInterval(() => {}, 1000)"], { timeoutMs: 300, killGraceMs: 300 }),
+    "runCommand should reject a child that outlives its deadline with a timeout message",
+    "timed out after 300ms",
+  );
+  assert(Date.now() - startedAt < 5_000, "a timed-out child should be terminated promptly, not waited out");
+  const timedOut = await runCommand(node, ["-e", "setInterval(() => {}, 1000)"], { timeoutMs: 300, killGraceMs: 300, allowFailure: true });
+  assert(timedOut.timedOut && timedOut.stderr.includes("timed out after 300ms"), "allowFailure should surface a timeout as a result rather than a rejection");
 }
 
 async function testSharedQueuedPromotionHelper(): Promise<void> {

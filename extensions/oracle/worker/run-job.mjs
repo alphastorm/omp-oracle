@@ -18,8 +18,9 @@ import {
   runQueuedJobPromotionPass,
 } from "../shared/job-coordination-helpers.mjs";
 import { applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
-import { readProcessStartedAt, resolveAgentBrowserBinary, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
+import { killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir, getOracleStateDir } from "../shared/state-path-helpers.mjs";
+import { sleep } from "../shared/time-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
@@ -236,79 +237,6 @@ async function heartbeat(patch = undefined, options = {}) {
 async function log(message) {
   const line = `[${new Date().toISOString()}] ${message}\n`;
   await secureAppendText(`${jobDir}/logs/worker.log`, line);
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function killProcessTree(child) {
-  if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
-    return;
-  }
-  child.kill("SIGTERM");
-}
-
-function killProcess(child) {
-  if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
-    return;
-  }
-  child.kill("SIGKILL");
-}
-
-/**
- * @param {string} command
- * @param {string[]} args
- * @param {import("node:child_process").SpawnOptions & { timeoutMs?: number; input?: string | Buffer; allowFailure?: boolean }} [options]
- * @returns {Promise<{ code: number | null; stdout: string; stderr: string }>}
- */
-function spawnCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const { timeoutMs, input, allowFailure, ...spawnOptions } = options;
-    const child = spawn(command, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      ...spawnOptions,
-      env: sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env),
-      shell: spawnOptions.shell ?? process.platform === "win32",
-    });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let killTimer;
-    if (typeof timeoutMs === "number" && timeoutMs > 0) {
-      killTimer = setTimeout(() => {
-        timedOut = true;
-        killProcessTree(child);
-        setTimeout(() => killProcess(child), 2_000).unref?.();
-      }, timeoutMs);
-      killTimer.unref?.();
-    }
-    if (input) child.stdin.end(input);
-    else child.stdin.end();
-    child.stdout.on("data", (data) => {
-      stdout += String(data);
-    });
-    child.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    child.on("close", (code) => {
-      clearTimeout(killTimer);
-      if (timedOut) {
-        const error = new Error(stderr || stdout || `${command} timed out after ${timeoutMs}ms`);
-        if (allowFailure) resolve({ code, stdout: stdout.trim(), stderr: error.message });
-        else reject(error);
-        return;
-      }
-      if (code === 0 || allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
-      else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
-    });
-    child.on("error", (error) => {
-      clearTimeout(killTimer);
-      reject(error);
-    });
-  });
 }
 
 async function cpSupportsApfsClone() {

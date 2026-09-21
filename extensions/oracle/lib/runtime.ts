@@ -4,14 +4,13 @@
 // Usage: Imported by jobs, tools, and queue logic to provision or tear down isolated oracle browser runtimes.
 // Invariants/Assumptions: Lease metadata is the admission source of truth, tracked worker identity checks defend against PID reuse, and runtime cleanup always attempts lease release.
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
 import { access, cp as copyDirectory, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
-import { isTrackedProcessAlive, resolveAgentBrowserBinary } from "../shared/process-helpers.mjs";
+import { isTrackedProcessAlive, resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
 import { assertRelayReady, closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import type { OracleConfig, OracleProvider } from "./config.js";
 import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
@@ -23,23 +22,6 @@ const AGENT_BROWSER_BIN = resolveAgentBrowserBinary();
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const ORACLE_SUBPROCESS_KILL_GRACE_MS = 2_000;
 
-function killProcessTree(child: ReturnType<typeof spawn>): void {
-  if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true })
-      .on("error", () => undefined);
-    return;
-  }
-  child.kill("SIGTERM");
-}
-
-function killProcess(child: ReturnType<typeof spawn>): void {
-  if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true })
-      .on("error", () => undefined);
-    return;
-  }
-  child.kill("SIGKILL");
-}
 const WORKSPACE_ROOT_MARKERS = [
   join(CONFIG_DIR_NAME, "extensions", "oracle.json"),
   CONFIG_DIR_NAME,
@@ -457,47 +439,9 @@ function profileCloneArgs(config: OracleConfig, sourceDir: string, destinationDi
 }
 
 async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(cpCommand(), args, { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32" });
-    let stderr = "";
-    let timedOut = false;
-    let killTimer: NodeJS.Timeout | undefined;
-    let killGraceTimer: NodeJS.Timeout | undefined;
-
-    const clearTimers = () => {
-      if (killTimer) clearTimeout(killTimer);
-      if (killGraceTimer) clearTimeout(killGraceTimer);
-    };
-
-    if ((options?.timeoutMs ?? 0) > 0) {
-      killTimer = setTimeout(() => {
-        timedOut = true;
-        killProcessTree(child);
-        killGraceTimer = setTimeout(() => {
-          killProcess(child);
-        }, ORACLE_SUBPROCESS_KILL_GRACE_MS);
-        killGraceTimer.unref?.();
-      }, options?.timeoutMs);
-      killTimer.unref?.();
-    }
-
-    child.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    child.on("error", (error) => {
-      clearTimers();
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimers();
-      if (timedOut) {
-        reject(new Error(stderr || `cp timed out after ${options?.timeoutMs}ms`));
-        return;
-      }
-      if (code === 0) resolve();
-      else reject(new Error(stderr || `cp exited with code ${code}`));
-    });
-  });
+  const result = await runCommand(cpCommand(), args, { stdio: ["ignore", "ignore", "pipe"], timeoutMs: options?.timeoutMs, killGraceMs: ORACLE_SUBPROCESS_KILL_GRACE_MS, allowFailure: true });
+  if (result.timedOut) throw new Error(result.stderr || `cp timed out after ${options?.timeoutMs}ms`);
+  if (result.code !== 0) throw new Error(result.stderr || `cp exited with code ${result.code}`);
 }
 
 async function removeChromiumProcessSingletonArtifacts(profileDir: string): Promise<void> {
@@ -540,41 +484,16 @@ export interface OracleCleanupReport {
 }
 
 async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<string | undefined> {
-  return new Promise<string | undefined>((resolve) => {
-    const child = spawn(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: "ignore", shell: process.platform === "win32" });
-    let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
-    let timedOut = false;
-
-    const finish = (warning?: string) => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      resolve(warning);
-    };
-
-    timeout = setTimeout(() => {
-      timedOut = true;
-      killProcessTree(child);
-      setTimeout(() => {
-        killProcess(child);
-        finish(`Timed out closing agent-browser session ${runtimeSessionName} after ${AGENT_BROWSER_CLOSE_TIMEOUT_MS}ms`);
-      }, 2_000).unref?.();
-    }, AGENT_BROWSER_CLOSE_TIMEOUT_MS);
-    timeout.unref?.();
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") {
-        finish();
-        return;
-      }
-      finish(`Failed to close agent-browser session ${runtimeSessionName}: ${error.message}`);
-    });
-    child.on("close", (code) => {
-      if (timedOut || code === 0) finish();
-      else finish(`agent-browser close exited with code ${code} for session ${runtimeSessionName}`);
-    });
-  });
+  let result;
+  try {
+    result = await runCommand(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { stdio: "ignore", timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS, allowFailure: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return `Failed to close agent-browser session ${runtimeSessionName}: ${(error as Error).message}`;
+  }
+  if (result.timedOut) return `Timed out closing agent-browser session ${runtimeSessionName} after ${AGENT_BROWSER_CLOSE_TIMEOUT_MS}ms`;
+  if (result.code !== 0) return `agent-browser close exited with code ${result.code} for session ${runtimeSessionName}`;
+  return undefined;
 }
 
 export async function cleanupRuntimeArtifacts(runtime: {

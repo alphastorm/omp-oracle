@@ -4,6 +4,12 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Changed
+- the archive digest is streamed: `sha256File` read the whole archive into memory before hashing, so every `oracle_submit` allocated up to 250 MiB (the ChatGPT cap) inside the agent's own process; it now pipes the file through the hash. The reported digest is unchanged and is pinned against the bytes on disk
+- one subprocess runner: `runCommand` in the shared process helpers replaces four hand-rolled spawn/timeout/kill implementations (both workers' `spawnCommand`, the extension's `cp` clone runner, and its `agent-browser close`), each with its own copy of `killProcessTree`/`killProcess` and `sleep`. The 0.3.3 spawn-options bug had to be fixed twice for exactly this reason. The shared runner is covered directly (stdin piping, safe-storage env scrubbing that keeps caller variables, exit codes, timeout termination, the `allowFailure` contract) and the existing hung-`cp` and hung-`agent-browser` timeout tests now exercise it
+
 ## 0.3.3 - 2026-09-21
 
 ### Fixed
