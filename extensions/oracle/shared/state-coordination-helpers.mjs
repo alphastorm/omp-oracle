@@ -5,15 +5,11 @@
 // Invariants/Assumptions: State lives under a private per-machine directory, and final published state dirs must never appear without complete metadata.
 
 import { createHash } from "node:crypto";
-import { channel } from "node:diagnostics_channel";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { isProcessAlive } from "./process-helpers.mjs";
 
-// Dormant unless a diagnostic consumer subscribes; never changes lock policy.
-const lockDiagnostics = channel("pi-oracle.lock");
-const createDiagnostics = channel("pi-oracle.state-create");
 const DEFAULT_WAIT_MS = 30_000;
 const POLL_MS = 200;
 export const ORACLE_METADATA_WRITE_GRACE_MS = 1_000;
@@ -108,16 +104,11 @@ async function writeMetadata(path, metadata) {
  */
 async function createStateDirAtomically(parentDir, finalPath, metadata) {
   const tempPath = join(parentDir, `.tmp-${basename(finalPath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`);
-  if (createDiagnostics.hasSubscribers) createDiagnostics.publish({ phase: "mkdir", tempPath, finalPath });
   await mkdir(tempPath, { recursive: false, mode: 0o700 });
   try {
-    if (createDiagnostics.hasSubscribers) createDiagnostics.publish({ phase: "metadata", tempPath, finalPath });
     await writeMetadata(tempPath, metadata);
-    if (createDiagnostics.hasSubscribers) createDiagnostics.publish({ phase: "publish", tempPath, finalPath });
     await rename(tempPath, finalPath);
-    if (createDiagnostics.hasSubscribers) createDiagnostics.publish({ phase: "published", tempPath, finalPath });
   } catch (error) {
-    if (createDiagnostics.hasSubscribers) createDiagnostics.publish({ phase: "failed", tempPath, finalPath, code: error && typeof error === "object" && "code" in error ? error.code : undefined });
     await rm(tempPath, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
@@ -234,34 +225,20 @@ export async function acquireStateLock(stateDir, kind, key, metadata, timeoutMs 
   const parentDir = getStateLocksDir(stateDir);
   const path = join(parentDir, hashOracleStateKey(kind, key));
   const deadline = Date.now() + timeoutMs;
-  let attempts = 0;
-  /** @param {string} phase @param {unknown} [code] */
-  const trace = (phase, code = undefined) => {
-    if (lockDiagnostics.hasSubscribers) lockDiagnostics.publish({ phase, path, metadata, timeoutMs, remainingMs: deadline - Date.now(), attempts, code });
-  };
-  trace("ensure-state-dir");
   await ensurePrivateDir(stateDir);
-  trace("ensure-locks-dir");
   await ensurePrivateDir(parentDir);
-  trace("ready");
 
   while (Date.now() < deadline) {
     try {
-      attempts++;
-      trace("create");
       await createStateDirAtomically(parentDir, path, metadata);
-      trace("acquired");
       return path;
     } catch (error) {
-      trace("create-failed", error && typeof error === "object" && "code" in error ? error.code : undefined);
       if (!isStateDirExistsError(error)) throw error;
       if (await maybeReclaimStaleLock(path)) continue;
     }
-    trace("poll");
     await sleep(POLL_MS);
   }
 
-  trace("timeout");
   throw new Error(`Timed out waiting for oracle ${kind} lock: ${key}`);
 }
 
@@ -271,18 +248,11 @@ export async function acquireStateLock(stateDir, kind, key, metadata, timeoutMs 
  */
 export async function releaseStatePath(path) {
   if (!path) return;
-  if (lockDiagnostics.hasSubscribers) lockDiagnostics.publish({ phase: "release", path });
   const deadline = Date.now() + (process.platform === "win32" ? 5_000 : 1_000);
   while (true) {
     await rm(path, { recursive: true, force: true }).catch(() => undefined);
-    if (!existsSync(path)) {
-      if (lockDiagnostics.hasSubscribers) lockDiagnostics.publish({ phase: "released", path });
-      return;
-    }
-    if (Date.now() >= deadline) {
-      if (lockDiagnostics.hasSubscribers) lockDiagnostics.publish({ phase: "release-deadline", path });
-      return;
-    }
+    if (!existsSync(path)) return;
+    if (Date.now() >= deadline) return;
     await sleep(POLL_MS);
   }
 }

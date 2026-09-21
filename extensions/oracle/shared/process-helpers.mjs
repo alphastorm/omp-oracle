@@ -5,10 +5,7 @@
 // Invariants/Assumptions: Process identity is validated with `ps -o lstart=` to defend against PID reuse on macOS.
 
 import { spawn, execFileSync } from "node:child_process";
-import { channel } from "node:diagnostics_channel";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
-
-const processDiagnostics = channel("pi-oracle.process");
 
 /** @typedef {import("./process-helpers.d.mts").OracleTrackedProcessOptions} OracleTrackedProcessOptions */
 /** @typedef {import("./process-helpers.d.mts").OracleDetachedProcessHandle} OracleDetachedProcessHandle */
@@ -23,9 +20,6 @@ function sleep(ms) {
  */
 export function readProcessStartedAt(pid) {
   if (!pid || pid <= 0) return undefined;
-  const diagnosticStart = processDiagnostics.hasSubscribers ? performance.now() : undefined;
-  let outcome = "error";
-  if (diagnosticStart !== undefined) processDiagnostics.publish({ phase: "query", pid, caller: new Error().stack });
   try {
     if (process.platform === "win32") {
       const startedAt = execFileSync("powershell.exe", [
@@ -34,16 +28,12 @@ export function readProcessStartedAt(pid) {
         "-Command",
         `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`,
       ], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
-      outcome = startedAt ? "present" : "missing";
       return startedAt || undefined;
     }
     const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
-    outcome = startedAt ? "present" : "missing";
     return startedAt || undefined;
   } catch {
     return undefined;
-  } finally {
-    if (diagnosticStart !== undefined) processDiagnostics.publish({ phase: "queried", pid, outcome, durationMs: performance.now() - diagnosticStart });
   }
 }
 
@@ -105,7 +95,6 @@ export async function terminateTrackedProcess(pid, startedAt, options = {}) {
 
   try {
     process.kill(pid, "SIGTERM");
-    if (processDiagnostics.hasSubscribers) processDiagnostics.publish({ phase: "signalled", pid, signal: "SIGTERM" });
   } catch {
     return !isTrackedProcessAlive(pid, startedAt);
   }
@@ -118,7 +107,6 @@ export async function terminateTrackedProcess(pid, startedAt, options = {}) {
 
   try {
     process.kill(pid, "SIGKILL");
-    if (processDiagnostics.hasSubscribers) processDiagnostics.publish({ phase: "signalled", pid, signal: "SIGKILL" });
   } catch {
     return !isTrackedProcessAlive(pid, startedAt);
   }
