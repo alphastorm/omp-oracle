@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.3.1 - 2026-09-21
 
 ### Fixed
 - wait for an acknowledged owned-tab close to disappear from Chrome target discovery before releasing runtime ownership; native Chrome can remove the target asynchronously. The bounded wait never reissues close and still rejects a target that remains live
