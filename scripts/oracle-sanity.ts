@@ -6,6 +6,8 @@
 // Invariants/Assumptions: Tests run from the repository root with local development dependencies installed.
 import { createCipheriv, createHash, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { readFileSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -2441,20 +2443,56 @@ async function testActiveCancellationDoesNotOverwriteCompletion(config: OracleCo
   const cwd = process.cwd();
   const sessionId = "/tmp/oracle-sanity-session-active-cancel.jsonl";
   const activeId = await createJobForTest(config, cwd, sessionId);
-  const worker = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 200)); setInterval(() => {}, 1000);"]);
-  const workerPid = worker.pid;
-  assert(workerPid !== undefined, "active-cancel worker should expose a pid");
-  const workerStartedAt = await new Promise<string | undefined>((resolve) => setTimeout(() => resolve(undefined), 50));
-  await updateJob(activeId, (job) => ({ ...job, workerPid, workerStartedAt }));
+  const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000); process.send('ready');"], {
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  let lockHandle: Awaited<ReturnType<typeof acquireLock>> | undefined;
+  let cancelPromise: ReturnType<typeof cancelOracleJob> | undefined;
+  try {
+    const [ready] = await once(worker, "message", { signal: AbortSignal.timeout(5_000) });
+    assert(ready === "ready", "active-cancel worker should acknowledge startup");
+    const workerPid = worker.pid;
+    assert(workerPid !== undefined, "active-cancel worker should expose a pid");
+    const workerStartedAt = await waitForProcessStartedAtValue(workerPid);
+    assert(workerStartedAt, "active-cancel worker should have a tracked process identity");
+    await updateJob(activeId, (job) => ({ ...job, workerPid, workerStartedAt }));
 
-  const cancelPromise = cancelOracleJob(activeId);
-  await sleep(50);
-  await completeJob(activeId);
-  const cancelled = await cancelPromise;
-  assert(cancelled.status === "complete", "active cancellation should not overwrite a job that completed first");
-  const finalJob = readJob(activeId);
-  assert(finalJob?.status === "complete", "completed jobs should remain complete when cancellation loses the race");
-  await cleanupJob(activeId);
+    // Hold the completion writer's job lock while cancellation takes admission.
+    // A SIGTERM delay is not a barrier: Windows terminates the child outright,
+    // and even on POSIX the handler may not yet be installed when signalled.
+    lockHandle = await acquireLock("job", activeId, { processPid: process.pid, source: "oracle-sanity-active-completion" });
+    cancelPromise = cancelOracleJob(activeId);
+    // Observe failures immediately, but still propagate them at the await below.
+    void cancelPromise.catch(() => undefined);
+    const admissionMetadataPath = join(hashedOracleStatePath("admission", "global", getLocksDir()), "metadata.json");
+    assert(await waitForPath(admissionMetadataPath), "cancellation should acquire admission while completion holds the job lock");
+    const admission = JSON.parse(await readFile(admissionMetadataPath, "utf8"));
+    assert(admission.action === "cancelOracleJob" && admission.jobId === activeId, "the concurrent cancellation should own admission");
+    const current = readJob(activeId);
+    assert(current?.status === "submitted", "completion must win before cancellation publishes a terminal state");
+    const completedAt = new Date().toISOString();
+    // We own the job lock; using updateJob here would recursively acquire it.
+    const completionPath = join(getJobDir(activeId), "completion.tmp");
+    await writeFile(completionPath, `${JSON.stringify({
+      ...current,
+      ...withJobPhase("complete", { completedAt, responsePath: join(getJobDir(activeId), "response.md"), responseFormat: "text/plain" }, completedAt),
+    }, null, 2)}\n`, { mode: 0o600 });
+    await rename(completionPath, join(getJobDir(activeId), "job.json"));
+    await releaseLock(lockHandle);
+    lockHandle = undefined;
+
+    const cancelled = await cancelPromise;
+    assert(cancelled.status === "complete", "active cancellation should not overwrite a job that completed first");
+    const finalJob = readJob(activeId);
+    assert(finalJob?.status === "complete", "completed jobs should remain complete when cancellation loses the race");
+    assert(!finalJob.lifecycleEvents?.some((event) => event.source === "oracle:cancel"), "cancellation must not transiently publish a terminal transition before completion");
+  } finally {
+    await releaseLock(lockHandle);
+    await cancelPromise?.catch(() => undefined);
+    if (isPidAlive(worker.pid)) worker.kill("SIGKILL");
+    assert(await waitForPidExit(worker.pid), "active-cancel fixture worker should exit during cleanup");
+    await cleanupJob(activeId);
+  }
 }
 
 async function testCancelReconcileRacePreservesIntentionalCancellation(config: OracleConfig): Promise<void> {
@@ -6098,9 +6136,31 @@ async function testPollerHostSafety(): Promise<void> {
   assert(unhandled === 0, `expected no unhandled rejections, saw ${unhandled}`);
 }
 
+let sanityStep = "preamble";
 function sanityProgress(label: string): void {
+  sanityStep = label;
   if (process.env.PI_ORACLE_SANITY_PROGRESS) console.log(`[oracle-sanity] ${label}`);
 }
+
+// A detached rejection otherwise loses the test caller's stack, and the runner
+// deletes its sandbox on exit. Preserve lock ownership evidence without handling
+// the exception, retrying the operation, or changing the failure exit status.
+process.on("uncaughtExceptionMonitor", (error) => {
+  if (!error.message.startsWith("Timed out waiting for oracle ")) return;
+  try {
+    const locksDir = getLocksDir();
+    const locks = readdirSync(locksDir).map((name) => {
+      try {
+        return { name, metadata: JSON.parse(readFileSync(join(locksDir, name, "metadata.json"), "utf8")) };
+      } catch {
+        return { name, metadata: "unreadable or unpublished" };
+      }
+    });
+    console.error("[oracle-sanity] lock-timeout context", JSON.stringify({ sanityStep, locks }));
+  } catch {
+    console.error("[oracle-sanity] lock-timeout context unavailable", sanityStep);
+  }
+});
 
 function createSanityConfig(): OracleConfig {
   return {
@@ -6201,10 +6261,13 @@ async function main() {
   await testOracleToolErrorsExposeStructuredMetadata();
   await testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(config);
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
-  sanityProgress("queue/reconcile");
+  sanityProgress("stale reconcile/completion race");
   await testStaleReconcileDoesNotOverwriteConcurrentCompletion(config);
+  sanityProgress("active cancellation/completion race");
   await testActiveCancellationDoesNotOverwriteCompletion(config);
+  sanityProgress("cancel/reconcile race");
   await testCancelReconcileRacePreservesIntentionalCancellation(config);
+  sanityProgress("queue/promotion/cancellation");
   await testQueueAdmissionPromotionAndCancellation(config);
   await testQueuedPromotionUsesPersistedConfigSnapshot(config);
   await testQueuedPromotionRequiresArchiveReadiness(config);
