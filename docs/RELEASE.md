@@ -115,6 +115,73 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.3.3 (2026-09-21, `a336994`)
+
+- Scope: the four handoff fixes (proof runner relay default, installed-package provenance,
+  `collectArtifactCandidates` arity plus the dead `suspiciousArtifactLabels` signal, spawn
+  options leaking into `spawn()`), the worker runtime typecheck promoted to a real gate, the debt
+  paydown (discovery-based syntax check, dead exports and the 225 proved-redundant preset
+  aliases, shared state-dir/agent-browser resolvers, `auth-bootstrap.mjs` typechecked, docs
+  reconciled with this ledger), and two defects found by this release's own proof.
+- Hidden-tab rendering flags measured against a throwaway Chrome (fresh profile, no account):
+  without flags every hidden state froze `requestAnimationFrame` at 0/s and throttled timers to
+  1/s; with `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding
+  --disable-background-timer-throttling` an occluded window's active tab stayed `visible` at
+  120 rAF/s, while a background tab or a minimized window stayed `hidden` at 0 rAF/s (timers
+  5/s). The diligence Chrome was relaunched with the flags; reload reconciliation stays the fix.
+- First proof run, on the superseded prep commit `64e0f11`: six presets completed in 43–57 s,
+  then `instant` sat in `awaiting_response` for 31 minutes with a fresh heartbeat. Read-only
+  CDP inspection of the job tab: `visibilityState: visible`, the assistant turn fully rendered
+  with both markers, `Stop answering` still mounted, and `performance` showing the generation
+  POST `/backend-api/f/conversation` returned 200 at t+14 s. A `Page.reload` cleared the control
+  and the old worker completed the job. Fix `06f3629` (`nextStaleStopState`): after two minutes
+  of non-empty, unchanged turn text under a persistent stop control the worker reloads the
+  conversation; proved on the shipped path with tracer job `ab1b77bb`, whose tab received an
+  orphaned stop control after send — `Stop control still present after 121 s with the turn
+  unchanged; reloading`, complete 13 s later with both markers and warning-free cleanup.
+- Second proof run, on the superseded prep commit `ef07f01`: 7/8, with `instant` (right after
+  `thinking_heavy`, slider at `Extra High`) failing in 14 s with `Lost the ChatGPT
+  thinking-effort slider while stepping` while the captured failure snapshot already showed the
+  closed composer pill reading `Instant`. Fix `f7edc10` (`powerSliderClosedIntoSelection`)
+  accepts a vanished slider whose closed pill shows the requested stop; the regression uses that
+  captured snapshot. The same `Extra High → Instant` transition passed normally in the accepted
+  run, so both faults are intermittent provider behavior the worker now tolerates.
+- `npm run release:check` on `afcd994` failed in both packed `platform-build` lanes: the new
+  provenance regression shelled out to `git rev-parse` inside the rsync'd copy, which has no
+  `.git`. That copy is the installed-package case the regression exists for, so `88783b7`
+  asserts "no `gitHead`" there instead; proved by running the platform sanity from a git-less
+  rsync copy before committing. One transient: the doctor's Ubuntu target-tool probe failed once
+  inside the composition and passed on the narrow re-run.
+- Local gate green on `a336994`: 40 `.mjs` files parse-checked by discovery, 31 helper tests,
+  the three typecheck projects, the sanity harness (with the new provenance, stale-stop,
+  picker-closed, preview-label, and package-script contracts), and `npm pack --dry-run`.
+- Live eight-preset ChatGPT proof accepted on `a336994`, with the runner resolving
+  `http://127.0.0.1:9333` from the operator's agent-scope config and no `PI_ORACLE_PROOF_RELAY`
+  set: `pro_standard` `49b3d1ab` 59 s, `pro_extended` `0060b8a7` 57 s, `thinking_light`
+  `b6c2543a` 42 s, `thinking_standard` `86cda5cd` 42 s, `thinking_extended` `7554cba3` 42 s,
+  `thinking_heavy` `98202228` 42 s, `instant` `8b62b8c8` 42 s, `instant_auto_switch` `5c63a273`
+  42 s; all eight completed with both markers and neither self-heal path fired.
+- Crabbox lanes on `a336994`: macOS `platform-build` PASS (47.7 s) and `real-extension` PASS
+  (4.9 s), Ubuntu `platform-build` PASS (36.0 s) and `real-extension` PASS (4.2 s).
+  `npm run release:check` then passed as one composition on the same clean tree.
+- Published `omp-oracle@0.3.3` from `a336994`. The stored registry token answered 401, so the
+  maintainer ran `npm login && npm publish --ignore-scripts` (web login, then the
+  `auth-and-writes` approval); as with `0.3.1` and `0.3.2` the composition had just passed on the
+  unchanged tree. Registry `gitHead` `a336994ed0f13689619e217807babd506dbca308`, shasum
+  `9c64bb95ae22f1c4e50c813021e4284718dffe08`, 81 files, `latest`. Tag `v0.3.3` and the
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.3.3) name the same
+  commit.
+- Installed-package job on Oh My Pi 18.2.7, the first in this ledger: after
+  `omp plugin uninstall omp-oracle` and `omp plugin install omp-oracle@0.3.3`
+  (`~/.omp/plugins/node_modules/omp-oracle`, a real directory), job `14b15fbe` submitted through
+  the operator's real configuration completed in 52 s with both markers, and its
+  `extensionProvenance` recorded `packageVersion 0.3.3`, the installed path, and no `gitHead`,
+  with nothing printed to stderr.
+- Pre-commit isolated source-session smokes on the paydown: relay job `d9c98c3d` (`instant`)
+  complete in 35 s with both markers, `oracle_read` in a second session returned the now-labeled
+  preview, and a fixture-seed job `eeb02d36` on the isolated transport failed cleanly at the
+  login wall with warning-free cleanup and no leaked processes.
+
 #### 0.3.2 (2026-09-21, `0e064ea`)
 
 - Two defects with one cause, both found by running real jobs rather than by the gate. ChatGPT
