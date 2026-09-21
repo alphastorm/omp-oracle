@@ -11,7 +11,8 @@ import { basename, dirname, join, resolve } from "node:path";
 const DEFAULT_PROVIDER = "zai";
 const DEFAULT_MODEL = "glm-5.2";
 const DEFAULT_TIMEOUT_MS = 180_000;
-const EXPECTED_PI_VERSION = "0.80.9";
+const EXPECTED_PI_VERSION = process.env.PI_COMPAT_EXPECTED_VERSION
+  ?? JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).devDependencies["@earendil-works/pi-coding-agent"];
 const PACKAGE_NAME = "pi-oracle";
 
 function usage() {
@@ -22,6 +23,8 @@ Modes:
   source  Inner-loop/debug only. Loads this checkout with pi --no-extensions -e extensions/oracle/index.ts.
 
 Environment:
+  PI_HOST_CLI                  selected Pi manifest bin entry, invoked with this Node executable (default: pi on PATH)
+  PI_COMPAT_EXPECTED_VERSION   expected Pi version (default: package development baseline)
   PI_ORACLE_REAL_TEST_PROVIDER   pi provider for the test agent (default: ${DEFAULT_PROVIDER})
   PI_ORACLE_REAL_TEST_MODEL      pi model for the test agent (default: ${DEFAULT_MODEL})
   PI_ORACLE_REAL_TEST_TIMEOUT_MS per-agent timeout in ms (default: ${DEFAULT_TIMEOUT_MS})
@@ -65,7 +68,10 @@ function positiveTimeoutMs(value, label) {
 
 function commandExists(command, args = ["--version"]) {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, { stdio: "ignore", shell: process.platform === "win32" });
+    const selectedCli = command === piCommand() && env("PI_HOST_CLI");
+    const child = spawn(selectedCli ? process.execPath : command, selectedCli ? [selectedCli, ...args] : args, {
+      stdio: "ignore", shell: !selectedCli && process.platform === "win32",
+    });
     child.on("error", () => resolvePromise(false));
     child.on("exit", (code) => resolvePromise(code === 0 || code === 1));
   });
@@ -104,7 +110,7 @@ async function doctor() {
   const failures = [];
   const warnings = [];
   const requiredCommands = [
-    [process.platform === "win32" ? "pi.cmd" : "pi", ["--version"], "pi CLI"],
+    [piCommand(), ["--version"], "pi CLI"],
     [process.platform === "win32" ? "tar.exe" : "tar", ["--version"], "tar"],
     ["zstd", ["--version"], "zstd"],
     [process.platform === "win32" ? "agent-browser.cmd" : "agent-browser", ["--version"], "agent-browser"],
@@ -134,10 +140,11 @@ async function doctor() {
 function runCommand(command, args, options) {
   const timeoutMs = positiveTimeoutMs(options.timeoutMs, "command timeout");
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, {
+    const selectedCli = command === piCommand() && env("PI_HOST_CLI");
+    const child = spawn(selectedCli ? process.execPath : command, selectedCli ? [selectedCli, ...args] : args, {
       cwd: options.cwd,
       env: options.env,
-      shell: process.platform === "win32",
+      shell: !selectedCli && process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -234,7 +241,7 @@ function entryExists(entries, path) {
 }
 
 function piCommand() {
-  return process.platform === "win32" ? "pi.cmd" : "pi";
+  return env("PI_HOST_CLI") ?? (process.platform === "win32" ? "pi.cmd" : "pi");
 }
 
 function npmCommand() {

@@ -6,6 +6,8 @@
 // Invariants/Assumptions: Tests run from the repository root with local development dependencies installed.
 import { createCipheriv, createHash, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { readFileSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -77,6 +79,7 @@ import {
 } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import type { OracleLifecycleTrackedJobLike } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import {
+  assertNotKnownBrowserUserDataPath,
   browserUserDataDirsForPlatform,
   chromiumKeychainSupportedOnPlatform,
   defaultCloneStrategyForPlatform,
@@ -329,9 +332,20 @@ async function testBrowserProfileHelpers(): Promise<void> {
     const configHomeLink = join(fixtureDir, "config-link");
     await symlink(xdgConfigHome, configHomeLink, "dir");
     const symlinkedBrowserProfile = join(configHomeLink, "google-chrome", "Default");
-    const matchedRoot = knownBrowserUserDataPathMatch(symlinkedBrowserProfile, { platform: "linux", env: helperEnv, homeDir: fakeHome });
+    const safetyOptions = { platform: "linux" as const, env: helperEnv, homeDir: fakeHome };
     const resolvedGoogleChromeRoot = await realpath(join(xdgConfigHome, "google-chrome"));
-    assert(matchedRoot === resolvedGoogleChromeRoot, "browser profile safety checks should resolve symlinked ancestors before destructive profile use");
+    for (const profilePath of [symlinkedBrowserProfile, join(symlinkedBrowserProfile, "not-created", "oracle-profile")]) {
+      const matchedRoot = knownBrowserUserDataPathMatch(profilePath, safetyOptions);
+      assert(matchedRoot !== undefined, `browser profile safety checks should detect symlinked ancestors: ${profilePath}`);
+      // realpathSync (used by the guard) can preserve Windows 8.3 aliases while
+      // fs.promises.realpath expands them. Compare both roots with the same API.
+      assert(await realpath(matchedRoot) === resolvedGoogleChromeRoot, "browser profile safety checks should resolve symlinked ancestors before destructive profile use");
+      assertThrows(
+        () => assertNotKnownBrowserUserDataPath(profilePath, "test profile", safetyOptions),
+        "destructive profile use through a symlinked ancestor must be rejected",
+        "must not point into a real browser user-data directory",
+      );
+    }
 
     const customCookieDb = join(fixtureDir, "CustomBrowser", "Profile 1", "Network", "Cookies");
     const protectedCustomProfile = knownBrowserUserDataPathMatch(join(fixtureDir, "CustomBrowser", "Profile 1", "oracle-seed"), {
@@ -2429,20 +2443,56 @@ async function testActiveCancellationDoesNotOverwriteCompletion(config: OracleCo
   const cwd = process.cwd();
   const sessionId = "/tmp/oracle-sanity-session-active-cancel.jsonl";
   const activeId = await createJobForTest(config, cwd, sessionId);
-  const worker = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 200)); setInterval(() => {}, 1000);"]);
-  const workerPid = worker.pid;
-  assert(workerPid !== undefined, "active-cancel worker should expose a pid");
-  const workerStartedAt = await new Promise<string | undefined>((resolve) => setTimeout(() => resolve(undefined), 50));
-  await updateJob(activeId, (job) => ({ ...job, workerPid, workerStartedAt }));
+  const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000); process.send('ready');"], {
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  let lockHandle: Awaited<ReturnType<typeof acquireLock>> | undefined;
+  let cancelPromise: ReturnType<typeof cancelOracleJob> | undefined;
+  try {
+    const [ready] = await once(worker, "message", { signal: AbortSignal.timeout(5_000) });
+    assert(ready === "ready", "active-cancel worker should acknowledge startup");
+    const workerPid = worker.pid;
+    assert(workerPid !== undefined, "active-cancel worker should expose a pid");
+    const workerStartedAt = await waitForProcessStartedAtValue(workerPid);
+    assert(workerStartedAt, "active-cancel worker should have a tracked process identity");
+    await updateJob(activeId, (job) => ({ ...job, workerPid, workerStartedAt }));
 
-  const cancelPromise = cancelOracleJob(activeId);
-  await sleep(50);
-  await completeJob(activeId);
-  const cancelled = await cancelPromise;
-  assert(cancelled.status === "complete", "active cancellation should not overwrite a job that completed first");
-  const finalJob = readJob(activeId);
-  assert(finalJob?.status === "complete", "completed jobs should remain complete when cancellation loses the race");
-  await cleanupJob(activeId);
+    // Hold the completion writer's job lock while cancellation takes admission.
+    // A SIGTERM delay is not a barrier: Windows terminates the child outright,
+    // and even on POSIX the handler may not yet be installed when signalled.
+    lockHandle = await acquireLock("job", activeId, { processPid: process.pid, source: "oracle-sanity-active-completion" });
+    cancelPromise = cancelOracleJob(activeId);
+    // Observe failures immediately, but still propagate them at the await below.
+    void cancelPromise.catch(() => undefined);
+    const admissionMetadataPath = join(hashedOracleStatePath("admission", "global", getLocksDir()), "metadata.json");
+    assert(await waitForPath(admissionMetadataPath), "cancellation should acquire admission while completion holds the job lock");
+    const admission = JSON.parse(await readFile(admissionMetadataPath, "utf8"));
+    assert(admission.action === "cancelOracleJob" && admission.jobId === activeId, "the concurrent cancellation should own admission");
+    const current = readJob(activeId);
+    assert(current?.status === "submitted", "completion must win before cancellation publishes a terminal state");
+    const completedAt = new Date().toISOString();
+    // We own the job lock; using updateJob here would recursively acquire it.
+    const completionPath = join(getJobDir(activeId), "completion.tmp");
+    await writeFile(completionPath, `${JSON.stringify({
+      ...current,
+      ...withJobPhase("complete", { completedAt, responsePath: join(getJobDir(activeId), "response.md"), responseFormat: "text/plain" }, completedAt),
+    }, null, 2)}\n`, { mode: 0o600 });
+    await rename(completionPath, join(getJobDir(activeId), "job.json"));
+    await releaseLock(lockHandle);
+    lockHandle = undefined;
+
+    const cancelled = await cancelPromise;
+    assert(cancelled.status === "complete", "active cancellation should not overwrite a job that completed first");
+    const finalJob = readJob(activeId);
+    assert(finalJob?.status === "complete", "completed jobs should remain complete when cancellation loses the race");
+    assert(!finalJob.lifecycleEvents?.some((event) => event.source === "oracle:cancel"), "cancellation must not transiently publish a terminal transition before completion");
+  } finally {
+    await releaseLock(lockHandle);
+    await cancelPromise?.catch(() => undefined);
+    if (isPidAlive(worker.pid)) worker.kill("SIGKILL");
+    assert(await waitForPidExit(worker.pid), "active-cancel fixture worker should exit during cleanup");
+    await cleanupJob(activeId);
+  }
 }
 
 async function testCancelReconcileRacePreservesIntentionalCancellation(config: OracleConfig): Promise<void> {
@@ -2963,7 +3013,7 @@ async function testQueuedPromotionPersistsCleanupWarningsOnTeardownFailure(confi
   const sessionId = "/tmp/oracle-sanity-session-queue-cleanup-warning.jsonl";
   const queuedId = await createJobForTest(config, cwd, sessionId, { initialState: "queued" });
   const invalidRuntimeProfileDir = process.platform === "win32"
-    ? join(process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? "C:\\Users\\Default", "AppData", "Local"), "Google", "Chrome", "User Data", "pi-oracle-invalid-runtime-profile")
+    ? join(browserUserDataDirsForPlatform("win32")[0], "pi-oracle-invalid-runtime-profile")
     : "/dev/null/pi-oracle-invalid-runtime-profile";
   await updateJob(queuedId, (job) => ({
     ...job,
@@ -3454,7 +3504,7 @@ async function testTerminalCleanupWarningsPreserveJob(config: OracleConfig): Pro
   const jobId = await createTerminalJob(config, cwd, sessionId);
 
   const invalidRuntimeProfileDir = process.platform === "win32"
-    ? join(process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? "C:\\Users\\Default", "AppData", "Local"), "Google", "Chrome", "User Data", "pi-oracle-invalid-runtime-profile")
+    ? join(browserUserDataDirsForPlatform("win32")[0], "pi-oracle-invalid-runtime-profile")
     : "/dev/null/pi-oracle-invalid-runtime-profile";
   await updateJob(jobId, (job) => ({
     ...job,
@@ -4004,8 +4054,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
   assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
-  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.80.9", "package.json should use the current Pi 0.80.9 local development baseline");
-  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.80.9", "package.json should use the current pi-ai 0.80.9 local development baseline");
+  const piBaseline = pkg.devDependencies?.["@earendil-works/pi-coding-agent"];
+  assert(typeof piBaseline === "string" && /^\d+\.\d+\.\d+$/.test(piBaseline), "package.json should pin an exact stable Pi development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === piBaseline, "Pi development dependencies should use one coherent baseline");
   assert(pkg.peerDependencies?.["@earendil-works/pi-ai"] === "*", "package.json should declare the runtime StringEnum import as an optional wildcard peer");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
   for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox"]) {
@@ -6085,9 +6136,31 @@ async function testPollerHostSafety(): Promise<void> {
   assert(unhandled === 0, `expected no unhandled rejections, saw ${unhandled}`);
 }
 
+let sanityStep = "preamble";
 function sanityProgress(label: string): void {
+  sanityStep = label;
   if (process.env.PI_ORACLE_SANITY_PROGRESS) console.log(`[oracle-sanity] ${label}`);
 }
+
+// A detached rejection otherwise loses the test caller's stack, and the runner
+// deletes its sandbox on exit. Preserve lock ownership evidence without handling
+// the exception, retrying the operation, or changing the failure exit status.
+process.on("uncaughtExceptionMonitor", (error) => {
+  if (!error.message.startsWith("Timed out waiting for oracle ")) return;
+  try {
+    const locksDir = getLocksDir();
+    const locks = readdirSync(locksDir).map((name) => {
+      try {
+        return { name, published: !name.startsWith(".tmp-"), metadata: JSON.parse(readFileSync(join(locksDir, name, "metadata.json"), "utf8")) };
+      } catch {
+        return { name, metadata: "unreadable or unpublished" };
+      }
+    });
+    console.error("[oracle-sanity] lock-timeout context", JSON.stringify({ sanityStep, locks }));
+  } catch {
+    console.error("[oracle-sanity] lock-timeout context unavailable", sanityStep);
+  }
+});
 
 function createSanityConfig(): OracleConfig {
   return {
@@ -6188,10 +6261,13 @@ async function main() {
   await testOracleToolErrorsExposeStructuredMetadata();
   await testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(config);
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
-  sanityProgress("queue/reconcile");
+  sanityProgress("stale reconcile/completion race");
   await testStaleReconcileDoesNotOverwriteConcurrentCompletion(config);
+  sanityProgress("active cancellation/completion race");
   await testActiveCancellationDoesNotOverwriteCompletion(config);
+  sanityProgress("cancel/reconcile race");
   await testCancelReconcileRacePreservesIntentionalCancellation(config);
+  sanityProgress("queue/promotion/cancellation");
   await testQueueAdmissionPromotionAndCancellation(config);
   await testQueuedPromotionUsesPersistedConfigSnapshot(config);
   await testQueuedPromotionRequiresArchiveReadiness(config);
