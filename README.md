@@ -101,8 +101,11 @@ omp install ./omp-oracle          # links the checkout as a plugin
 pi install -l ./omp-oracle        # pi equivalent
 ```
 
-For isolated development sessions that load the source without touching your normal agent
-state, use the [test plan](docs/TEST_PLAN.md#isolated-pi-session-smoke).
+Switching back to a registry release does not replace that link: `omp plugin install omp-oracle@<v>`
+reports success but leaves the checkout symlink in place and keeps reporting its version, so run
+`omp plugin uninstall omp-oracle` first. For isolated development sessions that load the source
+without touching your normal agent state, use the
+[test plan](docs/TEST_PLAN.md#isolated-pi-session-smoke).
 
 </details>
 

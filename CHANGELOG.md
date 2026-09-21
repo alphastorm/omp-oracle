@@ -4,6 +4,18 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+- the release preset proof runner defaulted the relay endpoint to `http://127.0.0.1:9224`, the personal browser relay, whenever `PI_ORACLE_PROOF_RELAY` was unset; the extension itself has no relay default, so this invented one silently routed eight live ChatGPT jobs to whichever account that browser held. The endpoint now comes from `PI_ORACLE_PROOF_RELAY` or from `browser.chatGptRelayEndpoint` in the operator's agent-scope `oracle.json` (the account real jobs use), is printed with its source before the first submit, and is refused when neither is set; `--dry-run` resolves everything without submitting
+- a job run from an installed package recorded the *project's* git HEAD as `extensionProvenance.gitHead` and printed `fatal: not a git repository` into the session: the reader fell back to the working directory when the extension root had no repository. `gitHead` is now recorded only when the extension root itself is a git checkout and omitted otherwise
+- the worker called `collectArtifactCandidates` with a third argument the function no longer accepts and fed a `suspiciousArtifactLabels` signal that had been hardcoded empty since the structural capture rewrite; the call matches the function and the dead signal is removed from the completion-signature helpers
+- `spawnCommand` forwarded its own `input`, `allowFailure`, and `timeoutMs` options into `child_process.spawn`
+
+### Changed
+- `npm run typecheck:worker-runtime` replaces `check:worker-runtime-names`: the 22 `checkJs` diagnostics that gate only reported are fixed (`RelayCdpClient.send` now types its result per CDP method, lease metadata is read as partial untrusted JSON, spawn options and capture fidelity states are annotated), so every diagnostic in `run-job.mjs` now fails `npm run verify:oracle` and the bespoke filter script is gone
+- the hidden-tab rendering constraint is documented from measurement: Chrome's `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` keep an occluded window's active tab rendering but do nothing for a background tab or a minimized window, so the dedicated diligence Chrome launch command recommends them while reload reconciliation stays the correctness fix
+
 ## 0.3.2 - 2026-09-21
 
 ### Fixed

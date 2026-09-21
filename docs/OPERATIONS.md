@@ -106,8 +106,15 @@ On macOS, launch a separate Chrome process with persistent storage and a loopbac
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --user-data-dir="$HOME/Library/Application Support/omp-oracle/diligence-chrome" \
   --remote-debugging-address=127.0.0.1 --remote-debugging-port=9333 \
+  --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling \
   --no-first-run --no-default-browser-check --new-window https://chatgpt.com/
 ```
+
+The three `--disable-*` flags keep the job tab rendering while this window sits behind your other
+windows (Chrome otherwise stops painting an occluded window's tab, which freezes ChatGPT's streamed
+turn until the worker reloads it). They do not help a minimized window or a tab behind another tab,
+so leave this window un-minimized and let jobs own its tabs; the worker's reload reconciliation
+covers the rest.
 
 Sign in to ChatGPT only as the intended account in that window; Chrome sync is unnecessary.
 Then set the agent-level config (preserving any other settings):
