@@ -3,7 +3,13 @@
 
 export const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
 export const ORACLE_JOBS_DIR_ENV = "PI_ORACLE_JOBS_DIR";
+export const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
+export const ORACLE_STATE_DIR_ENV = "PI_ORACLE_STATE_DIR";
 
 export function getOracleJobsDir(env = process.env) {
   return env[ORACLE_JOBS_DIR_ENV]?.trim() || DEFAULT_ORACLE_JOBS_DIR;
+}
+
+export function getOracleStateDir(env = process.env) {
+  return env[ORACLE_STATE_DIR_ENV]?.trim() || DEFAULT_ORACLE_STATE_DIR;
 }

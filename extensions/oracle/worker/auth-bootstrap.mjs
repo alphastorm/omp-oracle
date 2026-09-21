@@ -14,6 +14,8 @@ import {
   assertNotKnownBrowserUserDataPath,
   sweetCookieSafeStoragePasswordScrubbedEnv,
 } from "../shared/browser-profile-helpers.mjs";
+import { resolveAgentBrowserBinary } from "../shared/process-helpers.mjs";
+import { getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
@@ -64,12 +66,9 @@ let URL_PATH = "(oracle-auth url path unavailable)";
 let SNAPSHOT_PATH = "(oracle-auth snapshot path unavailable)";
 let BODY_PATH = "(oracle-auth body path unavailable)";
 let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
-const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
-const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
+const ORACLE_STATE_DIR = getOracleStateDir();
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
-  (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
-) || "agent-browser";
+const AGENT_BROWSER_BIN = resolveAgentBrowserBinary();
 
 function readPositiveIntEnv(name, fallback) {
   const value = process.env[name]?.trim();

@@ -20,10 +20,9 @@ import {
   withStateLock,
   writeStateLeaseMetadata,
 } from "../shared/state-coordination-helpers.mjs";
+import { getOracleStateDir as resolveOracleStateDir } from "../shared/state-path-helpers.mjs";
 
-export const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
-export const ORACLE_STATE_DIR_ENV = "PI_ORACLE_STATE_DIR";
-const ORACLE_STATE_DIR = process.env[ORACLE_STATE_DIR_ENV]?.trim() || DEFAULT_ORACLE_STATE_DIR;
+const ORACLE_STATE_DIR = resolveOracleStateDir();
 
 export { ORACLE_METADATA_WRITE_GRACE_MS, ORACLE_TMP_STATE_DIR_GRACE_MS };
 

@@ -19,9 +19,7 @@ import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAuthLock } from "./locks.js";
 
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
-const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
-  (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
-) || "agent-browser";
+const AGENT_BROWSER_BIN = resolveAgentBrowserBinary();
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const ORACLE_SUBPROCESS_KILL_GRACE_MS = 2_000;
 

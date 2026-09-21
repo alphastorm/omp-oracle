@@ -5,6 +5,7 @@
 // Invariants/Assumptions: Process identity is validated with `ps -o lstart=` to defend against PID reuse on macOS.
 
 import { spawn, execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
 
@@ -20,6 +21,17 @@ export function resolveNodeExecutable() {
   return /^node(?:\.exe)?$/i.test(basename(process.execPath)) ? process.execPath : "node";
 }
 
+/**
+ * The agent-browser driver binary: an explicit AGENT_BROWSER_PATH, then the Homebrew and /usr/local
+ * installs, else the bare name for PATH lookup by the spawner.
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string}
+ */
+export function resolveAgentBrowserBinary(env = process.env) {
+  return [env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
+    (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
+  ) || "agent-browser";
+}
 
 /**
  * @param {number | undefined} pid
