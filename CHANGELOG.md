@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.3.4 - 2026-09-21
 
 ### Changed
 - the archive digest is streamed: `sha256File` read the whole archive into memory before hashing, so every `oracle_submit` allocated up to 250 MiB (the ChatGPT cap) inside the agent's own process; it now pipes the file through the hash. The reported digest is unchanged and is pinned against the bytes on disk
