@@ -7,6 +7,7 @@
 import { createCipheriv, createHash, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
+import { channel } from "node:diagnostics_channel";
 import { readFileSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2502,6 +2503,7 @@ async function testCancelReconcileRacePreservesIntentionalCancellation(config: O
   const activeId = await createJobForTest(config, cwd, sessionId);
   const worker = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 500)); setInterval(() => {}, 1000);"]);
   const workerPid = worker.pid;
+  worker.once("exit", (code, signal) => channel("pi-oracle.process").publish({ phase: "worker-exit-event", pid: worker.pid, code, signal }));
   assert(workerPid !== undefined, "cancel-reconcile race worker should expose a pid");
   const workerStartedAt = await waitForProcessStartedAtValue(workerPid);
   const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -6136,6 +6138,17 @@ async function testPollerHostSafety(): Promise<void> {
   assert(unhandled === 0, `expected no unhandled rejections, saw ${unhandled}`);
 }
 
+// Subscribe only around the failing race. These are observations of the real
+// helpers, not replacement process/FS operations or a change to their deadlines.
+function startCoordinationDiagnostics(): () => void {
+  const channels = ["pi-oracle.lock", "pi-oracle.state-create", "pi-oracle.process"].map((name) => channel(name));
+  const log = (message: unknown, name: string | symbol): void => {
+    console.error("[oracle-sanity] coordination", JSON.stringify({ at: Date.now(), monotonicMs: performance.now(), processPid: process.pid, channel: String(name), message }));
+  };
+  for (const diagnostic of channels) diagnostic.subscribe(log);
+  return () => { for (const diagnostic of channels) diagnostic.unsubscribe(log); };
+}
+
 let sanityStep = "preamble";
 function sanityProgress(label: string): void {
   sanityStep = label;
@@ -6151,7 +6164,7 @@ process.on("uncaughtExceptionMonitor", (error) => {
     const locksDir = getLocksDir();
     const locks = readdirSync(locksDir).map((name) => {
       try {
-        return { name, metadata: JSON.parse(readFileSync(join(locksDir, name, "metadata.json"), "utf8")) };
+        return { name, published: !name.startsWith(".tmp-"), metadata: JSON.parse(readFileSync(join(locksDir, name, "metadata.json"), "utf8")) };
       } catch {
         return { name, metadata: "unreadable or unpublished" };
       }
@@ -6266,7 +6279,12 @@ async function main() {
   sanityProgress("active cancellation/completion race");
   await testActiveCancellationDoesNotOverwriteCompletion(config);
   sanityProgress("cancel/reconcile race");
-  await testCancelReconcileRacePreservesIntentionalCancellation(config);
+  const stopCoordinationDiagnostics = startCoordinationDiagnostics();
+  try {
+    await testCancelReconcileRacePreservesIntentionalCancellation(config);
+  } finally {
+    stopCoordinationDiagnostics();
+  }
   sanityProgress("queue/promotion/cancellation");
   await testQueueAdmissionPromotionAndCancellation(config);
   await testQueuedPromotionUsesPersistedConfigSnapshot(config);
