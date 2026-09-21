@@ -3,12 +3,15 @@
 // Responsibilities: One marker-prompt job per canonical preset, sequentially, from an isolated agent/jobs/state root;
 //   wait for completion; write .artifacts/chatgpt-preset-proof/latest.json; run the release checker on it.
 // Scope: Maintainer release tooling. Consumes the maintainer's ChatGPT account through the existing-Chrome relay.
-// Usage: PI_ORACLE_PROOF_MODEL=<omp model id> PI_ORACLE_PROOF_MODELS_YML=<models.yml> npm run release:proof:chatgpt-presets:run [-- preset ...]
+// Usage: PI_ORACLE_PROOF_MODEL=<omp model id> PI_ORACLE_PROOF_MODELS_YML=<models.yml> npm run release:proof:chatgpt-presets:run [-- [--dry-run] preset ...]
 // Invariants/Assumptions: The canonical preset list and the proof contract belong to scripts/oracle-chatgpt-preset-proof.mjs;
 //   this runner only produces jobs and the proof file that checker validates. Every job runs from the current checkout's
-//   extension source (`--no-extensions -e`), never from an installed package.
+//   extension source (`--no-extensions -e`), never from an installed package. The relay endpoint decides which ChatGPT
+//   account the live jobs consume, so it is never defaulted: it comes from PI_ORACLE_PROOF_RELAY or from the operator's
+//   agent-scope oracle config, and it is printed before the first submit.
 import { execFileSync, spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,7 +23,8 @@ const ROOT = process.env.PI_ORACLE_PROOF_ROOT?.trim() || "/tmp/omp-oracle-proof"
 const CLI = process.env.PI_ORACLE_PROOF_CLI?.trim() || "omp";
 const MODEL = process.env.PI_ORACLE_PROOF_MODEL?.trim();
 const MODELS_YML = process.env.PI_ORACLE_PROOF_MODELS_YML?.trim();
-const RELAY = process.env.PI_ORACLE_PROOF_RELAY?.trim() || "http://127.0.0.1:9224";
+const OPERATOR_AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".omp", "agent");
+const OPERATOR_CONFIG_PATH = join(OPERATOR_AGENT_DIR, "extensions", "oracle.json");
 const JOB_TIMEOUT_MS = 40 * 60_000;
 const SESSION_TIMEOUT_MS = 5 * 60_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,15 +32,35 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function usage(message) {
   console.error(`${message}
 
-Usage: PI_ORACLE_PROOF_MODEL=<omp model id> PI_ORACLE_PROOF_MODELS_YML=<models.yml> node scripts/oracle-chatgpt-preset-proof-run.mjs [preset ...]
+Usage: PI_ORACLE_PROOF_MODEL=<omp model id> PI_ORACLE_PROOF_MODELS_YML=<models.yml> node scripts/oracle-chatgpt-preset-proof-run.mjs [--dry-run] [preset ...]
+
+Options:
+  --dry-run                   resolve the model, relay, and presets, print the plan, and exit without submitting anything
 
 Environment:
   PI_ORACLE_PROOF_MODEL       model id the isolated OMP session uses to call oracle_submit (required)
   PI_ORACLE_PROOF_MODELS_YML  models.yml copied into the isolated agent dir so that model resolves (required)
-  PI_ORACLE_PROOF_RELAY       existing-Chrome relay endpoint (default ${RELAY})
+  PI_ORACLE_PROOF_RELAY       existing-Chrome relay endpoint; when unset, browser.chatGptRelayEndpoint is read from
+                              ${OPERATOR_CONFIG_PATH} (the same account the operator's real jobs use)
   PI_ORACLE_PROOF_ROOT        isolated agent/sessions/jobs/state root (default ${ROOT})
   PI_ORACLE_PROOF_CLI         OMP executable (default ${CLI})`);
   process.exit(2);
+}
+
+// The relay endpoint selects a signed-in Chrome, i.e. a ChatGPT account. A wrong default would
+// silently spend the whole proof against the wrong account, so there is none.
+function resolveRelay() {
+  const fromEnv = process.env.PI_ORACLE_PROOF_RELAY?.trim();
+  if (fromEnv) return { endpoint: fromEnv, source: "PI_ORACLE_PROOF_RELAY" };
+  if (!existsSync(OPERATOR_CONFIG_PATH)) usage(`PI_ORACLE_PROOF_RELAY is unset and ${OPERATOR_CONFIG_PATH} does not exist.`);
+  let configured;
+  try {
+    configured = JSON.parse(readFileSync(OPERATOR_CONFIG_PATH, "utf8"))?.browser?.chatGptRelayEndpoint;
+  } catch (error) {
+    usage(`Could not read ${OPERATOR_CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (typeof configured !== "string" || !configured.trim()) usage(`PI_ORACLE_PROOF_RELAY is unset and ${OPERATOR_CONFIG_PATH} sets no browser.chatGptRelayEndpoint.`);
+  return { endpoint: configured.trim(), source: OPERATOR_CONFIG_PATH };
 }
 
 // Print-mode OMP waits for piped stdin forever, so stdin is closed explicitly.
@@ -64,18 +88,27 @@ function jobDirs(jobsDir) {
 async function main() {
   if (!MODEL) usage("PI_ORACLE_PROOF_MODEL is required.");
   if (!MODELS_YML || !existsSync(MODELS_YML)) usage("PI_ORACLE_PROOF_MODELS_YML must point at an existing models.yml.");
+  const dryRun = process.argv.includes("--dry-run");
   const template = JSON.parse(execFileSync(process.execPath, [CHECKER, "template"], { cwd: REPO_ROOT, encoding: "utf8" }));
   const canonical = Object.keys(template.jobs);
-  const selected = process.argv.slice(2).length ? process.argv.slice(2) : canonical;
+  const requested = process.argv.slice(2).filter((arg) => arg !== "--dry-run");
+  const selected = requested.length ? requested : canonical;
   for (const preset of selected) {
     if (!canonical.includes(preset)) usage(`Unknown or excluded preset: ${preset}. Canonical live presets: ${canonical.join(", ")}`);
+  }
+  const relay = resolveRelay();
+  console.log(`Relay: ${relay.endpoint} (from ${relay.source})`);
+  console.log(`Model: ${MODEL} via ${MODELS_YML}; root: ${ROOT}; presets: ${selected.join(", ")}`);
+  if (dryRun) {
+    console.log("Dry run: nothing submitted.");
+    return;
   }
 
   const agentDir = join(ROOT, "agent");
   const jobsDir = join(ROOT, "jobs");
   for (const dir of [join(agentDir, "extensions"), join(ROOT, "sessions"), jobsDir, join(ROOT, "state")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   copyFileSync(MODELS_YML, join(agentDir, "models.yml"));
-  writeFileSync(join(agentDir, "extensions", "oracle.json"), `${JSON.stringify({ browser: { chatGptRelayEndpoint: RELAY } })}\n`, { mode: 0o600 });
+  writeFileSync(join(agentDir, "extensions", "oracle.json"), `${JSON.stringify({ browser: { chatGptRelayEndpoint: relay.endpoint } })}\n`, { mode: 0o600 });
   const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_ORACLE_JOBS_DIR: jobsDir, PI_ORACLE_STATE_DIR: join(ROOT, "state"), PI_TELEMETRY: "0" };
 
   const outcomes = [];

@@ -69,9 +69,15 @@ PI_ORACLE_PROOF_MODEL=<omp model id> PI_ORACLE_PROOF_MODELS_YML=<models.yml for 
 
 `PI_ORACLE_PROOF_MODEL` is the model the isolated session uses to call `oracle_submit` (a zero-cost
 local model is fine); its `models.yml` is copied into the isolated agent dir because that dir has no
-other configuration. Pass preset ids as arguments to rerun a subset; a partial rerun keeps the
-other presets' entries from the existing proof file. The manual equivalent starts from the checked,
-intentionally non-valid template:
+other configuration. The relay endpoint selects the signed-in Chrome, i.e. the ChatGPT account the
+eight live jobs consume, so it has no default: the runner takes `PI_ORACLE_PROOF_RELAY` when set and
+otherwise `browser.chatGptRelayEndpoint` from the operator's agent-scope config
+(`$PI_CODING_AGENT_DIR/extensions/oracle.json`, default `~/.omp/agent/extensions/oracle.json`),
+the same account the operator's real jobs use; it prints the resolved endpoint and its source
+before the first submit and refuses to run when neither is set. `--dry-run` resolves everything and
+prints the plan without submitting. Pass preset ids as arguments to rerun a subset; a partial rerun
+keeps the other presets' entries from the existing proof file. The manual equivalent starts from
+the checked, intentionally non-valid template:
 
 ```bash
 mkdir -p .artifacts/chatgpt-preset-proof
