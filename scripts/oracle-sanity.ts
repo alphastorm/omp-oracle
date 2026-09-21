@@ -4033,6 +4033,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux") && pkg.os?.includes("win32"), "package.json should declare macOS, Linux, and Windows native support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
+  assert(pkg.scripts?.["typecheck:worker-runtime"] === "tsc --noEmit -p tsconfig.worker-runtime.json", "package.json should typecheck the worker runtime entry point, whose errors otherwise surface only mid-job");
   assert(pkg.scripts?.["check:platform-smoke"]?.includes("scripts/platform-smoke/targets.mjs"), "package.json should syntax-check the Crabbox platform smoke runner");
   assert(pkg.scripts?.["check:platform-smoke"]?.includes("scripts/platform-smoke/invariants.mjs"), "package.json should run platform-smoke invariants during syntax checks");
   assert(String(pkg.scripts?.["check:oracle-real-smoke"] || "").includes("scripts/oracle-sanity-runner.mjs"), "package.json should syntax-check the oracle sanity runner wrapper");
@@ -4043,6 +4044,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:platform:all"] === `npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target ${platformSmokeConfig.requiredTargets.join(",")}`, "package.json should run every required Crabbox target together after doctor");
   assert(pkg.files?.includes("platform-smoke.config.mjs") && pkg.files?.includes("scripts/platform-smoke.mjs") && pkg.files?.includes("scripts/platform-smoke"), "package files should include the Crabbox platform smoke harness");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
+  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-runtime"), "full local verification should include worker runtime typechecking");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:platform-smoke"), "full local verification should include platform smoke syntax checks");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:oracle-real-smoke"), "full local verification should include real smoke harness syntax checks");
   assert(pkg.scripts?.["smoke:real"] === "npm run smoke:real:packed", "package.json should make the default real isolated pi-agent smoke packed-install proof");
@@ -5609,8 +5611,7 @@ function testChatGptUiHelpers(): void {
       hasStopStreaming: false,
       hasTargetCopyResponse: false,
       responseText: "",
-      artifactLabels: ["report.csv"],
-      suspiciousArtifactLabels: ["report.csv", "chart.png"],
+      artifactLabels: ["report.csv", "chart.png", "report.csv"],
     }) === "artifacts:chart.png|report.csv",
     "artifact-only responses should complete from stable artifact labels when no text body is present",
   );

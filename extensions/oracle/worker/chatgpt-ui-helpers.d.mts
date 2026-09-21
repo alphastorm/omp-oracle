@@ -40,12 +40,10 @@ export declare function snapshotWeaklyMatchesRequestedModel(snapshot: string, se
 export declare function buildAssistantCompletionSignature(args: {
   responseText: string;
   artifactLabels?: string[];
-  suspiciousArtifactLabels?: string[];
 }): string | undefined;
 export declare function deriveAssistantCompletionSignature(args: {
   hasStopStreaming: boolean;
   hasTargetCopyResponse: boolean;
   responseText: string;
   artifactLabels?: string[];
-  suspiciousArtifactLabels?: string[];
 }): string | undefined;

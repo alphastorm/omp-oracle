@@ -40,8 +40,9 @@ Crabbox harness code, or anything that may differ across macOS, Linux, and Windo
 
 `npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`:
 
-1. `npm run verify:oracle` — syntax and bundle checks, helper unit tests, both typechecks, the
-   isolated sanity harness, and `npm pack --dry-run`.
+1. `npm run verify:oracle` — syntax and bundle checks, helper unit tests, the three typecheck
+   projects (extension, worker helpers, worker runtime), the isolated sanity harness, and
+   `npm pack --dry-run`.
 2. `npm run release:proof:chatgpt-presets` — fresh live ChatGPT preset proof for every canonical
    preset through the loaded extension.
 3. `npm run smoke:platform:all` — doctor-first macOS and Ubuntu Crabbox suites (`platform-build`

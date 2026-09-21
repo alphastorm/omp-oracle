@@ -10,8 +10,8 @@ import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 /** @typedef {import("./chatgpt-ui-helpers.d.mts").OracleUiSelection} OracleUiSelection */
 /** @typedef {import("./artifact-heuristics.d.mts").SnapshotEntry} SnapshotEntry */
 
-/** @typedef {{ responseText: string; artifactLabels?: string[]; suspiciousArtifactLabels?: string[] }} CompletionSignatureArgs */
-/** @typedef {{ hasStopStreaming: boolean; hasTargetCopyResponse: boolean; responseText: string; artifactLabels?: string[]; suspiciousArtifactLabels?: string[] }} DerivedCompletionSignatureArgs */
+/** @typedef {{ responseText: string; artifactLabels?: string[] }} CompletionSignatureArgs */
+/** @typedef {{ hasStopStreaming: boolean; hasTargetCopyResponse: boolean; responseText: string; artifactLabels?: string[] }} DerivedCompletionSignatureArgs */
 
 export const CHATGPT_CANONICAL_APP_ORIGINS = Object.freeze([
   "https://chatgpt.com",
@@ -828,11 +828,11 @@ export function snapshotWeaklyMatchesRequestedModel(snapshot, selection) {
  * @param {CompletionSignatureArgs} args
  * @returns {string | undefined}
  */
-export function buildAssistantCompletionSignature({ responseText, artifactLabels = [], suspiciousArtifactLabels = [] }) {
+export function buildAssistantCompletionSignature({ responseText, artifactLabels = [] }) {
   const normalizedResponse = normalizeText(responseText);
   if (normalizedResponse) return `text:${normalizedResponse}`;
 
-  const labels = uniqueStrings([...artifactLabels, ...suspiciousArtifactLabels].map((value) => normalizeText(value))).sort((left, right) => left.localeCompare(right));
+  const labels = uniqueStrings(artifactLabels.map((value) => normalizeText(value))).sort((left, right) => left.localeCompare(right));
   if (labels.length > 0) return `artifacts:${labels.join("|")}`;
 
   return undefined;
@@ -847,7 +847,6 @@ export function deriveAssistantCompletionSignature({
   hasTargetCopyResponse,
   responseText,
   artifactLabels = [],
-  suspiciousArtifactLabels = [],
 }) {
   if (hasStopStreaming) return undefined;
 
@@ -856,7 +855,7 @@ export function deriveAssistantCompletionSignature({
   }
 
   if (!normalizeText(responseText)) {
-    return buildAssistantCompletionSignature({ responseText, artifactLabels, suspiciousArtifactLabels });
+    return buildAssistantCompletionSignature({ responseText, artifactLabels });
   }
 
   return undefined;

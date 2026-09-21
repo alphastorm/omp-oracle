@@ -260,9 +260,15 @@ function killProcess(child) {
   child.kill("SIGKILL");
 }
 
+/**
+ * @param {string} command
+ * @param {string[]} args
+ * @param {import("node:child_process").SpawnOptions & { timeoutMs?: number; input?: string | Buffer; allowFailure?: boolean }} [options]
+ * @returns {Promise<{ code: number | null; stdout: string; stderr: string }>}
+ */
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const { timeoutMs, ...spawnOptions } = options;
+    const { timeoutMs, input, allowFailure, ...spawnOptions } = options;
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
@@ -281,7 +287,7 @@ function spawnCommand(command, args, options = {}) {
       }, timeoutMs);
       killTimer.unref?.();
     }
-    if (options.input) child.stdin.end(options.input);
+    if (input) child.stdin.end(input);
     else child.stdin.end();
     child.stdout.on("data", (data) => {
       stdout += String(data);
@@ -293,11 +299,11 @@ function spawnCommand(command, args, options = {}) {
       if (killTimer) clearTimeout(killTimer);
       if (timedOut) {
         const error = new Error(stderr || stdout || `${command} timed out after ${timeoutMs}ms`);
-        if (options.allowFailure) resolve({ code, stdout: stdout.trim(), stderr: error.message });
+        if (allowFailure) resolve({ code, stdout: stdout.trim(), stderr: error.message });
         else reject(error);
         return;
       }
-      if (code === 0 || options.allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
+      if (code === 0 || allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
       else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
     });
     child.on("error", (error) => {
@@ -414,7 +420,8 @@ async function cleanupRuntime(job) {
 }
 
 async function tryAcquireRuntimeLeaseForJob(job, createdAt) {
-  const existing = listLeaseMetadata(ORACLE_STATE_DIR, "runtime");
+  // Lease files are untrusted JSON written by other worker processes; every field may be absent.
+  const existing = /** @type {Partial<import("../shared/job-coordination-helpers.d.mts").OracleRuntimeLeaseMetadataLike>[]} */ (listLeaseMetadata(ORACLE_STATE_DIR, "runtime"));
   const liveLeases = [];
   for (const lease of existing) {
     const owner = lease?.jobId ? readAnyJob(lease.jobId) : undefined;
@@ -434,7 +441,7 @@ async function tryAcquireRuntimeLeaseForJob(job, createdAt) {
 async function tryAcquireConversationLeaseForJob(job, createdAt) {
   const metadata = buildConversationLeaseMetadata(job, createdAt);
   if (!metadata) return true;
-  const existing = await readLeaseMetadata(ORACLE_STATE_DIR, "conversation", metadata.conversationId);
+  const existing = /** @type {Partial<import("../shared/job-coordination-helpers.d.mts").OracleConversationLeaseMetadataLike> | undefined} */ (await readLeaseMetadata(ORACLE_STATE_DIR, "conversation", metadata.conversationId));
   if (existing?.jobId === job.id) return true;
   if (existing && existing.jobId !== job.id) {
     if (!jobBlocksAdmission(readAnyJob(existing.jobId))) {
@@ -2198,13 +2205,12 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
         responseText: targetText,
       });
     } else if (!hasStopStreaming && hasTargetCopyResponse && !targetText) {
-      const artifactSignals = await collectArtifactCandidates(job, baselineAssistantCount, targetText).catch(() => ({ candidates: [], suspiciousLabels: [] }));
+      const artifactCandidates = await collectArtifactCandidates(job, baselineAssistantCount).catch(() => []);
       completionSignature = deriveAssistantCompletionSignature({
         hasStopStreaming,
         hasTargetCopyResponse,
         responseText: targetText,
-        artifactLabels: artifactSignals.candidates.map((candidate) => candidate.label),
-        suspiciousArtifactLabels: artifactSignals.suspiciousLabels,
+        artifactLabels: artifactCandidates.map((candidate) => candidate.label),
       });
     }
 
@@ -2300,10 +2306,17 @@ async function waitForDeepResearchReport(job, timeoutAt, binding) {
 
 
 
+/**
+ * Structural artifact candidates of one assistant turn, read from the DOM. Used only while the
+ * turn has no text body: the labels stand in for text as the completion-stability signal.
+ * @param {*} job
+ * @param {number} responseIndex
+ * @returns {Promise<import("./response-capture.d.mts").OracleArtifactCandidate[]>}
+ */
 async function collectArtifactCandidates(job, responseIndex) {
   const captured = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex })};`));
   if (!captured?.candidates) throw new Error("Bound artifact inspection failed.");
-  return { candidates: captured.candidates, suspiciousLabels: [] };
+  return captured.candidates;
 }
 
 async function withHeartbeatWhile(task) {
@@ -2392,7 +2405,9 @@ async function collectBoundResult(job, binding, fallbackText = "") {
   const optionalMissing = [];
   let capture;
   let frame;
+  /** @type {import("./response-capture.d.mts").OracleArtifactInspectionState} */
   let inspection = "not_performed";
+  /** @type {import("./response-capture.d.mts").OracleCaptureFidelity} */
   let fidelity = "text_only";
   let method = "text_fallback";
   let response = fallbackText;
@@ -2409,9 +2424,9 @@ async function collectBoundResult(job, binding, fallbackText = "") {
     await mutateJob((latest) => ({ ...latest, collectionBinding: binding }));
     if (job.selection.tool === "deep_research") {
       frame = await boundResearchFrame(job, binding);
-      const report = await deepResearchCdp.evaluate(frame.sessionId, captureExpression({ report: true }, true));
+      const report = /** @type {import("./response-capture.d.mts").OracleScopedCapture | undefined} */ (await deepResearchCdp.evaluate(frame.sessionId, captureExpression({ report: true }, true)));
       const completionText = await deepResearchCdp.evaluate(frame.sessionId, DEEP_RESEARCH_REPORT_EXPRESSION);
-      if (!report?.rawHtml || !parseDeepResearchWidgetText(completionText).completed) throw new Error("Bound research frame is not a completed report.");
+      if (!report?.rawHtml || !parseDeepResearchWidgetText(typeof completionText === "string" ? completionText : "").completed) throw new Error("Bound research frame is not a completed report.");
       capture = report;
       binding = { ...binding, frameId: frame.targetId };
     }
