@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Current local validation baseline is pi `0.80.9`; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.9+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Current source qualification baseline is official pi `0.86.1`; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.9+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -370,6 +370,8 @@ Install the missing local dependency and rerun the command. `zstd` is only neede
 Inspect the job directory under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`. The worker log and captured diagnostics are stored there.
 
 ## Verification
+
+For credential-free host qualification, run `npm ci --ignore-scripts` then `npm run check:compat` with an empty HOME/agent profile. It runs the existing syntax, type, isolated sanity, and pack checks plus native Pi `/oracle-status` dispatch, asserting that no browser job is created. Sanity uses fixture browser/keychain commands and private job/state directories; it needs local archive utilities (`tar` and `zstd`), not browser credentials. This is source/host proof, not authenticated ChatGPT/Grok or packed cross-platform release proof. The older suggested floor is historical support guidance, not requalified by a current-host run.
 
 Useful local checks:
 

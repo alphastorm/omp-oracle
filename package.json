@@ -55,6 +55,7 @@
     "pack:check": "npm pack --dry-run",
     "verify:oracle": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle && npm run pack:check",
     "test": "npm run verify:oracle",
+    "check:compat": "npm run verify:oracle && node --test scripts/oracle-native.test.mjs",
     "prepublishOnly": "npm run release:check",
     "check:platform-smoke": "node --check scripts/platform-smoke.mjs && node --check scripts/platform-smoke/assertions.mjs && node --check scripts/platform-smoke/artifacts.mjs && node --check scripts/platform-smoke/crabbox-runner.mjs && node --check scripts/platform-smoke/doctor.mjs && node --check scripts/platform-smoke/targets.mjs && node scripts/platform-smoke/invariants.mjs",
     "smoke:platform": "node scripts/platform-smoke.mjs",
@@ -87,8 +88,8 @@
     "protobufjs": "7.6.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.80.9",
-    "@earendil-works/pi-coding-agent": "^0.80.9",
+    "@earendil-works/pi-ai": "0.86.1",
+    "@earendil-works/pi-coding-agent": "0.86.1",
     "@types/node": "^22.19.19",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.3",

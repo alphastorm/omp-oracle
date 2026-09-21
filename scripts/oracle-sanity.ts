@@ -4004,8 +4004,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
   assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
-  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.80.9", "package.json should use the current Pi 0.80.9 local development baseline");
-  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.80.9", "package.json should use the current pi-ai 0.80.9 local development baseline");
+  const piBaseline = pkg.devDependencies?.["@earendil-works/pi-coding-agent"];
+  assert(typeof piBaseline === "string" && /^\d+\.\d+\.\d+$/.test(piBaseline), "package.json should pin an exact stable Pi development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === piBaseline, "Pi development dependencies should use one coherent baseline");
   assert(pkg.peerDependencies?.["@earendil-works/pi-ai"] === "*", "package.json should declare the runtime StringEnum import as an optional wildcard peer");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
   for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox"]) {
