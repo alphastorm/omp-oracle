@@ -161,9 +161,15 @@ function killProcess(child) {
   child.kill("SIGKILL");
 }
 
+/**
+ * @param {string} command
+ * @param {string[]} args
+ * @param {import("node:child_process").SpawnOptions & { timeoutMs?: number; input?: string | Buffer; allowFailure?: boolean }} [options]
+ * @returns {Promise<{ code: number | null; stdout: string; stderr: string }>}
+ */
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const { timeoutMs = AGENT_BROWSER_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
+    const { timeoutMs = AGENT_BROWSER_COMMAND_TIMEOUT_MS, input, allowFailure, ...spawnOptions } = options;
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
@@ -184,7 +190,7 @@ function spawnCommand(command, args, options = {}) {
       }, timeoutMs);
       killTimer.unref?.();
     }
-    if (options.input) child.stdin.end(options.input);
+    if (input) child.stdin.end(input);
     else child.stdin.end();
     child.stdout.on("data", (data) => {
       stdout += String(data);
@@ -193,20 +199,20 @@ function spawnCommand(command, args, options = {}) {
       stderr += String(data);
     });
     child.on("error", (error) => {
-      if (killTimer) clearTimeout(killTimer);
-      if (killGraceTimer) clearTimeout(killGraceTimer);
+      clearTimeout(killTimer);
+      clearTimeout(killGraceTimer);
       reject(error);
     });
     child.on("close", (code) => {
-      if (killTimer) clearTimeout(killTimer);
-      if (killGraceTimer) clearTimeout(killGraceTimer);
+      clearTimeout(killTimer);
+      clearTimeout(killGraceTimer);
       if (timedOut) {
         const error = new Error(stderr || stdout || `${command} timed out after ${timeoutMs}ms`);
-        if (options.allowFailure) resolve({ code, stdout: stdout.trim(), stderr: error.message });
+        if (allowFailure) resolve({ code, stdout: stdout.trim(), stderr: error.message });
         else reject(error);
         return;
       }
-      if (code === 0 || options.allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
+      if (code === 0 || allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
       else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
     });
   });
@@ -853,6 +859,7 @@ async function maybeSelectAccountIdentity(snapshot, probe) {
 }
 
 function preserveBrowserError(message) {
+  /** @type {Error & { preserveBrowser?: boolean }} */
   const error = new Error(message);
   error.preserveBrowser = true;
   return error;

@@ -4055,9 +4055,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(pkg.scripts?.["typecheck:worker-runtime"] === "tsc --noEmit -p tsconfig.worker-runtime.json", "package.json should typecheck the worker runtime entry point, whose errors otherwise surface only mid-job");
-  assert(pkg.scripts?.["check:platform-smoke"]?.includes("scripts/platform-smoke/targets.mjs"), "package.json should syntax-check the Crabbox platform smoke runner");
-  assert(pkg.scripts?.["check:platform-smoke"]?.includes("scripts/platform-smoke/invariants.mjs"), "package.json should run platform-smoke invariants during syntax checks");
-  assert(String(pkg.scripts?.["check:oracle-real-smoke"] || "").includes("scripts/oracle-sanity-runner.mjs"), "package.json should syntax-check the oracle sanity runner wrapper");
+  assert(pkg.scripts?.["check:syntax"] === "node scripts/check-syntax.mjs", "package.json should parse-check every .mjs source by discovery, never by a hand-maintained file list");
+  assert(String(pkg.scripts?.["check:oracle-extension"] || "").startsWith("npm run check:syntax && esbuild "), "package.json should bundle the extension after the discovery syntax check");
+  assert(pkg.scripts?.["check:platform-smoke"] === "node scripts/platform-smoke/invariants.mjs", "package.json should run platform-smoke invariants as their own gate");
   assert(pkg.scripts?.["smoke:platform:doctor"] === "node scripts/platform-smoke.mjs doctor", "package.json should expose the Crabbox platform-smoke doctor");
   assert(pkg.scripts?.["smoke:platform:macos"] === "node scripts/platform-smoke.mjs run --target macos", "package.json should expose the macOS Crabbox platform smoke gate");
   assert(pkg.scripts?.["smoke:platform:ubuntu"] === "node scripts/platform-smoke.mjs run --target ubuntu", "package.json should expose the Ubuntu Crabbox platform smoke gate");
@@ -4066,8 +4066,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.files?.includes("platform-smoke.config.mjs") && pkg.files?.includes("scripts/platform-smoke.mjs") && pkg.files?.includes("scripts/platform-smoke"), "package files should include the Crabbox platform smoke harness");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-runtime"), "full local verification should include worker runtime typechecking");
-  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:platform-smoke"), "full local verification should include platform smoke syntax checks");
-  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:oracle-real-smoke"), "full local verification should include real smoke harness syntax checks");
+  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:oracle-extension"), "full local verification should include the syntax discovery check and the extension bundle");
+  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:platform-smoke"), "full local verification should include platform smoke invariants");
   assert(pkg.scripts?.["smoke:real"] === "npm run smoke:real:packed", "package.json should make the default real isolated pi-agent smoke packed-install proof");
   assert(pkg.scripts?.["smoke:real:packed"] === "node scripts/oracle-real-smoke.mjs run --mode packed", "package.json should expose the packed real isolated pi-agent smoke gate");
   assert(pkg.scripts?.["smoke:real:source"] === "node scripts/oracle-real-smoke.mjs run --mode source", "package.json should expose source-mode real smoke only as an explicit debug path");

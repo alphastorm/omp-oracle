@@ -296,7 +296,7 @@ function spawnCommand(command, args, options = {}) {
       stderr += String(data);
     });
     child.on("close", (code) => {
-      if (killTimer) clearTimeout(killTimer);
+      clearTimeout(killTimer);
       if (timedOut) {
         const error = new Error(stderr || stdout || `${command} timed out after ${timeoutMs}ms`);
         if (allowFailure) resolve({ code, stdout: stdout.trim(), stderr: error.message });
@@ -307,7 +307,7 @@ function spawnCommand(command, args, options = {}) {
       else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
     });
     child.on("error", (error) => {
-      if (killTimer) clearTimeout(killTimer);
+      clearTimeout(killTimer);
       reject(error);
     });
   });

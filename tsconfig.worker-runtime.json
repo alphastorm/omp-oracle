@@ -14,6 +14,7 @@
     "types": ["node"]
   },
   "include": [
-    "extensions/oracle/worker/run-job.mjs"
+    "extensions/oracle/worker/run-job.mjs",
+    "extensions/oracle/worker/auth-bootstrap.mjs"
   ]
 }
