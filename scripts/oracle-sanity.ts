@@ -77,6 +77,7 @@ import {
 } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import type { OracleLifecycleTrackedJobLike } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import {
+  assertNotKnownBrowserUserDataPath,
   browserUserDataDirsForPlatform,
   chromiumKeychainSupportedOnPlatform,
   defaultCloneStrategyForPlatform,
@@ -329,9 +330,20 @@ async function testBrowserProfileHelpers(): Promise<void> {
     const configHomeLink = join(fixtureDir, "config-link");
     await symlink(xdgConfigHome, configHomeLink, "dir");
     const symlinkedBrowserProfile = join(configHomeLink, "google-chrome", "Default");
-    const matchedRoot = knownBrowserUserDataPathMatch(symlinkedBrowserProfile, { platform: "linux", env: helperEnv, homeDir: fakeHome });
+    const safetyOptions = { platform: "linux" as const, env: helperEnv, homeDir: fakeHome };
     const resolvedGoogleChromeRoot = await realpath(join(xdgConfigHome, "google-chrome"));
-    assert(matchedRoot === resolvedGoogleChromeRoot, "browser profile safety checks should resolve symlinked ancestors before destructive profile use");
+    for (const profilePath of [symlinkedBrowserProfile, join(symlinkedBrowserProfile, "not-created", "oracle-profile")]) {
+      const matchedRoot = knownBrowserUserDataPathMatch(profilePath, safetyOptions);
+      assert(matchedRoot !== undefined, `browser profile safety checks should detect symlinked ancestors: ${profilePath}`);
+      // realpathSync (used by the guard) can preserve Windows 8.3 aliases while
+      // fs.promises.realpath expands them. Compare both roots with the same API.
+      assert(await realpath(matchedRoot) === resolvedGoogleChromeRoot, "browser profile safety checks should resolve symlinked ancestors before destructive profile use");
+      assertThrows(
+        () => assertNotKnownBrowserUserDataPath(profilePath, "test profile", safetyOptions),
+        "destructive profile use through a symlinked ancestor must be rejected",
+        "must not point into a real browser user-data directory",
+      );
+    }
 
     const customCookieDb = join(fixtureDir, "CustomBrowser", "Profile 1", "Network", "Cookies");
     const protectedCustomProfile = knownBrowserUserDataPathMatch(join(fixtureDir, "CustomBrowser", "Profile 1", "oracle-seed"), {
