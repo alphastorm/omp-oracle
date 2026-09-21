@@ -115,6 +115,51 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.3.4 (2026-09-21, `302eeee`)
+
+- Scope: a second debt/perf pass on the clean `0.3.3` tree. `sha256File` read the whole archive
+  into memory before hashing, so every `oracle_submit` allocated up to 250 MiB inside the
+  agent's process; it now streams (`cdd15ad`, digest pinned against the bytes on disk). One
+  subprocess runner, `runCommand`, replaces the four hand-rolled spawn/timeout/kill copies (both
+  workers, `spawnCp`, `closeRuntimeBrowserSession`), closing the class behind the 0.3.3
+  spawn-options bug that had to be fixed twice (`04f7fa8`); the runner is covered directly and
+  the existing hung-`cp` and hung-`agent-browser` timeout tests exercise it. Two source-text
+  pins that guarded the old copies were retired for that behavioral test.
+- Measured, deliberately not changed: per-phase timing over the eight `0.3.3` proof jobs
+  (median 34 s total) is 0.1 s connect, 3.3 s model configuration, 5.9 s upload confirmation,
+  0.3 s send, 24 s from send to completion, 0.3 s cleanup. The upload wait is a real poll with a
+  two-read stability guard, and the send-to-completion span is dominated by the fixed 15 s
+  post-send settle (introduced upstream in 0.1.12 with no recorded failure it prevents) plus the
+  5 s completion poll. Neither was removed: they sit in the send path, an intermittent failure
+  needs far more than one proof run to rule out, and the saving only matters for trivial
+  prompts (real jobs are provider-time dominated). `npm audit --omit=dev`: 0 vulnerabilities.
+- Local gate green on `302eeee`; one intermediate red was the retired source pins themselves.
+- Pre-commit isolated source-session smoke on the consolidated worker: relay job completed in
+  50 s with both markers, warning-free cleanup, no leaked processes.
+- Live eight-preset ChatGPT proof accepted on `302eeee` (relay resolved from the operator's
+  config): `pro_standard` `fc38b957` 53 s, `pro_extended` `7ac20339` 58 s, `thinking_light`
+  `94d26a34` 45 s, `thinking_standard` `8de84ce0` 43 s, `thinking_extended` `87485207` 42 s,
+  `thinking_heavy` `f25f5e87` 42 s, `instant` `87de4a3a` 42 s, `instant_auto_switch` `a000305f`
+  43 s; all eight completed with both markers and neither self-heal path fired.
+- Crabbox lanes on `302eeee`: macOS `platform-build` PASS (52.3 s) and `real-extension` PASS
+  (5.3 s), Ubuntu `platform-build` PASS (37.9 s) and `real-extension` PASS (4.3 s).
+  `npm run release:check` then passed as one composition on the same clean tree.
+- Published `omp-oracle@0.3.4` from `302eeee` by the agent under explicit founder authorization
+  for this exact publish. npm's `auth-and-writes` policy still demanded a second factor: the
+  first attempt through a pipe exited `EOTP` because npm only waits for the browser approval on
+  a real TTY, so the publish was rerun as a supervised PTY process, the approval page opened in
+  the founder's browser, and the founder approved it. `npm publish --ignore-scripts` as before,
+  the composition having just passed on the unchanged tree. Registry `gitHead`
+  `302eeeeb80d852f19f194bedc6263107d35f808f`, shasum
+  `a269404f7515c96488e800ea23f8ad9094ee8815`, 81 files, `latest` (visible about a minute after
+  npm's "being processed" notice). Tag `v0.3.4` and the
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.3.4) name the same
+  commit.
+- Installed-package job on Oh My Pi 18.2.7 after `omp plugin uninstall omp-oracle` and
+  `omp plugin install omp-oracle@0.3.4`: job `0d1f1c46` through the operator's real
+  configuration completed in 52 s with both markers, `extensionProvenance` recorded
+  `packageVersion 0.3.4`, the installed path, and no `gitHead`, nothing on stderr.
+
 #### 0.3.3 (2026-09-21, `a336994`)
 
 - Scope: the four handoff fixes (proof runner relay default, installed-package provenance,
