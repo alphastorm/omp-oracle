@@ -16,6 +16,25 @@ export function chatGptStreamingVisible(snapshot) {
 }
 
 /**
+ * Whether the bound assistant turn is still being generated.
+ *
+ * The composer stop control is the authority. ChatGPT labels a freshly streamed assistant turn's
+ * action bar "Copy" and only renames it "Copy response" once the turn is re-rendered from
+ * persistence, so no assistant-action label count is evidence that generation finished: counting
+ * "Copy response" never matches a live turn (the job hangs) and matches mid-rehydration, when the
+ * turn text is still partially rendered (the job captures a truncated response). `domStopButton`
+ * is the `[data-testid="stop-button"]` reading, which stays present until after the text is final;
+ * the accessibility labels remain a fallback for when that test id drifts.
+ *
+ * @param {{ snapshot: string, domStopButton?: boolean }} args
+ * @returns {boolean}
+ */
+export function chatGptGenerationActive({ snapshot, domStopButton }) {
+  if (domStopButton === true) return true;
+  return chatGptStreamingVisible(snapshot);
+}
+
+/**
  * Count nearby UI controls, not text lines: a multiline composer value can span hundreds of lines.
  * @param {string} snapshot
  * @param {string} fileLabel

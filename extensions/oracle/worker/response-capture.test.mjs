@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { collectNativeDownload, collectionOutcome, redactTransportSecrets, validateArtifactBytes } from './response-capture.mjs';
 import { formatOracleJobSummary } from '../shared/job-observability-helpers.mjs';
-import { chatGptStreamingVisible, providerSendAccepted } from './chatgpt-flow-helpers.mjs';
+import { chatGptGenerationActive, chatGptStreamingVisible, providerSendAccepted } from './chatgpt-flow-helpers.mjs';
 
 test('accepted continuation recognizes Stop answering controls but not quoted prose', () => {
   const before = { url: 'https://chatgpt.com/c/existing', assistantCount: 3, stopStreaming: false };
@@ -17,6 +17,34 @@ test('accepted continuation recognizes Stop answering controls but not quoted pr
   }
   assert.equal(chatGptStreamingVisible('- textbox "Stop answering" [ref=e1]\n- button "Send prompt" [ref=e2]\nStop streaming'), false);
   assert.equal(chatGptStreamingVisible('- button "Stop answering" [ref=e1] [disabled]'), false);
+});
+
+// Observed live on 2026-09-21: ChatGPT labels a freshly streamed assistant turn's action bar
+// "Copy" and only renames it "Copy response" after re-rendering the turn from persistence. The
+// completion loop had gated on counting "Copy response", so a live turn never completed (jobs
+// hung to the 90-minute timeout) and a mid-rehydration read completed with truncated text.
+test('generation state, not the assistant action label, decides that a turn finished', () => {
+  const streaming = [
+    '- textbox "Chat with ChatGPT" [ref=e1]',
+    '- button "Stop answering" [ref=e2]',
+    '- button "Copy" [ref=e3]',
+  ].join('\n');
+  const finishedLiveTurn = [
+    '- textbox "Chat with ChatGPT" [ref=e1]',
+    '- button "Send prompt" [ref=e2]',
+    '- button "Copy" [ref=e3]',
+  ].join('\n');
+
+  assert.equal(chatGptGenerationActive({ snapshot: streaming }), true);
+  // A finished turn whose only affordance is "Copy" must read as finished; requiring the
+  // "Copy response" label here is what hung every ChatGPT job.
+  assert.equal(chatGptGenerationActive({ snapshot: finishedLiveTurn }), false);
+
+  // The DOM stop control outranks the labels, so a renamed stop button cannot look finished.
+  assert.equal(chatGptGenerationActive({ snapshot: finishedLiveTurn, domStopButton: true }), true);
+  // An unreadable probe falls back to the labels rather than failing open.
+  assert.equal(chatGptGenerationActive({ snapshot: streaming, domStopButton: undefined }), true);
+  assert.equal(chatGptGenerationActive({ snapshot: finishedLiveTurn, domStopButton: false }), false);
 });
 
 test('read summaries expose generation and collection independently while legacy records stay readable', () => {

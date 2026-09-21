@@ -4,6 +4,15 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+- stop returning a silently truncated ChatGPT response, and stop hanging on a finished one. Chrome gives a hidden tab no rendering opportunities and ChatGPT appends streamed tokens from that loop, so the job-owned relay tab stops materializing the turn whenever it sits behind another tab or an occluded window; the stop control still clears, because it follows the network stream rather than the DOM, so a frozen partial turn read as a finished one and was captured as the whole response with `collectionStatus: complete`. Generation state is now the authority for "finished", and the streamed read is only a lower bound: the worker reloads the persisted conversation and re-reads the bound turn, which renders correctly even while hidden, keeping whichever read is longer and logging any characters recovered
+- completion no longer requires a `Copy response` control. ChatGPT labels a freshly streamed assistant turn's action bar `Copy` and only renames it `Copy response` once the turn is re-rendered from persistence, so counting that label matched no live turn at all and every ChatGPT job waited out the full 90-minute completion timeout
+
+### Added
+- `npm run check:worker-runtime-names`: `run-job.mjs` is excluded from both typecheck projects, so a missing import there fails only at runtime, mid-job, after a provider call has already been spent. The gate runs TypeScript's `checkJs` pass over the worker runtime and rejects unresolved-identifier diagnostics
+
 ## 0.3.1 - 2026-09-21
 
 ### Fixed

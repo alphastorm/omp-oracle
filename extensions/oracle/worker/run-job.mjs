@@ -52,7 +52,7 @@ import {
   autoSwitchToThinkingSelectionVisible,
   stripChatGptResponseChrome,
 } from "./chatgpt-ui-helpers.mjs";
-import { chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
@@ -806,7 +806,6 @@ async function agentBrowser(job, ...args) {
   await ensureBrowserConnected(job);
   return spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), ...args], options);
 }
-
 function parseEvalResult(stdout) {
   if (!stdout) return undefined;
   let value = stdout.trim();
@@ -2099,6 +2098,56 @@ async function waitForStableChatUrl(job, previousChatUrl) {
   return previousChatUrl || stripUrlQueryAndHash(await currentUrl(job));
 }
 
+// ChatGPT's composer swaps Send for a stop control while a turn is generating, and keeps it until
+// after the turn's text is final. That test id is the authoritative generation signal; an
+// unreadable probe returns undefined so the accessibility labels decide instead of failing open.
+const CHATGPT_STOP_CONTROL_SCRIPT = toJsonScript(`
+  return { present: Boolean(document.querySelector('[data-testid="stop-button"]')) };
+`);
+
+async function chatGptStopControlPresent(job) {
+  const result = await evalPage(job, CHATGPT_STOP_CONTROL_SCRIPT).catch(() => undefined);
+  return result && typeof result === "object" && typeof result.present === "boolean" ? result.present : undefined;
+}
+
+// Chrome does not give a hidden tab rendering opportunities, and ChatGPT appends streamed tokens
+// from that rendering loop, so the job-owned relay tab stops materializing the turn while it sits
+// behind another tab or an occluded window. The stop control still clears (it follows the network
+// stream, not the DOM), so a frozen partial turn otherwise reads as a finished one and is captured
+// as the whole response. Reloading the persisted conversation re-renders the committed turn in one
+// pass, which stays correct while hidden, so the streamed read is only ever a lower bound.
+const RELOAD_RECONCILE_TIMEOUT_MS = 45_000;
+const RELOAD_RECONCILE_POLL_MS = 1_000;
+
+async function reconcileStreamedTurn(job, responseIndex, streamedText) {
+  const conversationUrl = job.chatUrl;
+  if (!conversationUrl || !isConversationPathUrl(conversationUrl)) return streamedText;
+  let best = streamedText;
+  try {
+    await agentBrowser(job, "open", conversationUrl);
+    const deadline = Date.now() + RELOAD_RECONCILE_TIMEOUT_MS;
+    let previous = "";
+    let stableReads = 0;
+    while (Date.now() < deadline) {
+      await heartbeat();
+      await sleep(RELOAD_RECONCILE_POLL_MS);
+      const reloaded = (await assistantMessages(job).catch(() => []))[responseIndex]?.text || "";
+      if (reloaded.length > best.length) best = reloaded;
+      // A reload renders the committed turn in one pass, but hydration takes a moment; require
+      // two identical non-empty reads so a half-hydrated page is never mistaken for the turn.
+      stableReads = reloaded && reloaded === previous ? stableReads + 1 : 0;
+      previous = reloaded;
+      if (stableReads >= 1) break;
+    }
+  } catch (error) {
+    await log(`Reload reconciliation failed, keeping the streamed read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (best.length > streamedText.length) {
+    await log(`Recovered ${best.length - streamedText.length} character(s) the streamed turn had not rendered (streamed ${streamedText.length}, committed ${best.length})`);
+  }
+  return best;
+}
+
 async function waitForChatCompletion(job, baselineAssistantCount) {
   const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
   let lastCompletionSignature = "";
@@ -2108,15 +2157,19 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   while (Date.now() < timeoutAt) {
     await heartbeat();
     const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
-    const hasStopStreaming = isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : chatGptStreamingVisible(snapshot);
+    const domStopButton = isGrokJob(job) ? undefined : await chatGptStopControlPresent(job);
+    const hasStopStreaming = isGrokJob(job)
+      ? snapshot.includes(GROK_LABELS.stop)
+      : chatGptGenerationActive({ snapshot, domStopButton });
     const hasRetryButton = snapshot.includes('button "Retry"');
-    const copyResponseCount = isGrokJob(job) ? (snapshot.match(/button "Copy"/g) || []).length : (snapshot.match(/Copy response/g) || []).length;
     throwIfProviderTransientError(job, snapshot, "waiting for response completion");
     const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
     const messages = await assistantMessages(job);
     const targetMessage = messages[baselineAssistantCount];
     const targetText = targetMessage?.text || "";
-    const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
+    // The bound turn must exist before it can be finished. Generation state is the authority for
+    // "finished"; assistant-action labels are not, because ChatGPT renames them on rehydration.
+    const hasTargetCopyResponse = Boolean(targetMessage);
 
     if (!hasStopStreaming && hasRetryButton && responseFailureText) {
       if (!retriedAfterFailure) {
@@ -2174,7 +2227,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
           const report = await waitForDeepResearchReport(job, timeoutAt, { responseIndex: baselineAssistantCount });
           return { responseIndex: baselineAssistantCount, responseText: report };
         }
-        return { responseIndex: baselineAssistantCount, responseText: targetText };
+        return { responseIndex: baselineAssistantCount, responseText: await reconcileStreamedTurn(job, baselineAssistantCount, targetText) };
       }
     } else {
       lastCompletionSignature = "";
