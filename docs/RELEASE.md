@@ -106,6 +106,50 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.3.1 (2026-09-21, `5e59527`)
+
+- Model-configuration settle boundary, found by the release gate and reproduced before it was
+  fixed: the eight-preset proof against the release-prep commit `11790e9` came back red with
+  `thinking_standard` and `thinking_extended` both applying their power stop and then failing
+  after the full 20 s settle timeout (`Could not verify requested model settings after
+  configuration for thinking`), while `thinking_light` and `thinking_heavy` settled in 0.5 s on
+  the same family. The captured failure snapshots name the cause: ChatGPT left the compact
+  intelligence menu mounted (`menu "Medium"`, `menu "High"`) with the composer opener already
+  reporting `expanded=false` and the composer usable. `COMPACT_INTELLIGENCE_MENU_PATTERN` matches
+  a bare tier label, so `snapshotHasModelConfigurationUi` stayed true for the whole deadline and
+  the strongly-verified escape at the end of the settle loop is gated on that same predicate; the
+  identical clause in `hasCompactIntelligenceMenuContext` separately suppressed the composer-chip
+  read, so one root cause produced both symptoms. Remediation is `5e59527`: a single
+  `hasOpenCompactIntelligenceMenu` helper used by both predicates, discarding a menu contradicted
+  by its own collapsed opener and still treating an opener-less menu as open. Proved red then
+  green as a unit test over the two real snapshots (`chatgpt-ui-helpers.test.mjs`, 12 pass/1 fail
+  before and 13 pass after), then live: both presets completed with both markers.
+- Local gate: `npm run verify:oracle` green on both the release-prep and remediation states —
+  30 helper tests, both typechecks, the isolated sanity harness, and `npm pack --dry-run`.
+- Live eight-preset ChatGPT proof against `5e59527` (`npm run release:proof:chatgpt-presets`
+  accepted): `thinking_standard` `3029a182`, `thinking_extended` `c36539fc`, `pro_standard`
+  `ec9c2604`, `pro_extended` `85722ae5`, `thinking_light` `d0deb147`, `thinking_heavy`
+  `4112914f`, `instant` `ade29583`, `instant_auto_switch` `30e51906`; all eight completed with
+  both markers. `deep_research` is excluded and the exclusion is printed. The run was routed to
+  the maintainer's dedicated diligence ChatGPT account by passing
+  `PI_ORACLE_PROOF_RELAY=http://127.0.0.1:9333`; the runner's `9224` default would have reached
+  the personal browser relay instead. Provider latency was far higher than the 0.3.0 run
+  (39 s–6.8 min per job against 42–68 s), entirely in the response phase — model configuration
+  stayed under a second in every job.
+- Crabbox lanes on `5e59527`: macOS `platform-build` PASS (50.2 s) and `real-extension` PASS
+  (4.7 s), Ubuntu `platform-build` PASS (37.2 s) and `real-extension` PASS (4.5 s).
+  `npm run release:check` then passed again as one composition inside `prepublishOnly`, on the
+  same clean tree, during the first publish attempt; that attempt reached the registry and was
+  refused only at npm two-factor authentication (`EOTP`, account mode `auth-and-writes`).
+- Published `omp-oracle@0.3.1` from `5e59527`. Because the composition had just passed on the
+  unchanged tree and an interactive one-time password would have expired during a second
+  ~2.5-minute gate run, the maintainer completed the publish with `npm publish --ignore-scripts`;
+  `prepublishOnly` therefore did not re-run inside the successful invocation. `npm publish
+  --dry-run --ignore-scripts` on the same tree reported the artifact that was published: shasum
+  `e4630e27ba8f8b755758995d8c63ad2b5f8d0e09`, 81 files, `omp-oracle-0.3.1.tgz`. Tag `v0.3.1` and
+  the [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.3.1) name the
+  same commit.
+
 #### 0.3.0 (2026-09-20, `9f26e9c`)
 
 - Native research export boundary, reproduced before it was fixed: against an owned headless
