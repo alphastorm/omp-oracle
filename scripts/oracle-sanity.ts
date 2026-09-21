@@ -1252,11 +1252,17 @@ async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): P
 
 // An installed package has no repository. Before this contract the reader borrowed the *project's*
 // HEAD whenever the extension root had none, so a job run from ~/.omp/plugins recorded the
-// checkout's commit and `git` printed "fatal: not a git repository" into the session.
+// checkout's commit and `git` printed "fatal: not a git repository" into the session. The packed
+// platform lanes run this harness from a copy without `.git`, which is the installed-package case.
 async function testExtensionProvenanceOmitsGitHeadOutsideCheckout(): Promise<void> {
-  const checkout = readExtensionProvenance();
-  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: join(import.meta.dirname, ".."), encoding: "utf8" }).trim();
-  assert(checkout.gitHead === head, "a source-loaded extension should record its own checkout HEAD");
+  const sourceRoot = join(import.meta.dirname, "..");
+  const loaded = readExtensionProvenance();
+  if (await stat(join(sourceRoot, ".git")).then(() => true, () => false)) {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourceRoot, encoding: "utf8" }).trim();
+    assert(loaded.gitHead === head, "a source-loaded extension should record its own checkout HEAD");
+  } else {
+    assert(loaded.gitHead === undefined, "an extension root without a repository (packed copy) must record no gitHead");
+  }
 
   const packageRoot = await mkdtemp(join(tmpdir(), `oracle-sanity-provenance-${randomUUID()}-`));
   try {
