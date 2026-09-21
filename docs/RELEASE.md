@@ -106,6 +106,73 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.3.2 (2026-09-21, `0e064ea`)
+
+- Two defects with one cause, both found by running real jobs rather than by the gate. ChatGPT
+  now labels a freshly streamed assistant turn's action bar `Copy` and only renames it
+  `Copy response` once the turn is re-rendered from persistence, so the completion loop's
+  `Copy response` count matched no live turn: two independent instrumented jobs sat at
+  `copyCount=0` with a stable complete `targetLen=23` for over seven minutes, bound for the
+  90-minute completion timeout. Removing that gate then exposed the second defect, which had
+  already shipped in `0.3.1`: a job captured a 3-byte response (`ACT`) and recorded
+  `collectionStatus: complete` with no gaps, while `oracle_read({ action: "recollect" })` on the
+  same binding returned the full 38 bytes.
+- Root cause, reproduced deterministically against the live relay after two wrong hypotheses were
+  disproved by measurement: stop-control label drift was ruled out (`chatGptStreamingVisible`
+  correctly read `Stop answering` throughout a stream) and layout-dependent `innerText` was ruled
+  out (the whitespace-squeezed `innerText` and `textContent` lengths were equal, so both reads
+  were short). The job-owned pinned relay tab reports `visibilityState: "hidden"`, and Chrome
+  gives a hidden tab no rendering opportunities, so ChatGPT stops materializing the streamed
+  turn: a tracer watched a turn freeze at 90 characters and stay frozen for 21 s while the stop
+  control cleared at the same time, because that control follows the network stream rather than
+  the DOM. `Target.activateTarget` and `Page.setWebLifecycleState` both return success and leave
+  the tab hidden, so there is no CDP self-heal. A reloaded conversation renders the committed
+  turn correctly while hidden, which is why recollection always returned the whole response.
+- Remediation is `5b6c220`: generation state is the authority for "finished"
+  (`chatGptGenerationActive` prefers the `[data-testid="stop-button"]` reading and falls back to
+  the accessibility labels when that test id drifts), the bound turn only has to exist rather
+  than expose a particular label, and the streamed read became a lower bound — the worker reloads
+  the persisted conversation, polls the re-read to stability, keeps whichever read is longer, and
+  logs the recovered characters. Proved by injecting a frozen 30-character streamed read into the
+  shipped path: `Recovered 297 character(s) ... (streamed 30, committed 327)`, with the prompt's
+  end marker present in the saved response.
+- The fix then fired unprompted during the release proof itself: the `instant` job `ca7ac0f1`
+  logged `Recovered 11 character(s) the streamed turn had not rendered (streamed 25, committed
+  36)`. Without the reconciliation that job would have saved `PRESET instant OK` without
+  `PACKAGE omp-oracle`, so the preset proof would have failed on a missing marker.
+- Class closure for a defect that nearly shipped inside this fix: `run-job.mjs` is excluded from
+  both typecheck projects, so a missing import there fails only at runtime, mid-job, after a
+  provider call has been spent — `isConversationPathUrl` was used without being imported and no
+  gate saw it. `npm run check:worker-runtime-names` runs TypeScript's `checkJs` pass over the
+  worker runtime and rejects unresolved-identifier diagnostics; it reports the remaining 22
+  non-fatal type diagnostics without failing on them. Proved red (`Cannot find name
+  'isConversationPathUrl'`) and green, and wired into `npm run verify:oracle`.
+- Local gate: `npm run verify:oracle` green on the remediation and release-prep states — 31
+  helper tests, both typechecks, the new worker runtime name check, the sanity harness, and
+  `npm pack --dry-run`.
+- Live eight-preset ChatGPT proof against `0e064ea` (`npm run release:proof:chatgpt-presets`
+  accepted), routed to the diligence account with `PI_ORACLE_PROOF_RELAY=http://127.0.0.1:9333`:
+  `pro_standard` `1bdd024d`, `pro_extended` `c6c277a0`, `thinking_light` `607acedb`,
+  `thinking_standard` `3fe1d31c`, `thinking_extended` `aab46e23`, `thinking_heavy` `d53b11a0`,
+  `instant` `ca7ac0f1`, `instant_auto_switch` `1523d759`; all eight completed with both markers.
+  `thinking_light` first failed once with an unrelated transient (`Could not open model
+  configuration UI` at the 45 s open timeout, on a leftover `6 Pro` composer chip, on a code path
+  this release does not touch and which passed the same preset in the same order 40 minutes
+  earlier); it was rerun alone and the proof file was assembled from that rerun plus the seven
+  recorded outcomes. The checker independently revalidates every job directory, package identity,
+  git head, and completion time on disk, so no entry is taken on trust.
+- Crabbox lanes on `0e064ea`: macOS `platform-build` PASS (54.2 s) and `real-extension` PASS
+  (5.1 s), Ubuntu `platform-build` PASS (40.9 s) and `real-extension` PASS (4.5 s).
+  `npm run release:check` then passed as one composition on the same clean tree.
+- Published `omp-oracle@0.3.2` from `0e064ea`. As with `0.3.1`, npm two-factor authentication
+  (`auth-and-writes`) requires an interactive approval, and the composition had just passed on the
+  unchanged tree, so the maintainer completed the publish with `npm publish --ignore-scripts` and
+  `prepublishOnly` did not re-run inside that invocation. `npm publish --dry-run --ignore-scripts`
+  on the same tree reported the published artifact: shasum
+  `0caa74b724e98971cbaccd6dcd5c53fca2394b75`, 81 files. Tag `v0.3.2` and the
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.3.2) name the same
+  commit.
+
 #### 0.3.1 (2026-09-21, `5e59527`)
 
 - Model-configuration settle boundary, found by the release gate and reproduced before it was
