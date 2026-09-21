@@ -90,7 +90,9 @@ git head, references jobs that completed before the current commit, or lacks act
 ChatGPT `.tar.zst` job state and response text for any canonical preset.
 
 Ordinary pre-commit smoke runs can use `instant` or `thinking_light`; release proof must cover
-every canonical preset through the loaded extension.
+every canonical model preset (the eight non-tool presets) through the loaded extension.
+`deep_research` is a composer-tool preset and is excluded because each run consumes a Deep
+Research task; the checker prints the exclusion.
 
 ### Real runtime suite defaults
 

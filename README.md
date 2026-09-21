@@ -375,7 +375,7 @@ transport, frame never attached, or timeout); that last one still carries the co
 
 | | Current contract |
 | --- | --- |
-| Hosts | Oh My Pi and `pi`; `pi` 0.80.9 is the validated upstream baseline. OMP 18.2.6 is observed loading the extension as upstream `pi-oracle@0.7.20` and resolving this checkout as `omp-oracle` (`omp install --dry-run`); no job has run through the fork's build on OMP yet |
+| Hosts | Oh My Pi and `pi`; `pi` 0.80.9 is the validated upstream baseline. Oh My Pi 18.2.x runs the fork: every release since `0.3.1` proves the eight canonical model presets through isolated OMP print-mode sessions loading this source (`--no-extensions -e`), and the relay transport was verified through the unmodified OMP 18.2.6 relay. A job through the registry-installed package on OMP is recorded per release in the [ledger](docs/RELEASE.md#fork-evidence-omp-oracle) |
 | Platforms | macOS and Linux fork-qualified through the Crabbox gate; Windows native declared (`package.json` `os`) and upstream-validated at `pi-oracle` 0.7.20, not re-qualified by the fork; Chromium-family browsers |
 | Providers | ChatGPT (presets above), Grok (`heavy`) |
 | Transports | Isolated seed profile (both providers); existing-Chrome relay (ChatGPT only) |
@@ -385,9 +385,9 @@ Known limits are part of the claim:
 
 - **Experimental public beta.** Provider UI, auth, model controls, and artifact download
   behavior can drift.
-- **Fork changes are not yet matrix-qualified.** The relay transport and OMP host compatibility
-  are covered by unit and sanity tests and by observed OMP preflight; the Crabbox platform matrix
-  and the ChatGPT preset proof have not been re-run under the `omp-oracle` name.
+- **Fork qualification covers what the release ledger names.** Each release records the live
+  eight-preset ChatGPT proof through this source and the macOS and Ubuntu Crabbox lanes; nothing
+  beyond those entries is claimed. `deep_research` is excluded from the preset proof.
 - **A real ChatGPT or Grok web session is required** for the provider you use.
 - **Archives are capped** at 250 MiB (ChatGPT) and 200 MiB (Grok) after default exclusions and
   automatic whole-repo pruning.
@@ -433,7 +433,7 @@ npm run verify:oracle        # everyday local gate; `npm test` is an alias
 | Publish/release gate | `npm run release:check` |
 
 `npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`: the local gate,
-fresh live ChatGPT preset proof for every canonical preset, then doctor-first macOS and Ubuntu
+fresh live ChatGPT preset proof for every canonical model preset (the eight non-tool presets; `deep_research` is excluded), then doctor-first macOS and Ubuntu
 Crabbox evidence from packed installs (Windows native stays an available target, not a required one). Isolated-session smoke tests and the auth
 recovery drill are in the [test plan](docs/TEST_PLAN.md); the Crabbox gate is in
 [`docs/PLATFORM_SMOKE.md`](docs/PLATFORM_SMOKE.md); the full flow and evidence ledger are in
