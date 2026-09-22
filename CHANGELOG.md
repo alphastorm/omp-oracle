@@ -4,6 +4,13 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Changed
+- merge upstream `fitchmultz/pi-oracle` through `4d96ffc` with a test-only cutover: order the cancellation/completion regression through worker IPC and the existing locks, cover protected browser roots through symlinked existing and nonexistent descendants, and use native Windows browser roots in cleanup fixtures
+- exercise empty-project `/oracle-status` through a real, isolated, persisted Pi session in JSON mode in `test:oracle-helpers`; the test requires one successful display-marked response, no fetch attempts, and no browser job creation, and runs on the existing Pi 0.80.9 lockfile; it does not qualify TUI rendering, print-mode output, or non-empty job summaries
+- retain the fork's runtime, package identity, dependency baseline, CI/Dependabot, and release gates rather than importing upstream's shared compatibility fleet, Renovate policy, or Pi 0.86.1 dependency update
+
 ## 0.3.4 - 2026-09-21
 
 ### Changed

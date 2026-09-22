@@ -42,8 +42,13 @@ The exact list per release is in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Tracking upstream
 
-- Upstream is merged, not rebased, so the shared history stays intact and each upstream release
-  lands as one merge commit (the last one is `upstream-compat-20260918`).
+- Upstream is merged, not rebased, so the shared history stays intact and each sync lands as
+  one merge commit. The latest sync is upstream `4d96ffc` (2026-09-22), after
+  `upstream-compat-20260918`. It imports cancellation-race and protected-profile test
+  improvements plus a native Pi status smoke, adapted to the fork's existing Pi 0.80.9 lockfile.
+  Runtime code, package identity, CI/Dependabot, and release gates remain fork-owned; upstream's
+  shared compatibility fleet, Renovate policy, and Pi 0.86.1 dependency update are not adopted.
+  This test-only sync does not expand provider or platform qualification claims.
 - Upstream's release tags (`v0.1.0` through `v0.7.20` of `pi-oracle`) are not carried in this
   repository; they remain in `fitchmultz/pi-oracle`. The fork's `v*` tags name `omp-oracle`
   releases only, starting at `v0.1.0`.
