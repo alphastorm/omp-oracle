@@ -6,6 +6,9 @@ history is kept below the divider.
 
 ## Unreleased
 
+### Fixed
+- the session footer read `oracle: config error` whenever the ChatGPT relay endpoint was down, with no reason given. A refused connection escaped `assertRelayReady` as the runtime's raw fetch error (`Unable to connect. Is the computer able to access the url?` under Bun), readiness mapping labelled every failure that did not mention an auth seed a config error, the background check discarded the message, and readiness was computed once per session, so the label outlived the outage. The relay check now names the endpoint and cause (`ChatGPT browser relay is unavailable: http://127.0.0.1:9333 (connection refused).`); agents get `relay_unavailable` with a next step instead of `oracle_preflight_failed`, and relay-mode preflight no longer says it checks an auth seed. The footer shows `oracle: relay unavailable` with one warning per distinct cause, and the poller re-runs the check every interval, so the footer recovers when the browser comes back, and flags it when it goes away, without a new session. Footer readiness is derived from the same error codes agents receive, so an unsafe auth seed path now reads as a config error rather than auth needed
+
 ### Changed
 - merge upstream `fitchmultz/pi-oracle` through `4d96ffc` with a test-only cutover: order the cancellation/completion regression through worker IPC and the existing locks, cover protected browser roots through symlinked existing and nonexistent descendants, and use native Windows browser roots in cleanup fixtures
 - exercise empty-project `/oracle-status` through a real, isolated, persisted Pi session in JSON mode in `test:oracle-helpers`; the test requires one successful display-marked response, no fetch attempts, and no browser job creation, and runs on the existing Pi 0.80.9 lockfile; it does not qualify TUI rendering, print-mode output, or non-empty job summaries

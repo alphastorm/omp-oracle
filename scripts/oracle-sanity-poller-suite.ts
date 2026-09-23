@@ -5,7 +5,9 @@
 // Invariants/Assumptions: Tests run with isolated oracle state/jobs directories and use persisted session managers for wake-up routing coverage.
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -414,6 +416,86 @@ async function testOracleExtensionSkipsPollerInOneShotModes(config: OracleConfig
     assert(ui.statuses.length === 0, `oracle extension should not publish oracle UI status in ${mode} mode, saw ${ui.statuses.length}`);
     assert(!readJob(jobId)?.notifiedAt, `oracle extension should not mark jobs notified from ${mode} mode startup`);
     await cleanupJob(jobId);
+  }
+}
+
+async function testOracleExtensionReadinessFollowsRelayEndpoint(): Promise<void> {
+  await resetOracleStateDir();
+  // Reserve a loopback port, then release it: the configured relay endpoint starts with nothing listening.
+  const probe = createServer();
+  probe.listen(0, "127.0.0.1");
+  await once(probe, "listening");
+  const address = probe.address();
+  assert(address && typeof address === "object", "relay readiness test should reserve a loopback port");
+  const port = address.port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  const endpoint = `http://127.0.0.1:${port}`;
+
+  const agentDir = await mkdtemp(join(tmpdir(), "oracle-sanity-relay-readiness-"));
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const sessionManager = createPersistedSessionManager("relay-readiness");
+  const sessionFile = sessionManager.getSessionFile();
+  assert(sessionFile, "relay readiness test should persist a session file");
+  let relay: Server | undefined;
+  try {
+    await mkdir(join(agentDir, "extensions"), { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(agentDir, "extensions", "oracle.json"),
+      `${JSON.stringify({ browser: { chatGptRelayEndpoint: endpoint }, poller: { intervalMs: 100 } })}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const pi = createPiHarness();
+    oracleExtension(pi);
+    const sessionStart = pi.handlers.get("session_start");
+    assert(sessionStart, "oracle extension should register a session_start handler");
+    const ui = createUiStub();
+    ui.theme = { fg: (color, text) => `<${color}>${text}` };
+    const footer = () => ui.statuses.at(-1)?.value;
+    const warnings = () => ui.notifications.filter((notification) => notification.level === "warning");
+    await sessionStart({}, createExtensionCtx(sessionManager, ui));
+
+    await waitForCondition(() => footer() === "<error>oracle: relay unavailable" || undefined, {
+      timeoutMs: 2_000,
+      description: "relay unavailable footer",
+    });
+    await sleep(400);
+    assert(
+      warnings().length === 1 && warnings()[0].message.startsWith(`ChatGPT browser relay is unavailable: ${endpoint} (connection refused).`),
+      `an unreachable relay should warn once, naming the endpoint and cause, across repeated polls; got ${JSON.stringify(ui.notifications)}`,
+    );
+
+    relay = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(request.url === "/json/version" ? { webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/sanity` } : {}));
+    });
+    relay.listen(port, "127.0.0.1");
+    await once(relay, "listening");
+    await waitForCondition(() => footer() === "oracle: ready" || undefined, {
+      timeoutMs: 2_000,
+      description: "uncolored ready footer once the relay answers, without a new session",
+    });
+
+    const stopped = relay;
+    relay = undefined;
+    await new Promise<void>((resolve, reject) => {
+      stopped.close((error) => (error ? reject(error) : resolve()));
+      stopped.closeAllConnections();
+    });
+    await waitForCondition(() => footer() === "<error>oracle: relay unavailable" || undefined, {
+      timeoutMs: 2_000,
+      description: "relay unavailable footer after the relay goes away",
+    });
+    assert(warnings().length === 2, `losing a recovered relay should warn again; got ${JSON.stringify(ui.notifications)}`);
+  } finally {
+    stopPollerForSession(sessionFile, process.cwd());
+    await waitForAllPollersToQuiesce();
+    relay?.closeAllConnections();
+    relay?.close();
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(agentDir, { recursive: true, force: true });
   }
 }
 
@@ -1407,6 +1489,7 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testPollerSkipsContendedAdmissionPromotion(config);
   await testOracleExtensionSkipsNoSessionWakeupRouting(config);
   await testOracleExtensionSkipsPollerInOneShotModes(config);
+  await testOracleExtensionReadinessFollowsRelayEndpoint();
   await testPersistedSessionsDoNotAdoptLegacyProjectScopedJobs(config);
   await testPollerNotificationSkipsContestedSameSessionWriters(config);
   await testBranchedSameSessionSkipsDurableNotification(config);

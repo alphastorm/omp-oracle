@@ -649,6 +649,7 @@ The extension still uses the same general `pi`-native background completion patt
 
 - detached worker writes `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-*` state
 - poller scans jobs on an interval
+- each poll also re-runs the submit prerequisite check behind the session footer (`oracle: ready`, `auth needed`, `relay unavailable`, `config error`), classified by the same error codes agents receive; a relay or config blocker raises one warning per distinct cause, and the footer follows the blocker clearing or returning without a new session
 - completed job durability lives in oracle job state plus saved response/artifact files, not in synthetic session-history assistant messages
 - when a matching job reaches `complete`, `failed`, or `cancelled`, the poller issues one best-effort wake-up to whichever matching session is currently live, then records `notifiedAt` so later scans do not duplicate the completion message
 - those wake-ups direct the receiver to `/oracle-read [job-id]` as the primary completion-consumption path, while still surfacing saved response/artifact paths as secondary context; `/oracle-status` remains useful for metadata and job-id discovery, and agent callers can still use `oracle_read` when they need tool output in-turn

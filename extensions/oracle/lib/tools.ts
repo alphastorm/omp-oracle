@@ -15,7 +15,7 @@ import { runOracleAuthBootstrap } from "./auth.js";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
+import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
 import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import {
@@ -323,6 +323,12 @@ type OracleToolErrorDetails = {
   allowedValues?: string[];
   suggestedNextStep?: string;
 };
+const AUTH_SEED_ERROR_CODES: Record<string, true> = {
+  auth_seed_profile_missing: true,
+  auth_seed_profile_unreadable: true,
+  auth_seed_profile_invalid_type: true,
+  auth_seed_profile_unauthenticated: true,
+};
 type OracleToolJobDetailsOptions = {
   queue?: OracleQueueSnapshot;
   archiveBytes?: number;
@@ -528,6 +534,15 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
+  if (message.startsWith("ChatGPT browser relay is unavailable: ")) {
+    return {
+      code: "relay_unavailable",
+      message,
+      rejectedValue: message.replace(/^ChatGPT browser relay is unavailable: /, "").replace(/ \(.*$/, ""),
+      suggestedNextStep: "Start the Chrome that serves browser.chatGptRelayEndpoint (the dedicated account browser, or signed-in Chrome with the relay extension connected), then retry. If that endpoint is not the intended one, correct browser.chatGptRelayEndpoint in the agent-level oracle.json instead. Do not call oracle_auth: relay mode refuses cookie import.",
+    };
+  }
+
   if (toolName === "oracle_submit" && message === "oracle_submit requires at least one file or directory to archive") {
     return {
       code: "archive_input_required",
@@ -656,6 +671,13 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
   };
 }
 
+/** Session footer readiness for a failed prerequisite check, derived from the same codes agents receive. */
+export function classifyOracleReadinessError(error: unknown): { readiness: OracleReadinessStatus; message: string } {
+  const { code, message } = buildOracleToolErrorDetails("oracle_preflight", error, {});
+  if (AUTH_SEED_ERROR_CODES[code] === true) return { readiness: "auth_needed", message };
+  return { readiness: code === "relay_unavailable" ? "relay_unavailable" : "config_error", message };
+}
+
 function buildOracleToolErrorResult(
   toolName: OracleToolName,
   error: unknown,
@@ -718,7 +740,9 @@ function formatOraclePreflightResponse(details: OraclePreflightDetails): string 
 
   return [
     `Oracle preflight blocked: ${details.error?.message ?? "unknown blocker"}`,
-    `Preflight checks the persisted pi session, local oracle config, and ${providerLabel} auth seed before any archive work starts.`,
+    details.auth.relayEndpoint
+      ? "Preflight checks the persisted pi session, local oracle config, and relay transport before any archive work starts."
+      : `Preflight checks the persisted pi session, local oracle config, and ${providerLabel} auth seed before any archive work starts.`,
     details.error?.suggestedNextStep ? `Suggested next step: ${details.error.suggestedNextStep}` : undefined,
   ].filter(Boolean).join("\n");
 }
@@ -778,7 +802,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
       session: { persisted: true, sessionFile },
       config: { ready: true },
       auth: {
-        ready: !config.browser.chatGptRelayEndpoint && !["auth_seed_profile_missing", "auth_seed_profile_unreadable", "auth_seed_profile_invalid_type", "auth_seed_profile_unauthenticated"].includes(errorDetails.code),
+        ready: !config.browser.chatGptRelayEndpoint && AUTH_SEED_ERROR_CODES[errorDetails.code] !== true,
         seedProfileDir: config.browser.chatGptRelayEndpoint ? undefined : config.browser.authSeedProfileDir,
         relayEndpoint: config.browser.chatGptRelayEndpoint,
       },

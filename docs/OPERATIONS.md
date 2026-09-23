@@ -125,9 +125,11 @@ Then set the agent-level config (preserving any other settings):
 
 - This routes all Oracle ChatGPT calls to that browser. Grok and the general OMP browser relay
   are unchanged. Do not connect the dedicated profile’s relay extension to the personal relay.
-- Keep this Chrome process running for jobs. After quitting or rebooting, relaunch with the
-  same command; login persists in its user-data directory. Oracle does not start this external
-  browser and does not fall back to personal Chrome if its endpoint is unavailable.
+- Keep this Chrome process running for jobs. After quitting or rebooting, relaunch with the same
+  command; login persists in its user-data directory. Oracle does not start this external
+  browser and does not fall back to personal Chrome if its endpoint is unavailable. While it is
+  down, the session footer reads `oracle: relay unavailable`, one warning names the endpoint and
+  cause, and the footer returns to ready on its own once the endpoint answers again.
 - This is a persistent, account-isolated browser with per-job owned tabs, **not** the default
   disposable per-job seed clones. Do not point it at your personal Chrome user-data directory.
 - Oracle checks login readiness, not an expected email. Keep only the intended account signed

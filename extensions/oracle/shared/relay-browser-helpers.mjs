@@ -6,15 +6,29 @@ import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-hel
 const runFile = promisify(execFile);
 /** @typedef {{success?: boolean, code?: string, error?: string, data?: {tabs?: Array<{targetId: string, active?: boolean}>, targetId?: string}}} CommandResponse */
 
-/** @param {string} endpoint */
+/**
+ * Every failure names the endpoint and cause behind one stable prefix; the extension's
+ * error codes and session readiness classify on that prefix.
+ * @param {string} endpoint
+ */
 export async function assertRelayReady(endpoint) {
-  const response = await fetch(new URL("/json/version", endpoint), {
-    signal: AbortSignal.timeout(5000),
-    redirect: "error",
-  });
-  if (!response.ok || typeof (await response.json()).webSocketDebuggerUrl !== "string") {
-    throw new Error("ChatGPT browser relay is unavailable. Connect the relay extension in your signed-in Chrome; do not import cookies.");
+  let reason;
+  try {
+    const response = await fetch(new URL("/json/version", endpoint), {
+      signal: AbortSignal.timeout(5000),
+      redirect: "error",
+    });
+    const version = response.ok ? await response.json().catch(() => undefined) : undefined;
+    if (typeof version?.webSocketDebuggerUrl === "string") return;
+    reason = response.ok ? "no webSocketDebuggerUrl in /json/version" : `HTTP ${response.status} from /json/version`;
+  } catch (error) {
+    // Bun reports the socket failure on the error itself, Node on its cause.
+    const code = error?.cause?.code ?? error?.code;
+    reason = code === "ConnectionRefused" || code === "ECONNREFUSED" ? "connection refused"
+      : error?.name === "TimeoutError" ? "no response within 5 s"
+      : String(code ?? error?.message ?? error);
   }
+  throw new Error(`ChatGPT browser relay is unavailable: ${endpoint} (${reason}). Start the Chrome that serves this endpoint; Oracle does not launch it or fall back to another browser.`);
 }
 
 // The driver parses CLI target references as Chrome hex IDs or labels. Relay

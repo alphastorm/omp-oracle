@@ -1,5 +1,5 @@
 // Purpose: Poll oracle jobs in the background, reconcile stale state, and deliver best-effort wake-up reminders to eligible sessions.
-// Responsibilities: Track live wake-up targets, promote queued jobs, scan terminal jobs for delivery, and keep session status text current.
+// Responsibilities: Track live wake-up targets, promote queued jobs, scan terminal jobs for delivery, re-check oracle readiness, and keep session status text current.
 // Scope: Poller/orchestration only; durable lifecycle mutations live in jobs.ts and shared observability formatting lives in extensions/oracle/shared.
 // Usage: Imported by the oracle extension entrypoint to start or stop per-session oracle polling.
 // Invariants/Assumptions: Poller scans are serialized per session key, wake-up delivery is best-effort, and terminal-job notifications always re-read durable job state before send.
@@ -47,8 +47,9 @@ interface OraclePollerLifecycle {
 }
 
 const activePollers = new Map<string, OracleActivePoller>();
-const readinessBySession = new Map<string, OracleReadinessStatus>();
+const readinessBySession = new Map<string, OracleReadinessCheckResult>();
 const scansInFlight = new Set<string>();
+const readinessChecksInFlight = new Set<string>();
 const POLLER_LOCK_TIMEOUT_MS = 50;
 const WAKEUP_TARGET_LEASE_KIND = "wakeup-target";
 const WAKEUP_TARGET_STALE_MS = 2 * 60 * 1000;
@@ -75,8 +76,15 @@ export interface OraclePollerHooks {
   beforeMarkJobNotified?: (job: OraclePollerJob) => Promise<void> | void;
 }
 
+export interface OracleReadinessCheckResult {
+  readiness: OracleReadinessStatus;
+  message?: string;
+}
+
 export interface OraclePollerOptions {
   hooks?: OraclePollerHooks;
+  /** Runs on every poll so the footer follows the browser, auth, and dependency state without a new session. */
+  checkReadiness?: () => Promise<OracleReadinessCheckResult>;
 }
 
 export function getPollerSessionKey(sessionFile: string | undefined, cwd: string): string {
@@ -167,11 +175,11 @@ function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): voi
     return;
   }
   const counts = getJobCountsForSession(snapshot.sessionFile, snapshot.cwd);
-  const readiness = readinessBySession.get(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd)) ?? "loaded";
+  const readiness = readinessBySession.get(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd))?.readiness ?? "loaded";
   const statusText = buildOracleStatusText(counts, readiness);
   if (counts.active > 0) {
     snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("success", statusText));
-  } else if (readiness === "auth_needed" || readiness === "config_error") {
+  } else if (readiness === "auth_needed" || readiness === "relay_unavailable" || readiness === "config_error") {
     snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("error", statusText));
   } else {
     snapshot.ui.setStatus("oracle", statusText);
@@ -184,7 +192,19 @@ export function refreshOracleStatus(ctx: ExtensionContext): void {
 
 export function setOracleReadiness(ctx: ExtensionContext, readiness: OracleReadinessStatus): void {
   const snapshot = snapshotPollerContext(ctx);
-  if (snapshot.sessionFile) readinessBySession.set(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd), readiness);
+  if (snapshot.sessionFile) readinessBySession.set(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd), { readiness });
+  refreshOracleStatusSnapshot(snapshot);
+}
+
+function applyReadinessCheck(snapshot: OraclePollerContextSnapshot, sessionKey: string, result: OracleReadinessCheckResult): void {
+  const previous = readinessBySession.get(sessionKey);
+  readinessBySession.set(sessionKey, result);
+  // The footer names the state; warn once per distinct cause so a lasting outage is not repeated every poll.
+  // Auth-needed stays quiet: its label already names the fix (/oracle-auth).
+  const warn = result.readiness === "relay_unavailable" || result.readiness === "config_error";
+  if (warn && snapshot.hasUI && result.message && (previous?.readiness !== result.readiness || previous.message !== result.message)) {
+    snapshot.ui.notify(result.message, "warning");
+  }
   refreshOracleStatusSnapshot(snapshot);
 }
 
@@ -404,10 +424,28 @@ export function startPoller(pi: ExtensionAPI, ctx: ExtensionContext, intervalMs:
     }
   };
 
+  const runReadinessCheck = async () => {
+    const { checkReadiness } = options;
+    if (!checkReadiness || !isCurrentPollerActive() || readinessChecksInFlight.has(sessionKey)) return;
+    readinessChecksInFlight.add(sessionKey);
+    try {
+      const result = await checkReadiness();
+      if (isCurrentPollerActive()) applyReadinessCheck(snapshot, sessionKey, result);
+    } catch (error) {
+      if (isCurrentPollerActive()) {
+        console.error(`Oracle readiness check failed (${sessionKey}):`, error);
+      }
+    } finally {
+      readinessChecksInFlight.delete(sessionKey);
+    }
+  };
+
   refreshOracleStatusSnapshot(snapshot);
   void runScan();
+  void runReadinessCheck();
   const timer = setInterval(() => {
     void runScan();
+    void runReadinessCheck();
   }, intervalMs);
   handle.timer = timer;
 }
@@ -441,7 +479,7 @@ export async function stopAllPollers(): Promise<void> {
 
 export async function waitForAllPollersToQuiesce(timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
-  while (scansInFlight.size > 0) {
+  while (scansInFlight.size > 0 || readinessChecksInFlight.size > 0) {
     if (Date.now() - startedAt >= timeoutMs) {
       throw new Error(`Timed out waiting for oracle pollers to quiesce after ${timeoutMs}ms`);
     }

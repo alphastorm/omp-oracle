@@ -15,7 +15,7 @@ import { isOracleProjectTrusted } from "./lib/trust.js";
 import { refreshOracleStatus, setOracleReadiness, startPoller, stopPoller } from "./lib/poller.js";
 import { promoteQueuedJobs } from "./lib/queue.js";
 import { assertOracleSubmitPrerequisites, hasPersistedSessionFile } from "./lib/runtime.js";
-import { registerOracleTools } from "./lib/tools.js";
+import { classifyOracleReadinessError, registerOracleTools } from "./lib/tools.js";
 
 const PROGRAMMATIC_API_SYMBOL = Symbol.for("omp.pi-oracle.programmatic.v1");
 type ProgrammaticToolDefinition = {
@@ -35,11 +35,6 @@ function readPromptTemplate(path: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function oracleReadinessFromError(error: unknown): "auth_needed" | "config_error" {
-  const message = error instanceof Error ? error.message : String(error);
-  return /auth seed profile/i.test(message) ? "auth_needed" : "config_error";
 }
 
 function expandOraclePromptTemplate(source: string, args: string): string {
@@ -156,15 +151,14 @@ export default function oracleExtension(pi: ExtensionAPI) {
 
       const config = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isOracleProjectTrusted(ctx) });
       setOracleReadiness(ctx, "loaded");
-      void assertOracleSubmitPrerequisites(config)
-        .then(() => setOracleReadiness(ctx, "ready"))
-        .catch((error) => setOracleReadiness(ctx, oracleReadinessFromError(error)));
       void runStartupMaintenance(ctx).catch((error) => {
         const message = `Oracle startup maintenance failed: ${error instanceof Error ? error.message : String(error)}`;
         console.error(message);
         if (ctx.hasUI) ctx.ui.notify(message, "warning");
       });
-      startPoller(pi, ctx, config.poller.intervalMs, workerPath);
+      startPoller(pi, ctx, config.poller.intervalMs, workerPath, {
+        checkReadiness: () => assertOracleSubmitPrerequisites(config).then(() => ({ readiness: "ready" as const }), classifyOracleReadinessError),
+      });
       refreshOracleStatus(ctx);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
