@@ -1084,8 +1084,11 @@ async function testManagedBrowserConfigAndReadiness(): Promise<void> {
 
     await writeBrowserConfig({ chatGptManagedProfileDir: profileDir, chatGptRelayEndpoint: "http://127.0.0.1:9222" });
     assertThrows(() => loadOracleConfig(process.cwd()), "config should refuse an operator relay and a managed browser at once", "not both");
+    const separate = "must be separate from the ChatGPT and Grok auth seed profiles and browser.runtimeProfilesDir";
     await writeBrowserConfig({ chatGptManagedProfileDir: join(paths.runtimeProfilesDir, "managed") });
-    assertThrows(() => loadOracleConfig(process.cwd()), "the managed profile must stay out of the runtime directories Oracle deletes", "must be separate from browser.authSeedProfileDir and browser.runtimeProfilesDir");
+    assertThrows(() => loadOracleConfig(process.cwd()), "the managed profile must stay out of the runtime directories Oracle deletes", separate);
+    await writeBrowserConfig({ chatGptManagedProfileDir: `${paths.authSeedProfileDir}-grok` });
+    assertThrows(() => loadOracleConfig(process.cwd()), "the managed profile must not be the Grok seed that Grok auth swaps and jobs clone", separate);
 
     await writeBrowserConfig({ chatGptManagedProfileDir: profileDir });
     const config = loadOracleConfig(process.cwd());

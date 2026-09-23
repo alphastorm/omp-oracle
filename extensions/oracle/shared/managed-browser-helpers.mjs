@@ -10,12 +10,13 @@ import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertSafeBrowserLaunchArg, sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
+import { assertSafeBrowserLaunchArg, resolvePathThroughExistingAncestorsSync, sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
 import { isProcessAlive, readProcessStartedAt, resolveNodeExecutable } from "./process-helpers.mjs";
 import { readCdpBrowserUrl } from "./relay-browser-helpers.mjs";
 import { getStateLocksDir, hashOracleStateKey, listStateLeaseMetadata, releaseStateLease, withStateLock, writeStateLeaseMetadata } from "./state-coordination-helpers.mjs";
 
 /** @typedef {import("./managed-browser-helpers.d.mts").ManagedBrowserState} ManagedBrowserState */
+/** @typedef {import("./managed-browser-helpers.d.mts").ManagedBrowserRecord} ManagedBrowserRecord */
 /** @typedef {import("./managed-browser-helpers.d.mts").ManagedBrowserAttachment} ManagedBrowserAttachment */
 /** @typedef {import("./managed-browser-helpers.d.mts").ManagedBrowserLaunchSpec} ManagedBrowserLaunchSpec */
 /** @typedef {import("./managed-browser-helpers.d.mts").ManagedBrowserUserLease} ManagedBrowserUserLease */
@@ -176,12 +177,34 @@ export function managedBrowserInUseMessage(profileDir, pid) {
 }
 
 /**
+ * One identity per profile however it is spelled: the lock, the leases, and the keeper all key on the
+ * path resolved through its existing ancestors, so a symlinked spelling cannot hide a lease from a keeper.
+ * @param {string} profileDir
+ * @returns {string}
+ */
+export function canonicalManagedProfileDir(profileDir) {
+  return resolvePathThroughExistingAncestorsSync(profileDir) ?? profileDir;
+}
+
+/**
+ * Whether a different browser now answers at the endpoint a job attached to: a port freed by an exited
+ * browser can be taken by another one. A browser that simply exited answers nothing and is not replaced.
+ * @param {ManagedBrowserRecord} record
+ * @returns {Promise<boolean>}
+ */
+export async function managedBrowserReplaced(record) {
+  const live = await readCdpBrowserUrl(record.endpoint);
+  return live !== undefined && live !== record.browserUrl;
+}
+
+/**
  * Readiness is attachability, not login: a stopped managed browser is ready because the next job starts it.
  * @param {string} stateDir
- * @param {string} profileDir
+ * @param {string} configuredProfileDir
  * @returns {Promise<void>}
  */
-export async function assertManagedBrowserAvailable(stateDir, profileDir) {
+export async function assertManagedBrowserAvailable(stateDir, configuredProfileDir) {
+  const profileDir = canonicalManagedProfileDir(configuredProfileDir);
   // A launch or an idle quit in progress holds the profile lock; the profile is changing hands, not blocked.
   if (existsSync(join(getStateLocksDir(stateDir), hashOracleStateKey(MANAGED_BROWSER_LOCK_KIND, profileDir)))) return;
   const current = await inspectManagedBrowser(profileDir);
@@ -194,7 +217,8 @@ export async function assertManagedBrowserAvailable(stateDir, profileDir) {
  * @param {{ stateDir: string; profileDir: string; executablePath: string; args?: string[]; owner: string; launchTimeoutMs?: number }} options
  * @returns {Promise<ManagedBrowserAttachment>}
  */
-export async function acquireManagedBrowser({ stateDir, profileDir, executablePath, args = [], owner, launchTimeoutMs = LAUNCH_TIMEOUT_MS }) {
+export async function acquireManagedBrowser({ stateDir, profileDir: configuredProfileDir, executablePath, args = [], owner, launchTimeoutMs = LAUNCH_TIMEOUT_MS }) {
+  const profileDir = canonicalManagedProfileDir(configuredProfileDir);
   const leaseKey = `${owner}:${randomUUID()}`;
   try {
     return await withStateLock(stateDir, MANAGED_BROWSER_LOCK_KIND, profileDir, { processPid: process.pid, owner, action: "attach" }, async () => {
@@ -226,11 +250,12 @@ export async function releaseManagedBrowser(stateDir, leaseKey) {
  * Whether anything still needs the browser: a live lease holder, or a page someone opened (a sign-in tab, a tab whose cleanup failed).
  * Leases of dead processes are pruned. An unreadable page inventory counts as in use: the keeper never quits on uncertainty.
  * @param {string} stateDir
- * @param {string} profileDir
+ * @param {string} configuredProfileDir
  * @param {string} endpoint
  * @returns {Promise<boolean>}
  */
-export async function managedBrowserInUse(stateDir, profileDir, endpoint) {
+export async function managedBrowserInUse(stateDir, configuredProfileDir, endpoint) {
+  const profileDir = canonicalManagedProfileDir(configuredProfileDir);
   const leases = /** @type {Partial<ManagedBrowserUserLease>[]} */ (listStateLeaseMetadata(stateDir, MANAGED_BROWSER_USER_KIND));
   let leased = false;
   for (const lease of leases) {

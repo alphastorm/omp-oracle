@@ -22,7 +22,7 @@ import { killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowser
 import { getOracleJobsDir, getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
-import { acquireManagedBrowser, releaseManagedBrowser, sharedBrowserEndpoint, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
+import { acquireManagedBrowser, managedBrowserReplaced, releaseManagedBrowser, sharedBrowserEndpoint, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
 import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from "./response-capture.mjs";
@@ -672,6 +672,21 @@ async function attachManagedBrowser(job) {
   return currentJob;
 }
 
+// A port freed by an exited browser can be taken by another one, and a pinned agent-browser session that
+// lost its daemon opens a fresh tab in whatever answers there. So each step on a managed job's tab first
+// proves no other browser answers at the endpoint the job attached to; a browser that simply exited is
+// left to the disconnect check. The verdict is sticky because polling loops tolerate command errors: a
+// swallowed throw still refuses every later command, and both entrypoints report it over whatever ended the run.
+/** @type {OracleWorkerError | undefined} */
+let managedBrowserChangedError;
+async function assertManagedBrowserUnchanged(job) {
+  if (managedBrowserChangedError) throw managedBrowserChangedError;
+  if (job.managedBrowser && (await managedBrowserReplaced(job.managedBrowser))) {
+    managedBrowserChangedError = new OracleWorkerError("managed_browser_changed", `Another browser now answers at the managed ChatGPT browser's endpoint (${job.managedBrowser.endpoint}); the job stopped before sending anything more through it.`);
+    throw managedBrowserChangedError;
+  }
+}
+
 async function launchBrowser(job, url) {
   await closeBrowser(job);
   if (job.config.browser.chatGptManagedProfileDir) job = await attachManagedBrowser(job);
@@ -680,6 +695,7 @@ async function launchBrowser(job, url) {
     await log("Connecting the shared Chrome and acquiring the job-owned pinned tab");
     // A fresh pinned CDP session creates its own tab before executing the command.
     // Navigate that tab instead of creating a second, untracked startup tab.
+    await assertManagedBrowserUnchanged(job);
     const { stdout } = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "--json", "open", "about:blank"]);
     const created = JSON.parse(stdout);
     if (!created.success || typeof created.data?.targetId !== "string") {
@@ -687,6 +703,7 @@ async function launchBrowser(job, url) {
     }
     currentJob = await mutateJob((latest) => ({ ...latest, relayTargetId: created.data.targetId }));
     if (shuttingDown) return;
+    await assertManagedBrowserUnchanged(currentJob);
     await log(`Navigating job-owned relay tab ${currentJob.relayTargetId}`);
     await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(currentJob), "open", url]);
     return;
@@ -725,6 +742,7 @@ async function streamStatus(job) {
 
 async function ensureBrowserConnected(job) {
   if (!browserStarted || cleaningUpBrowser) return;
+  await assertManagedBrowserUnchanged(job);
   const status = await streamStatus(job);
   if (status.connected === false) {
     throw new Error("The isolated oracle browser disconnected during the job.");
@@ -1217,6 +1235,8 @@ async function waitForOracleReady(job) {
   let retriedChallenge = false;
 
   while (Date.now() < timeoutAt) {
+    // Every probe below tolerates failure, so check the browser here or a change waits out the whole timeout.
+    await assertManagedBrowserUnchanged(job);
     const [url, snapshot, body, probe] = await Promise.all([
       currentUrl(job).catch(() => ""),
       snapshotText(job).catch(() => ""),
@@ -2226,6 +2246,7 @@ async function armDeepResearchFrameCapture(job) {
     throw new OracleWorkerError("deep_research_report_unreadable", "Deep Research needs a shared Chrome transport (browser.chatGptRelayEndpoint or browser.chatGptManagedProfileDir); the report frame is not reachable from an isolated runtime.");
   }
   if (!job.relayTargetId) throw new Error("Deep Research frame capture needs the job-owned relay tab identity");
+  await assertManagedBrowserUnchanged(job);
   deepResearchCdp = await RelayCdpClient.connect(endpoint);
   deepResearchPageSession = await deepResearchCdp.armFrameCapture(job.relayTargetId);
   await log("Armed frame capture on the job-owned relay tab for the Deep Research widget");
@@ -2660,8 +2681,12 @@ async function run() {
     const persistedJob = await readJob().catch(() => undefined);
     await log(`Persisted final status after completion write: ${persistedJob?.status || "unknown"}`);
     await log(`Job ${currentJob.id} complete (${finalPhase}, artifact failures=${artifactFailureCount})`);
-  } catch (error) {
+  } catch (thrown) {
     if (!shuttingDown) {
+      // A browser change can surface first as a tolerant loop's timeout or as the transport error of a
+      // command already in flight when it happened; one more check attributes the failure to it.
+      await assertManagedBrowserUnchanged(currentJob).catch(() => undefined);
+      const error = managedBrowserChangedError ?? thrown;
       const message = error instanceof Error ? error.message : String(error);
       await captureDiagnostics(currentJob, "failure");
       await log(`Job failed: ${message}`);
@@ -2786,8 +2811,10 @@ async function runRecollection() {
       if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
       await collectBoundResult(currentJob, binding);
       await mutateJob((job) => ({ ...job, recollectionError: undefined }));
-    } catch (error) {
+    } catch (thrown) {
       if (shuttingDown) return;
+      await assertManagedBrowserUnchanged(currentJob).catch(() => undefined);
+      const error = managedBrowserChangedError ?? thrown;
       const message = redactTransportSecrets(error.message || String(error));
       await log("Recollection failed: " + message);
       await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,

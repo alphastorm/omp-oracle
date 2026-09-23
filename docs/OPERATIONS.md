@@ -118,13 +118,16 @@ Point Oracle at that directory and let it run the browser (agent-level config on
   belongs to this profile, so start it with `--remote-debugging-port=0`: Chrome then records the
   endpoint inside the profile. A Chrome holding the profile without that record blocks jobs with
   `oracle: browser unavailable` until you quit it; Oracle never opens a second instance into it.
+- **`managed_browser_changed`.** The managed Chrome exited mid-job and a different browser now
+  answers on its DevTools port. The worker checks before every browser command and stops rather
+  than send anything there; resubmit, and the next job reopens the profile on a fresh port.
 - **Costs.** A job pays Chrome's start-up when the browser is closed, and the window takes focus
   when the first job tab opens; keep it un-minimized while jobs run. Readiness means the profile
   and Chrome are present, not that ChatGPT is signed in: the worker checks login before uploading
   and reports `ChatGPT login is required. Run /oracle-auth.`
 - The option is mutually exclusive with `browser.chatGptRelayEndpoint`, and Grok keeps the
-  isolated-profile route. The directory must be separate from the seed and runtime profile
-  directories and must not be a real browser profile root.
+  isolated-profile route. The directory must be separate from the ChatGPT and Grok seed profiles
+  and the runtime profile directory, and must not be a real browser profile root.
 
 ### Dedicated account in persistent Chrome
 

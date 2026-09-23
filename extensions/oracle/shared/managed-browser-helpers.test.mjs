@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { acquireManagedBrowser, assertManagedBrowserAvailable, inspectManagedBrowser, MANAGED_BROWSER_LOCK_KIND, MANAGED_BROWSER_USER_KIND, managedChromeArgs, releaseManagedBrowser } from "./managed-browser-helpers.mjs";
+import { acquireManagedBrowser, assertManagedBrowserAvailable, canonicalManagedProfileDir, inspectManagedBrowser, MANAGED_BROWSER_LOCK_KIND, MANAGED_BROWSER_USER_KIND, managedBrowserReplaced, managedChromeArgs, releaseManagedBrowser } from "./managed-browser-helpers.mjs";
 import { isProcessAlive } from "./process-helpers.mjs";
+import { readCdpBrowserUrl } from "./relay-browser-helpers.mjs";
 import { withStateLock, writeStateLeaseMetadata } from "./state-coordination-helpers.mjs";
 
 const IDLE_MS = 300;
@@ -38,7 +41,8 @@ const server = createServer((request, response) => {
   response.statusCode = 404;
   response.end("{}");
 });
-server.listen(0, "127.0.0.1", () => writeFileSync(join(dir, "DevToolsActivePort"), server.address().port + "\\n/devtools/browser/" + id));
+const port = Number(process.argv.find((arg) => arg.startsWith("--remote-debugging-port="))?.split("=")[1]) || 0;
+server.listen(port, "127.0.0.1", () => writeFileSync(join(dir, "DevToolsActivePort"), server.address().port + "\\n/devtools/browser/" + id));
 process.on("SIGTERM", () => { rmSync(lock, { force: true }); process.exit(0); });
 `;
 
@@ -140,12 +144,13 @@ test("a job that attaches while the idle keeper waits for the profile lock keeps
   const { profileDir, stateDir, executablePath } = await fixture(t);
   const launched = await acquireManagedBrowser({ stateDir, profileDir, executablePath, owner: "job:a" });
   const chromePid = holderPid(profileDir);
-  // Hold the profile lock across the idle grace, as an attach in progress does, so the keeper
-  // decides to quit, then blocks on the lock while the attach writes its lease.
-  await withStateLock(stateDir, MANAGED_BROWSER_LOCK_KIND, profileDir, { processPid: process.pid }, async () => {
+  // Hold the profile lock across the idle grace, as an attach in progress does (under the same canonical
+  // key), so the keeper decides to quit, then blocks on the lock while the attach writes its lease.
+  const attachKey = canonicalManagedProfileDir(profileDir);
+  await withStateLock(stateDir, MANAGED_BROWSER_LOCK_KIND, attachKey, { processPid: process.pid }, async () => {
     await releaseManagedBrowser(stateDir, launched.leaseKey);
     await sleep(IDLE_MS * 3);
-    await writeStateLeaseMetadata(stateDir, MANAGED_BROWSER_USER_KIND, "job:b", { leaseKey: "job:b", profileDir, owner: "job:b", processPid: process.pid, createdAt: new Date().toISOString() });
+    await writeStateLeaseMetadata(stateDir, MANAGED_BROWSER_USER_KIND, "job:b", { leaseKey: "job:b", profileDir: attachKey, owner: "job:b", processPid: process.pid, createdAt: new Date().toISOString() });
   });
   await sleep(IDLE_MS * 2);
   assert.ok(isProcessAlive(chromePid), "the keeper re-checks under the lock and keeps a browser a job just attached to");
@@ -184,8 +189,49 @@ test("a crashed browser's leftovers never bind the profile to another live brows
   await releaseManagedBrowser(stateDir, attached.leaseKey);
 });
 
+test("a lease taken through a symlinked spelling of the profile keeps the keeper's browser open", { skip: process.platform === "win32" }, async (t) => {
+  const { profileDir, stateDir, executablePath } = await fixture(t);
+  const alias = join(profileDir, "..", "profile-alias");
+  symlinkSync(profileDir, alias);
+  const launched = await acquireManagedBrowser({ stateDir, profileDir, executablePath, owner: "job:a" });
+  const aliased = await acquireManagedBrowser({ stateDir, profileDir: alias, executablePath, owner: "job:b" });
+  assert.equal(aliased.launched, false);
+  const chromePid = holderPid(profileDir);
+  await releaseManagedBrowser(stateDir, launched.leaseKey);
+  await sleep(IDLE_MS * 3);
+  assert.ok(isProcessAlive(chromePid), "a live lease under another spelling of the profile keeps the browser open");
+  await releaseManagedBrowser(stateDir, aliased.leaseKey);
+  assert.ok(await waitFor(() => !isProcessAlive(chromePid)), "the browser quits once that lease is gone");
+});
+
+test("only a different browser answering on the attached endpoint counts as a replacement", { skip: process.platform === "win32" }, async (t) => {
+  const { profileDir, executablePath } = await fixture(t);
+  const reserve = createServer().listen(0, "127.0.0.1");
+  await once(reserve, "listening");
+  const port = /** @type {import("node:net").AddressInfo} */ (reserve.address()).port;
+  await new Promise((resolve) => reserve.close(resolve));
+  const endpoint = `http://127.0.0.1:${port}`;
+  const start = async (dir) => {
+    const browser = spawn(executablePath, [`--user-data-dir=${dir}`, `--remote-debugging-port=${port}`], { stdio: "ignore" });
+    t.after(() => browser.kill("SIGKILL"));
+    assert.ok(await waitFor(async () => Boolean(await readCdpBrowserUrl(endpoint))));
+    return browser;
+  };
+  const attached = await start(profileDir);
+  const record = { endpoint, browserUrl: String(await readCdpBrowserUrl(endpoint)) };
+  assert.equal(await managedBrowserReplaced(record), false);
+  attached.kill("SIGTERM");
+  await once(attached, "exit");
+  assert.equal(await managedBrowserReplaced(record), false, "a browser that exited is a disconnect, not a replacement");
+  const otherProfile = join(profileDir, "..", "other-profile");
+  await mkdir(otherProfile);
+  await start(otherProfile);
+  assert.equal(await managedBrowserReplaced(record), true, "a different browser answering on the same port replaces the attached one");
+});
+
 test("browser.args cannot replace the managed profile or DevTools flags", () => {
-  for (const arg of ["--user-data-dir=/tmp/other", "--remote-debugging-port=9222", "--remote-debugging-address=0.0.0.0", "--remote-allow-origins=*"]) {
+  // Chromium also reads single-dash switches (and `/switch` on Windows); the last duplicate wins.
+  for (const arg of ["--user-data-dir=/tmp/other", "--remote-debugging-port=9222", "--remote-debugging-address=0.0.0.0", "--remote-allow-origins=*", "-remote-debugging-address=0.0.0.0", "/remote-debugging-port=9222"]) {
     assert.throws(() => managedChromeArgs("/tmp/profile", [arg]), /cannot override oracle-managed Chrome launch isolation flag/);
   }
   assert.ok(managedChromeArgs("/tmp/profile", ["--disable-blink-features=AutomationControlled"]).includes("--remote-debugging-address=127.0.0.1"));

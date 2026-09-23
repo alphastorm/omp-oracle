@@ -59,6 +59,8 @@ export declare function inspectManagedBrowser(profileDir: string): Promise<Manag
 export declare function managedBrowserInUseMessage(profileDir: string, pid: number): string;
 export declare function assertManagedBrowserAvailable(stateDir: string, profileDir: string): Promise<void>;
 export declare function managedProfileHolderPid(profileDir: string): number | undefined;
+export declare function canonicalManagedProfileDir(profileDir: string): string;
+export declare function managedBrowserReplaced(record: ManagedBrowserRecord): Promise<boolean>;
 export declare function acquireManagedBrowser(options: {
   stateDir: string;
   profileDir: string;

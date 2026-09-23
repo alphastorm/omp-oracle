@@ -161,8 +161,12 @@ export function resolveOracleGrokMode(mode: OracleGrokMode): OracleResolvedSelec
   };
 }
 
+function grokAuthSeedProfileDir(authSeedProfileDir: string): string {
+  return `${authSeedProfileDir}-grok`;
+}
+
 export function getProviderAuthSeedProfileDir(config: OracleConfig, provider: OracleProvider): string {
-  return provider === "grok" ? `${config.browser.authSeedProfileDir}-grok` : config.browser.authSeedProfileDir;
+  return provider === "grok" ? grokAuthSeedProfileDir(config.browser.authSeedProfileDir) : config.browser.authSeedProfileDir;
 }
 
 export function resolveOracleConfigForProvider(config: OracleConfig, provider: OracleProvider): OracleConfig {
@@ -662,9 +666,10 @@ function validateOracleConfig(value: unknown): OracleConfig {
     if (chatGptRelayEndpoint !== undefined) {
       throw new Error("Invalid oracle config: set browser.chatGptRelayEndpoint (a Chrome you run) or browser.chatGptManagedProfileDir (a Chrome Oracle runs), not both");
     }
-    const overlapping = [authSeedProfileDir, runtimeProfilesDir].some((dir) => pathInsideOrEqual(chatGptManagedProfileDir, dir) || pathInsideOrEqual(dir, chatGptManagedProfileDir));
-    if (overlapping) {
-      throw new Error("Invalid oracle config: browser.chatGptManagedProfileDir must be separate from browser.authSeedProfileDir and browser.runtimeProfilesDir");
+    // Every directory Oracle clones, swaps, or deletes: both providers' seeds and the runtime clones.
+    const replaceable = [authSeedProfileDir, grokAuthSeedProfileDir(authSeedProfileDir), runtimeProfilesDir];
+    if (replaceable.some((dir) => pathInsideOrEqual(chatGptManagedProfileDir, dir) || pathInsideOrEqual(dir, chatGptManagedProfileDir))) {
+      throw new Error("Invalid oracle config: browser.chatGptManagedProfileDir must be separate from the ChatGPT and Grok auth seed profiles and browser.runtimeProfilesDir");
     }
   }
 

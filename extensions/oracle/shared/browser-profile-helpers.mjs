@@ -424,7 +424,8 @@ const ORACLE_MANAGED_LAUNCH_FLAGS = Object.freeze([
  * @returns {void}
  */
 export function assertSafeBrowserLaunchArg(arg) {
-  const value = String(arg).trim().toLowerCase();
+  // Chromium also reads `-switch`, and `/switch` on Windows, and the last duplicate wins.
+  const value = String(arg).trim().toLowerCase().replace(/^(?:--?|\/)/, "--");
   const flag = ORACLE_MANAGED_LAUNCH_FLAGS.find((candidate) => value === candidate || value.startsWith(`${candidate}=`) || value.startsWith(`${candidate} `));
   if (flag) {
     throw new Error(`browser.args cannot override oracle-managed Chrome launch isolation flag ${flag}`);

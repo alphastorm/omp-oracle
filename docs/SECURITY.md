@@ -82,7 +82,13 @@ material, and select narrower inputs when the whole repository should not leave 
   anything local that reaches the port can drive the browser. Oracle adds no wildcard
   `--remote-allow-origins`.
 - Oracle quits only a Chrome its keeper spawned, by signalling that child process, never one it
-  found running; a keeper that dies leaves its browser up rather than guessing at a PID.
+  found running. Signalling the keeper itself is an explicit stop that quits its Chrome; a keeper
+  that crashes or is killed outright leaves its browser up rather than guessing at a PID.
+- Before every browser command on a managed job's tab, the worker checks that no other browser
+  answers at the endpoint the job attached to, so a port reused by another browser mid-job stops
+  the job (`managed_browser_changed`) instead of receiving its prompt or archive. A command
+  already past that check when the browser changes still reaches agent-browser, whose reconnect
+  can leave a blank tab in the other browser; in the measured cases that was all it did there.
 
 ## Host trust boundary
 

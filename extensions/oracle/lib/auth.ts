@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { formatOracleAuthConfigRemediation, formatOracleAuthConfigSummary, getOracleConfigLoadDetails, loadOracleConfig, resolveOracleConfigForProvider, type OracleConfig, type OracleConfigLoadOptions, type OracleProvider } from "./config.js";
 import { pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
-import { acquireManagedBrowser, managedBrowserIdleMs, releaseManagedBrowser } from "../shared/managed-browser-helpers.mjs";
+import { acquireManagedBrowser, managedBrowserIdleMs, managedBrowserReplaced, releaseManagedBrowser } from "../shared/managed-browser-helpers.mjs";
 import { resolveNodeExecutable } from "../shared/process-helpers.mjs";
 import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
 import { getOracleStateDir } from "../shared/state-path-helpers.mjs";
@@ -52,6 +52,10 @@ async function openManagedBrowserSignIn(config: OracleConfig, profileDir: string
     const created: unknown = await opened.json().catch(() => undefined);
     const targetId = created && typeof created === "object" && "id" in created && typeof created.id === "string" ? created.id : undefined;
     if (!targetId) throw new Error("Chrome did not report the ChatGPT sign-in tab it opened.");
+    // The tab went to whichever browser answered; only the attached one may give the verdict.
+    if (await managedBrowserReplaced(managed)) {
+      throw new Error(`Another browser now answers at the managed ChatGPT browser's endpoint (${managed.endpoint}); nothing was checked. Retry /oracle-auth.`);
+    }
     if (await managedTabSignedIn(managed.endpoint, targetId, new URL(config.browser.chatUrl).origin)) {
       // Nothing to sign in to, and an open tab would keep an Oracle-launched browser from quitting.
       await fetch(new URL(`/json/close/${targetId}`, managed.endpoint), { signal: AbortSignal.timeout(5000) }).catch(() => undefined);
@@ -62,6 +66,7 @@ async function openManagedBrowserSignIn(config: OracleConfig, profileDir: string
   }
   return [
     `ChatGPT is not signed in in the managed browser (${profileDir}). Sign in on the ChatGPT tab it just opened; the login persists in that profile.`,
+    "Signing in needs a person: an agent should ask the user to sign in on that tab, then run oracle_auth again to confirm, rather than submit jobs, which fail at the login check until then.",
     managed.launched
       ? `Oracle keeps this browser open while that tab is open and quits it ${Math.round(managedBrowserIdleMs() / 1000)} s after the tab and any jobs are gone.`
       : "This browser was already running outside Oracle, so Oracle leaves it open.",
