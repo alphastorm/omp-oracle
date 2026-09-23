@@ -31,11 +31,27 @@ export async function assertRelayReady(endpoint) {
   throw new Error(`ChatGPT browser relay is unavailable: ${endpoint} (${reason}). Start the Chrome that serves this endpoint; Oracle does not launch it or fall back to another browser.`);
 }
 
+/**
+ * The browser identity an endpoint reports now, or nothing when it does not answer as a CDP browser.
+ * @param {string} endpoint
+ * @returns {Promise<string | undefined>}
+ */
+export async function readCdpBrowserUrl(endpoint) {
+  try {
+    const response = await fetch(new URL("/json/version", endpoint), { signal: AbortSignal.timeout(5000), redirect: "error" });
+    if (!response.ok) return undefined;
+    const version = await response.json();
+    return typeof version?.webSocketDebuggerUrl === "string" ? version.webSocketDebuggerUrl : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // The driver parses CLI target references as Chrome hex IDs or labels. Relay
 // IDs are opaque: retain them for identity checks, and close the pinned current
 // tab instead. Never recover by selecting another tab.
 /** @param {import("./relay-browser-helpers.d.mts").RelayTabCleanupOptions} options */
-export async function closeRelayTab({ binary, sessionName, endpoint, targetId }) {
+export async function closeRelayTab({ binary, sessionName, endpoint, targetId, browserUrl }) {
   const prefix = ["--session", sessionName, "--cdp", endpoint, "--pin-tab", "--json"];
   /** @param {...string} args @returns {Promise<CommandResponse>} */
   const run = async (...args) => {
@@ -59,6 +75,8 @@ export async function closeRelayTab({ binary, sessionName, endpoint, targetId })
       throw error;
     }
   };
+  // A managed browser that exited or was replaced on the same port took the job's tab with it.
+  if (browserUrl && await readCdpBrowserUrl(endpoint) !== browserUrl) return;
   await assertRelayReady(endpoint);
   // The driver spawns a fresh pinned daemon (and its own tab) for a session whose daemon is gone.
   // Consult the relay inventory first so an already-closed target never costs a stray tab.

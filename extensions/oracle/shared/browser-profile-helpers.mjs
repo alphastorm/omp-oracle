@@ -409,3 +409,24 @@ export function sweetCookieSafeStoragePasswordScrubbedEnv(env = process.env) {
   scrubSweetCookieSafeStoragePasswordEnv(childEnv);
   return childEnv;
 }
+
+const ORACLE_MANAGED_LAUNCH_FLAGS = Object.freeze([
+  "--user-data-dir",
+  "--remote-debugging-port",
+  "--remote-debugging-pipe",
+  "--remote-debugging-address",
+  "--remote-allow-origins",
+]);
+
+/**
+ * browser.args must not override the profile or DevTools flags Oracle sets on every Chrome it launches.
+ * @param {string} arg
+ * @returns {void}
+ */
+export function assertSafeBrowserLaunchArg(arg) {
+  const value = String(arg).trim().toLowerCase();
+  const flag = ORACLE_MANAGED_LAUNCH_FLAGS.find((candidate) => value === candidate || value.startsWith(`${candidate}=`) || value.startsWith(`${candidate} `));
+  if (flag) {
+    throw new Error(`browser.args cannot override oracle-managed Chrome launch isolation flag ${flag}`);
+  }
+}

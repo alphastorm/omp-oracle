@@ -2,7 +2,7 @@
 
 How `omp-oracle` turns an `/oracle` request into a durable ChatGPT or Grok web job: the
 host-side extension, the detached browser worker, the isolated auth seed profile (or the
-opt-in existing-Chrome relay), and the persisted job state that outlives the agent turn.
+opt-in existing-Chrome relay or managed browser), and the persisted job state that outlives the agent turn.
 
 Companion docs: [Security model](SECURITY.md) · [Compatibility](COMPATIBILITY.md) ·
 [Operations](OPERATIONS.md) · [Test plan](TEST_PLAN.md) · [Release](RELEASE.md) ·
@@ -241,6 +241,17 @@ The fork adds an opt-in ChatGPT transport that drives the user's already signed-
 - Follow-ups open a new job-owned tab on the existing conversation URL. A missing or mismatched target fails closed rather than selecting another tab.
 - Relay preflight checks transport reachability, not login. The worker verifies login before uploading. Login and human-verification challenges are finished in Chrome by the user; `oracle_auth` refuses cookie import in relay mode.
 - The submit/read/follow-up APIs and the durable job files are unchanged between transports.
+
+## Managed browser transport
+
+`browser.chatGptManagedProfileDir` (agent-level, ChatGPT only, exclusive with the relay option) names an Oracle-dedicated Chrome user-data directory. Jobs use the relay transport's pinned-tab path above; the difference is who runs Chrome.
+
+- **Attach.** The worker takes the profile lock, writes a usage lease, then resolves the browser: a Chrome serving the profile is reused, a free profile gets a new Chrome under a keeper, and a profile held by a Chrome without a provable endpoint fails the job (`managed_browser_in_use`) without launching anything. The endpoint and browser identity are persisted on the job (`managedBrowser`), so the worker, cancel, and stale cleanup all close the same tab, and a tab whose browser has since exited counts as closed.
+- **Endpoint proof.** Chrome writes `DevToolsActivePort` (port and browser id) into the profile only for `--remote-debugging-port=0`, and leaves it behind on every exit. An endpoint belongs to the profile only while its live `/json/version` reports that browser id, so a stale file never binds the profile to another browser on a reused port. `SingletonLock` (`<host>-<pid>`, cross-checked against the holder's start time) detects a holder without an endpoint.
+- **Keeper.** `worker/managed-browser.mjs` spawns Chrome as its child, reports the endpoint over a one-line handshake, and quits the child with SIGTERM (Chrome's clean quit) once no live lease holder and no non-blank page have remained for the idle grace, re-checking under the profile lock. It never signals a Chrome it did not spawn; if the keeper dies, its Chrome stays up and later jobs reuse it without ever quitting it.
+- **Sign-in.** `oracle_auth` attaches like a job and opens the auth URL in a new tab; that open page keeps an Oracle-launched browser alive until it is closed.
+- **Readiness.** Preflight and the poller check the profile directory, the executable, and the lock holder without starting Chrome, so a closed browser is ready. The worker verifies login and handles auth transitions and challenges on its own tab, as in isolated mode.
+- Chrome activates itself when it creates the first job window (measured on macOS with Chrome 153, also under `open -g`); the worker itself never activates tabs.
 
 ## Persistence model
 
@@ -649,7 +660,7 @@ The extension still uses the same general `pi`-native background completion patt
 
 - detached worker writes `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-*` state
 - poller scans jobs on an interval
-- each poll also re-runs the submit prerequisite check behind the session footer (`oracle: ready`, `auth needed`, `relay unavailable`, `config error`), classified by the same error codes agents receive; a relay or config blocker raises one warning per distinct cause, and the footer follows the blocker clearing or returning without a new session
+- each poll also re-runs the submit prerequisite check behind the session footer (`oracle: ready`, `auth needed`, `browser unavailable`, `config error`), classified by the same error codes agents receive; a browser or config blocker raises one warning per distinct cause, and the footer follows the blocker clearing or returning without a new session
 - completed job durability lives in oracle job state plus saved response/artifact files, not in synthetic session-history assistant messages
 - when a matching job reaches `complete`, `failed`, or `cancelled`, the poller issues one best-effort wake-up to whichever matching session is currently live, then records `notifiedAt` so later scans do not duplicate the completion message
 - those wake-ups direct the receiver to `/oracle-read [job-id]` as the primary completion-consumption path, while still surfacing saved response/artifact paths as secondary context; `/oracle-status` remains useful for metadata and job-id discovery, and agent callers can still use `oracle_read` when they need tool output in-turn

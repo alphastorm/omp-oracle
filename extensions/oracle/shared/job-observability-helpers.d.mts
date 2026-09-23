@@ -69,7 +69,7 @@ export interface OracleStatusCounts {
   queued: number;
 }
 
-export type OracleReadinessStatus = "unavailable" | "loaded" | "auth_needed" | "relay_unavailable" | "config_error" | "ready";
+export type OracleReadinessStatus = "unavailable" | "loaded" | "auth_needed" | "browser_unavailable" | "config_error" | "ready";
 
 export declare function formatBytes(bytes: number): string;
 export declare function formatOracleLifecycleEvent(event: OracleJobLifecycleEvent | undefined): string | undefined;

@@ -19,6 +19,8 @@
     "extensions/oracle/shared/process-helpers.d.mts",
     "extensions/oracle/shared/relay-browser-helpers.mjs",
     "extensions/oracle/shared/relay-browser-helpers.d.mts",
+    "extensions/oracle/shared/managed-browser-helpers.mjs",
+    "extensions/oracle/shared/managed-browser-helpers.d.mts",
     "extensions/oracle/shared/relay-cdp-client.mjs",
     "extensions/oracle/shared/relay-cdp-client.d.mts",
     "extensions/oracle/shared/state-coordination-helpers.mjs",

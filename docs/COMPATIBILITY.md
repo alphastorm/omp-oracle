@@ -33,12 +33,14 @@ The existing-Chrome endpoint also accepts native loopback Chrome CDP with a sepa
 user-data directory. Instant upload/response/owned-tab cleanup and cross-origin frame capture
 were exercised on macOS; a full Deep Research/export run on native CDP remains unverified.
 This is not the default isolated seed-clone transport; see [setup](OPERATIONS.md#dedicated-account-in-persistent-chrome).
+The managed browser runs the same native-CDP transport on a Chrome that Oracle opens and quits
+itself; see [managed browser](OPERATIONS.md#managed-chatgpt-browser-dedicated-account).
 
 | Provider | Selection | Archive format | Upload ceiling | Auth transports |
 | --- | --- | --- | --- | --- |
-| ChatGPT | `preset` (canonical ids in `ORACLE_SUBMIT_PRESETS`; human-readable labels are normalized) | `.tar.zst` | 250 MiB | Isolated seed profile, or existing-Chrome relay |
+| ChatGPT | `preset` (canonical ids in `ORACLE_SUBMIT_PRESETS`; human-readable labels are normalized) | `.tar.zst` | 250 MiB | Isolated seed profile, existing-Chrome relay, or managed browser |
 | Grok | `mode: "heavy"` only | `.tar.gz` | 200 MiB | Isolated seed profile |
-| ChatGPT Deep Research | `preset: "deep_research"` (composer tool; model picker untouched) | `.tar.zst` | 250 MiB | Existing-Chrome relay only: the report is read from the research widget's iframe through CDP frame capture; on the isolated profile the job fails with `errorCode: deep_research_report_unreadable` |
+| ChatGPT Deep Research | `preset: "deep_research"` (composer tool; model picker untouched) | `.tar.zst` | 250 MiB | Existing-Chrome relay or managed browser only: the report is read from the research widget's iframe through CDP frame capture; on the isolated profile the job fails with `errorCode: deep_research_report_unreadable` |
 
 ChatGPT presets: `pro_standard`, `pro_extended`, `thinking_light`, `thinking_standard`,
 `thinking_extended`, `thinking_heavy`, `instant`, `instant_auto_switch`. Grok uses `.tar.gz`
@@ -70,6 +72,9 @@ Known limits are part of the claim; read them before installing.
   Chromium-family browser profile.
 - **Relay mode needs a capable relay.** Relay builds without `Target.getTargets` cannot serve
   `agent-browser`; relay mode is ChatGPT-only.
+- **The managed browser detects an open profile through Chrome's POSIX `SingletonLock`.** On
+  Windows, a profile open without Oracle's DevTools endpoint surfaces only when a launch is handed
+  off to it. The window takes focus when Chrome creates it for the first job tab.
 - **Deep Research reports are read through CDP frame capture (verified 2026-09-20).** The report
   renders inside a cross-origin, sandboxed ChatGPT App iframe (`internal://deep-research`) whose
   same-origin child frame holds the text; the top document keeps a model-written placeholder and

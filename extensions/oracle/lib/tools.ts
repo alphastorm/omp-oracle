@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveNodeExecutable } from "../shared/process-helpers.mjs";
+import { sharedBrowserCleanupFields, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
 import { readFile, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -323,11 +324,13 @@ type OracleToolErrorDetails = {
   allowedValues?: string[];
   suggestedNextStep?: string;
 };
-const AUTH_SEED_ERROR_CODES: Record<string, true> = {
+// Blockers whose remedy is signing in: /oracle-auth rebuilds the seed, or opens the managed browser for sign-in.
+const AUTH_NEEDED_ERROR_CODES: Record<string, true> = {
   auth_seed_profile_missing: true,
   auth_seed_profile_unreadable: true,
   auth_seed_profile_invalid_type: true,
   auth_seed_profile_unauthenticated: true,
+  managed_browser_profile_missing: true,
 };
 type OracleToolJobDetailsOptions = {
   queue?: OracleQueueSnapshot;
@@ -543,6 +546,24 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
+  if (message.startsWith("Managed ChatGPT browser profile not found: ")) {
+    return {
+      code: "managed_browser_profile_missing",
+      message,
+      rejectedValue: message.replace(/^Managed ChatGPT browser profile not found: /, "").replace(/\. Run \/oracle-auth.*$/, ""),
+      suggestedNextStep: "Call oracle_auth or run /oracle-auth: it opens the managed ChatGPT browser for sign-in. Retry once signed in.",
+    };
+  }
+
+  if (message.startsWith("Managed ChatGPT browser profile is open in a Chrome without Oracle's DevTools endpoint: ")) {
+    return {
+      code: "managed_browser_in_use",
+      message,
+      rejectedValue: message.replace(/^Managed ChatGPT browser profile is open in a Chrome without Oracle's DevTools endpoint: /, "").replace(/ \(Chrome pid.*$/, ""),
+      suggestedNextStep: "Quit the Chrome window using the managed profile, then retry: the next job reopens it with the DevTools endpoint Oracle needs.",
+    };
+  }
+
   if (toolName === "oracle_submit" && message === "oracle_submit requires at least one file or directory to archive") {
     return {
       code: "archive_input_required",
@@ -674,8 +695,9 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
 /** Session footer readiness for a failed prerequisite check, derived from the same codes agents receive. */
 export function classifyOracleReadinessError(error: unknown): { readiness: OracleReadinessStatus; message: string } {
   const { code, message } = buildOracleToolErrorDetails("oracle_preflight", error, {});
-  if (AUTH_SEED_ERROR_CODES[code] === true) return { readiness: "auth_needed", message };
-  return { readiness: code === "relay_unavailable" ? "relay_unavailable" : "config_error", message };
+  if (AUTH_NEEDED_ERROR_CODES[code] === true) return { readiness: "auth_needed", message };
+  if (code === "relay_unavailable" || code === "managed_browser_in_use") return { readiness: "browser_unavailable", message };
+  return { readiness: "config_error", message };
 }
 
 function buildOracleToolErrorResult(
@@ -714,9 +736,21 @@ type OraclePreflightDetails = {
     ready: boolean;
     seedProfileDir?: string;
     relayEndpoint?: string;
+    managedProfileDir?: string;
   };
   error?: OracleToolErrorDetails;
 };
+
+/** Shared-browser transports never verify login in preflight; the worker checks it on the job's own tab. */
+function preflightAuthDetails(config: OracleConfig, seedReady: boolean): OraclePreflightDetails["auth"] {
+  const shared = usesSharedBrowser(config);
+  return {
+    ready: !shared && seedReady,
+    seedProfileDir: shared ? undefined : config.browser.authSeedProfileDir,
+    relayEndpoint: config.browser.chatGptRelayEndpoint,
+    managedProfileDir: config.browser.chatGptManagedProfileDir,
+  };
+}
 
 function formatOracleProviderLabel(provider: OracleProvider | undefined): string {
   if (provider === "grok") return "Grok";
@@ -733,16 +767,16 @@ function formatOraclePreflightResponse(details: OraclePreflightDetails): string 
       details.auth.seedProfileDir ? `Auth seed profile (${providerLabel} login source): ${details.auth.seedProfileDir}` : undefined,
       details.auth.relayEndpoint
         ? `Relay transport reachable at ${details.auth.relayEndpoint}. Login is not verified by preflight; the worker checks it before uploading.`
-        : `Preflight validates the persisted pi session, local oracle config, and ${providerLabel} auth seed created by oracle_auth.`,
+        : details.auth.managedProfileDir
+          ? `Managed ChatGPT browser profile: ${details.auth.managedProfileDir}. Jobs reuse the Chrome serving it or open one, and a Chrome that Oracle opened quits after the jobs finish. Login is not verified by preflight; the worker checks it before uploading.`
+          : `Preflight validates the persisted pi session, local oracle config, and ${providerLabel} auth seed created by oracle_auth.`,
       "If you are dispatching an oracle job, continue with context gathering and submission.",
     ].filter(Boolean).join("\n");
   }
 
   return [
     `Oracle preflight blocked: ${details.error?.message ?? "unknown blocker"}`,
-    details.auth.relayEndpoint
-      ? "Preflight checks the persisted pi session, local oracle config, and relay transport before any archive work starts."
-      : `Preflight checks the persisted pi session, local oracle config, and ${providerLabel} auth seed before any archive work starts.`,
+    `Preflight checks the persisted pi session, local oracle config, and ${details.auth.relayEndpoint ? "relay transport" : details.auth.managedProfileDir ? "managed browser profile" : `${providerLabel} auth seed`} before any archive work starts.`,
     details.error?.suggestedNextStep ? `Suggested next step: ${details.error.suggestedNextStep}` : undefined,
   ].filter(Boolean).join("\n");
 }
@@ -801,11 +835,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
       provider,
       session: { persisted: true, sessionFile },
       config: { ready: true },
-      auth: {
-        ready: !config.browser.chatGptRelayEndpoint && AUTH_SEED_ERROR_CODES[errorDetails.code] !== true,
-        seedProfileDir: config.browser.chatGptRelayEndpoint ? undefined : config.browser.authSeedProfileDir,
-        relayEndpoint: config.browser.chatGptRelayEndpoint,
-      },
+      auth: preflightAuthDetails(config, AUTH_NEEDED_ERROR_CODES[errorDetails.code] !== true),
       error: errorDetails,
     };
   }
@@ -815,11 +845,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
     provider,
     session: { persisted: true, sessionFile },
     config: { ready: true },
-    auth: {
-      ready: !config.browser.chatGptRelayEndpoint,
-      seedProfileDir: config.browser.chatGptRelayEndpoint ? undefined : config.browser.authSeedProfileDir,
-      relayEndpoint: config.browser.chatGptRelayEndpoint,
-    },
+    auth: preflightAuthDetails(config, true),
   };
 }
 
@@ -1157,8 +1183,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
             runtimeProfileDir: runtimeLeaseAcquired ? runtime.runtimeProfileDir : undefined,
             runtimeSessionName: workerSpawned ? runtime.runtimeSessionName : undefined,
             conversationId: conversationLeaseAcquired ? target.conversationId : undefined,
-            relayEndpoint: config.browser.chatGptRelayEndpoint,
-            relayTargetId: latest?.relayTargetId ?? job?.relayTargetId,
+            ...sharedBrowserCleanupFields(latest ?? job, config),
           }).catch(() => ({ attempted: [], warnings: [] }));
           if (job && cleanupReport.warnings.length > 0) {
             await appendCleanupWarnings(job.id, cleanupReport.warnings).catch(() => undefined);

@@ -12,8 +12,9 @@ import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubb
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive, resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
 import { assertRelayReady, closeRelayTab } from "../shared/relay-browser-helpers.mjs";
+import { assertManagedBrowserAvailable, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
 import type { OracleConfig, OracleProvider } from "./config.js";
-import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
+import { getOracleJobsDir, getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAuthLock } from "./locks.js";
 
@@ -40,7 +41,7 @@ function requiredOracleDependencies(config: OracleConfig, provider = config.defa
   if (archivePlan.requiresZstd) {
     dependencies.push({ name: "zstd", command: "zstd" });
   }
-  if (!config.browser.chatGptRelayEndpoint && config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
+  if (!usesSharedBrowser(config) && config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
     dependencies.push({ name: "cp", command: cpCommand() });
   }
   return dependencies;
@@ -310,9 +311,23 @@ export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Pr
   }
 }
 
+async function assertManagedBrowserProfileReady(config: OracleConfig, profileDir: string): Promise<void> {
+  const profileStats = await stat(profileDir).catch(() => undefined);
+  if (!profileStats?.isDirectory()) {
+    throw new Error(`Managed ChatGPT browser profile not found: ${profileDir}. Run /oracle-auth to open it and sign in to ChatGPT.`);
+  }
+  if (!config.browser.executablePath) {
+    throw new Error("The managed ChatGPT browser needs browser.executablePath, and no Chrome executable was detected. Set it in the agent-level oracle.json.");
+  }
+  await assertConfiguredBrowserExecutableReady(config.browser.executablePath);
+  await assertManagedBrowserAvailable(getOracleStateDir(), profileDir);
+}
+
 export async function assertOracleSubmitPrerequisites(config: OracleConfig, provider: OracleProvider = config.defaults.provider): Promise<void> {
   if (config.browser.chatGptRelayEndpoint) {
     await assertRelayReady(config.browser.chatGptRelayEndpoint);
+  } else if (config.browser.chatGptManagedProfileDir) {
+    await assertManagedBrowserProfileReady(config, config.browser.chatGptManagedProfileDir);
   } else {
     assertSafeOracleProfilePath(config.browser.runtimeProfilesDir, "runtime profiles", config);
     await assertOracleAuthSeedProfileReady(config);
@@ -501,8 +516,11 @@ export async function cleanupRuntimeArtifacts(runtime: {
   runtimeProfileDir?: string;
   runtimeSessionName?: string;
   conversationId?: string;
+  /** The job drives a pinned tab in a shared Chrome (relay or managed) and never had its own runtime profile. */
+  sharedBrowser?: boolean;
   relayEndpoint?: string;
   relayTargetId?: string;
+  managedBrowserUrl?: string;
 }): Promise<OracleCleanupReport> {
   const report: OracleCleanupReport = { attempted: [], warnings: [] };
 
@@ -511,13 +529,13 @@ export async function cleanupRuntimeArtifacts(runtime: {
     if (runtime.relayEndpoint && runtime.relayTargetId) {
       await closeRelayTab({
         binary: AGENT_BROWSER_BIN, sessionName: runtime.runtimeSessionName,
-        endpoint: runtime.relayEndpoint, targetId: runtime.relayTargetId,
+        endpoint: runtime.relayEndpoint, targetId: runtime.relayTargetId, browserUrl: runtime.managedBrowserUrl,
       }).catch((error: Error) => { report.warnings.push(error.message); });
     }
     const warning = await closeRuntimeBrowserSession(runtime.runtimeSessionName).catch((error: Error) => error.message);
     if (warning) report.warnings.push(warning);
   }
-  if (runtime.runtimeProfileDir && !runtime.relayEndpoint) {
+  if (runtime.runtimeProfileDir && !runtime.sharedBrowser) {
     report.attempted.push("runtimeProfileDir");
     try {
       assertSafeOracleProfilePath(runtime.runtimeProfileDir, "runtime profile");

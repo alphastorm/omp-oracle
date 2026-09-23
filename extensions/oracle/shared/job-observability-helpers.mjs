@@ -252,7 +252,7 @@ export function formatOracleSubmitResponse(job, options) {
 
 /**
  * @param {OracleStatusCounts} counts
- * @param {"unavailable" | "loaded" | "auth_needed" | "relay_unavailable" | "config_error" | "ready"} [readiness]
+ * @param {"unavailable" | "loaded" | "auth_needed" | "browser_unavailable" | "config_error" | "ready"} [readiness]
  * @returns {string}
  */
 export function buildOracleStatusText(counts, readiness = "loaded") {
@@ -260,7 +260,7 @@ export function buildOracleStatusText(counts, readiness = "loaded") {
     unavailable: "unavailable",
     loaded: "loaded",
     auth_needed: "auth needed",
-    relay_unavailable: "relay unavailable",
+    browser_unavailable: "browser unavailable",
     config_error: "config error",
     ready: "ready",
   }[readiness] ?? "loaded";

@@ -179,7 +179,7 @@ function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): voi
   const statusText = buildOracleStatusText(counts, readiness);
   if (counts.active > 0) {
     snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("success", statusText));
-  } else if (readiness === "auth_needed" || readiness === "relay_unavailable" || readiness === "config_error") {
+  } else if (readiness === "auth_needed" || readiness === "browser_unavailable" || readiness === "config_error") {
     snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("error", statusText));
   } else {
     snapshot.ui.setStatus("oracle", statusText);
@@ -201,7 +201,7 @@ function applyReadinessCheck(snapshot: OraclePollerContextSnapshot, sessionKey: 
   readinessBySession.set(sessionKey, result);
   // The footer names the state; warn once per distinct cause so a lasting outage is not repeated every poll.
   // Auth-needed stays quiet: its label already names the fix (/oracle-auth).
-  const warn = result.readiness === "relay_unavailable" || result.readiness === "config_error";
+  const warn = result.readiness === "browser_unavailable" || result.readiness === "config_error";
   if (warn && snapshot.hasUI && result.message && (previous?.readiness !== result.readiness || previous.message !== result.message)) {
     snapshot.ui.notify(result.message, "warning");
   }

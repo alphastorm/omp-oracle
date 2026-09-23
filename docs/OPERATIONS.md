@@ -93,12 +93,44 @@ option:
 - Preflight checks transport reachability, not login. Finish login or human verification in
   Chrome; `oracle_auth` refuses cookie import in relay mode.
 
-### Dedicated account in persistent Chrome
+### Managed ChatGPT browser (dedicated account)
 
 For work/personal account separation, use a separate Chrome **user-data directory**, not
-ChatGPT’s account picker in a shared profile. Tabs and windows in one profile share auth state.
-The existing `browser.chatGptRelayEndpoint` option also accepts native Chrome CDP; no OMP relay
-extension or cookie import is needed in this dedicated browser.
+ChatGPT’s account picker in a shared profile: tabs and windows in one profile share auth state.
+Point Oracle at that directory and let it run the browser (agent-level config only):
+
+```json
+{ "browser": { "chatGptManagedProfileDir": "~/Library/Application Support/omp-oracle/diligence-chrome" } }
+```
+
+- **Opened on demand.** A ChatGPT job reuses the Chrome already serving this profile or starts
+  one with `browser.executablePath`: headed, DevTools on a loopback ephemeral port, and the three
+  `--disable-*` flags described below. Each job owns one pinned tab and closes it on cleanup, as in
+  relay mode.
+- **Quit when idle, and only if Oracle opened it.** A keeper process owns each Chrome that Oracle
+  starts and quits it about two minutes after the last job ends with no page left open in it
+  (`PI_ORACLE_MANAGED_BROWSER_IDLE_MS` overrides the grace). A Chrome you opened yourself is reused
+  and never quit.
+- **Sign-in.** `/oracle-auth` (or `oracle_auth`) opens ChatGPT sign-in in this browser. The login
+  persists in the profile, and the browser stays open while that tab is open. The session footer
+  reads `oracle: auth needed` until the profile directory exists.
+- **Opening it yourself.** Oracle reuses a running Chrome only when it can prove the endpoint
+  belongs to this profile, so start it with `--remote-debugging-port=0`: Chrome then records the
+  endpoint inside the profile. A Chrome holding the profile without that record blocks jobs with
+  `oracle: browser unavailable` until you quit it; Oracle never opens a second instance into it.
+- **Costs.** A job pays Chrome's start-up when the browser is closed, and the window takes focus
+  when the first job tab opens; keep it un-minimized while jobs run. Readiness means the profile
+  and Chrome are present, not that ChatGPT is signed in: the worker checks login before uploading
+  and reports `ChatGPT login is required. Run /oracle-auth.`
+- The option is mutually exclusive with `browser.chatGptRelayEndpoint`, and Grok keeps the
+  isolated-profile route. The directory must be separate from the seed and runtime profile
+  directories and must not be a real browser profile root.
+
+### Dedicated account in persistent Chrome
+
+The manual alternative to the managed browser: you keep a dedicated Chrome running and Oracle
+attaches to it as a relay. `browser.chatGptRelayEndpoint` also accepts native Chrome CDP, so no
+OMP relay extension or cookie import is needed in this dedicated browser.
 
 On macOS, launch a separate Chrome process with persistent storage and a loopback-only endpoint:
 
@@ -128,7 +160,7 @@ Then set the agent-level config (preserving any other settings):
 - Keep this Chrome process running for jobs. After quitting or rebooting, relaunch with the same
   command; login persists in its user-data directory. Oracle does not start this external
   browser and does not fall back to personal Chrome if its endpoint is unavailable. While it is
-  down, the session footer reads `oracle: relay unavailable`, one warning names the endpoint and
+  down, the session footer reads `oracle: browser unavailable`, one warning names the endpoint and
   cause, and the footer returns to ready on its own once the endpoint answers again.
 - This is a persistent, account-isolated browser with per-job owned tabs, **not** the default
   disposable per-job seed clones. Do not point it at your personal Chrome user-data directory.
@@ -137,9 +169,9 @@ Then set the agent-level config (preserving any other settings):
 - Existing conversation links stay with their original account; changing endpoints does not
   transfer history or make old-account follow-ups accessible.
 - Native CDP has been exercised with an Instant upload/response/cleanup and cross-origin frame
-  capture. It supplies the transport used by Deep Research, but a complete Deep Research run
-  and native report export on this setup have not yet been exercised. The default seed-clone
-  path still does not support Deep Research frame capture.
+  capture. It supplies the transport used by Deep Research on both this setup and the managed
+  browser, but a complete Deep Research run and native report export on native CDP have not yet
+  been exercised. The default seed-clone path still does not support Deep Research frame capture.
 
 ## Cookie sources
 

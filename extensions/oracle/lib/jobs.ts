@@ -30,6 +30,7 @@ import {
 import type { OracleJobLifecycleEvent as SharedOracleJobLifecycleEvent, OracleJobPhase as SharedOracleJobPhase, OracleJobStatus as SharedOracleJobStatus } from "../shared/job-lifecycle-helpers.mjs";
 import { hasDurableWorkerHandoff as sharedHasDurableWorkerHandoff } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive, readProcessStartedAt, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
+import { sharedBrowserCleanupFields, type ManagedBrowserRecord } from "../shared/managed-browser-helpers.mjs";
 import type { OracleConfig, OracleResolvedSelection } from "./config.js";
 import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
 import { parseTimestamp } from "../shared/time-helpers.mjs";
@@ -203,7 +204,10 @@ export interface OracleJob {
   runtimeProfileDir: string;
   seedGeneration?: string;
   config: OracleConfig;
+  /** The job-owned pinned tab on the shared Chrome (the relay, or the managed browser). */
   relayTargetId?: string;
+  /** Managed-browser mode: the browser instance the worker attached this job's tab to. */
+  managedBrowser?: ManagedBrowserRecord;
   cleanupWarnings?: string[];
   lastCleanupAt?: string;
   cleanupPending?: boolean;
@@ -440,7 +444,7 @@ function getTerminalCleanupStaleReason(job: Pick<OracleJob, "status" | "cleanupP
 }
 
 export async function cleanupJobResources(
-  job: Pick<OracleJob, "submittedAt" | "runtimeId" | "runtimeProfileDir" | "runtimeSessionName" | "conversationId" | "archivePath" | "archiveDeletedAfterUpload" | "config" | "relayTargetId">,
+  job: Pick<OracleJob, "submittedAt" | "runtimeId" | "runtimeProfileDir" | "runtimeSessionName" | "conversationId" | "archivePath" | "archiveDeletedAfterUpload" | "config" | "relayTargetId" | "managedBrowser">,
 ): Promise<OracleCleanupReport> {
   const report: OracleCleanupReport = { attempted: [], warnings: [] };
 
@@ -460,8 +464,7 @@ export async function cleanupJobResources(
     runtimeProfileDir: job.runtimeProfileDir,
     runtimeSessionName: job.runtimeSessionName,
     conversationId: job.conversationId,
-    relayEndpoint: job.config.browser.chatGptRelayEndpoint,
-    relayTargetId: job.relayTargetId,
+    ...sharedBrowserCleanupFields(job),
   });
 
   return {

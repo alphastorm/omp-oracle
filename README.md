@@ -146,7 +146,16 @@ relay option and skip `/oracle-auth` for ChatGPT:
 
 Each relay job owns one pinned tab and closes it on cleanup. Requirements and behavior:
 [Operations → Existing-Chrome relay](docs/OPERATIONS.md#existing-chrome-relay-chatgpt-only).
-For a separate work account without changing personal Chrome, use a
+For a separate work account without changing personal Chrome, let Oracle run a
+[managed browser on a dedicated profile](docs/OPERATIONS.md#managed-chatgpt-browser-dedicated-account):
+it opens that Chrome when a job needs it and quits it when the jobs are done.
+
+```json
+{ "browser": { "chatGptManagedProfileDir": "~/Library/Application Support/omp-oracle/diligence-chrome" } }
+```
+
+`/oracle-auth` then opens ChatGPT sign-in in that browser. To keep a dedicated Chrome running
+yourself instead, point the relay option at it:
 [dedicated persistent Chrome profile over native CDP](docs/OPERATIONS.md#dedicated-account-in-persistent-chrome).
 
 ### 4. Submit a tiny job
@@ -196,9 +205,10 @@ flowchart LR
   inputs, and stops after dispatch.
 - **Tools own execution.** `oracle_submit` builds the archive, admits or queues the job, starts a
   detached worker, and returns immediately.
-- **Auth uses a seed profile, or your Chrome through a relay.** `/oracle-auth` imports cookies
-  into an isolated seed profile that each job clones; the opt-in relay drives one job-owned tab in
-  your signed-in Chrome instead.
+- **Auth uses a seed profile, your Chrome through a relay, or a managed browser.** `/oracle-auth`
+  imports cookies into an isolated seed profile that each job clones; the opt-in relay drives one
+  job-owned tab in your signed-in Chrome; the opt-in managed browser is a dedicated Chrome that
+  Oracle opens for jobs and quits when idle.
 - **Follow-ups preserve provider thread state.** `/oracle-followup <job-id> ...` resolves the
   prior job's saved provider URL and submits the next prompt with `followUpJobId`.
 - **Existing ChatGPT browser threads are opt-in.** Normal `/oracle` jobs still start a fresh provider thread.
@@ -235,7 +245,8 @@ User-facing commands:
 - `/oracle-followup <job-id> <request>` — continue an earlier oracle job in the same provider
   thread.
 - `/oracle-auth [chatgpt|grok]` — sync provider cookies into the isolated oracle auth seed
-  profile (refused in relay mode; sign in to Chrome instead).
+  profile (refused in relay mode; sign in to Chrome instead). With a managed ChatGPT browser, it
+  opens ChatGPT sign-in in that browser instead.
 - `/oracle-read [job-id]` — inspect job status and the saved response preview.
 - `/oracle-status [job-id]` — inspect a job, or list recent job ids when no explicit id is given.
 - `/oracle-cancel <job-id>` — cancel a queued or active job.
@@ -352,9 +363,10 @@ upload accepted and 200 MiB + 1 byte rejected.
 `deep_research` is a composer-tool preset, not a model tier: the worker leaves the model picker
 alone, enables **Deep research** from the composer tools menu, verifies the pill in the composer,
 attaches the archive, sends, and then reads the finished report out of ChatGPT's research widget.
-The widget is a cross-origin App iframe, so this works only on the **existing-Chrome relay**
-transport: before sending, the worker arms CDP frame capture on its own pinned tab, waits for the
-widget frame to attach, and polls it until `Research completed in …` appears. It then collects
+The widget is a cross-origin App iframe, so this works only on a **shared Chrome** transport (the
+existing-Chrome relay or the managed browser): before sending, the worker arms CDP frame capture
+on its own pinned tab, waits for the widget frame to attach, and polls it until
+`Research completed in …` appears. It then collects
 the report's native **Export → Export to Markdown** file: the sandboxed widget delegates that
 download to the host page, so the worker pre-arms Chrome's download events and an object-URL
 registry on both the tab and the frame before activating the menu, accepts only a download that
@@ -378,7 +390,7 @@ transport, frame never attached, or timeout); that last one still carries the co
 | Hosts | Oh My Pi and `pi`; `pi` 0.80.9 is the validated upstream baseline. Oh My Pi 18.2.x runs the fork: every release since `0.3.1` proves the eight canonical model presets through isolated OMP print-mode sessions loading this source (`--no-extensions -e`), and the relay transport was verified through the unmodified OMP 18.2.6 relay. A job through the registry-installed package on OMP is recorded per release in the [ledger](docs/RELEASE.md#fork-evidence-omp-oracle) |
 | Platforms | macOS and Linux fork-qualified through the Crabbox gate; Windows native declared (`package.json` `os`) and upstream-validated at `pi-oracle` 0.7.20, not re-qualified by the fork; Chromium-family browsers |
 | Providers | ChatGPT (presets above), Grok (`heavy`) |
-| Transports | Isolated seed profile (both providers); existing-Chrome relay (ChatGPT only) |
+| Transports | Isolated seed profile (both providers); existing-Chrome relay and managed browser (ChatGPT only) |
 | Package | `omp-oracle` on npm (current release `0.3.4`); the GitHub URL tracks `main` |
 
 Known limits are part of the claim:
@@ -392,9 +404,9 @@ Known limits are part of the claim:
 - **Archives are capped** at 250 MiB (ChatGPT) and 200 MiB (Grok) after default exclusions and
   automatic whole-repo pruning.
 - **Wake-up is best effort;** the job directory is the durable record.
-- **Deep Research needs the relay transport** and holds the job's tab for the whole research
-  run; see [Deep Research](#deep-research). It is excluded from the release preset proof because
-  each run costs a Deep Research task on the account.
+- **Deep Research needs a shared Chrome transport** (relay or managed browser) and holds the
+  job's tab for the whole research run; see [Deep Research](#deep-research). It is excluded from
+  the release preset proof because each run costs a Deep Research task on the account.
 
 The [compatibility matrix](docs/COMPATIBILITY.md) defines the supported boundary; the
 [release ledger](docs/RELEASE.md#evidence-ledger) holds the evidence.
@@ -408,10 +420,10 @@ account: the prompt and one project archive. Release-blocking invariants:
   state, `secrets/`, `.env*`, keys, and databases are excluded by default;
 - `/oracle-auth` reads your browser cookie store read-only and never launches or mutates your
   real profile; jobs run in per-job clones of an isolated seed that are deleted on exit;
-- relay mode copies no cookies, owns exactly one tab per job, and fails closed on a mismatched
-  target;
-- project config can override only non-privileged keys; browser paths, cookie sources, and the
-  relay endpoint are agent-level only;
+- relay and managed-browser modes copy no cookies, own exactly one tab per job, and fail closed on
+  a mismatched target; Oracle quits only a managed Chrome it started, never one it found running;
+- project config can override only non-privileged keys; browser paths, cookie sources, the relay
+  endpoint, and the managed profile are agent-level only;
 - job state is written atomically with private permissions, and tool results carry redacted job
   details.
 

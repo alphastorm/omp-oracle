@@ -16,6 +16,7 @@ import {
   defaultCloneStrategyForPlatform,
   detectDefaultBrowserProfileSource,
   detectDefaultLinuxChromeExecutablePath,
+  pathInsideOrEqual,
   sweetCookieSafeStoragePasswordScrubbedEnv,
 } from "../shared/browser-profile-helpers.mjs";
 import { getProjectId } from "./runtime.js";
@@ -181,6 +182,7 @@ export function resolveOracleConfigForProvider(config: OracleConfig, provider: O
     browser: {
       ...config.browser,
       chatGptRelayEndpoint: undefined,
+      chatGptManagedProfileDir: undefined,
       authSeedProfileDir: getProviderAuthSeedProfileDir(config, provider),
       chatUrl: "https://grok.com/",
       authUrl: "https://grok.com/",
@@ -214,6 +216,7 @@ export interface OracleConfig {
     authUrl: string;
     runMode: OracleBrowserRunMode;
     chatGptRelayEndpoint?: string;
+    chatGptManagedProfileDir?: string;
     executablePath?: string;
     userAgent?: string;
     args: string[];
@@ -652,6 +655,18 @@ function validateOracleConfig(value: unknown): OracleConfig {
   if (runtimeProfilesDir === authSeedProfileDir || runtimeProfilesDir.startsWith(`${authSeedProfileDir}/`)) {
     throw new Error("Invalid oracle config: browser.runtimeProfilesDir must be separate from browser.authSeedProfileDir");
   }
+  const chatGptManagedProfileDir = browser.chatGptManagedProfileDir === undefined
+    ? undefined
+    : expectSafeProfileDir(browser.chatGptManagedProfileDir, "browser.chatGptManagedProfileDir", cookieSources);
+  if (chatGptManagedProfileDir !== undefined) {
+    if (chatGptRelayEndpoint !== undefined) {
+      throw new Error("Invalid oracle config: set browser.chatGptRelayEndpoint (a Chrome you run) or browser.chatGptManagedProfileDir (a Chrome Oracle runs), not both");
+    }
+    const overlapping = [authSeedProfileDir, runtimeProfilesDir].some((dir) => pathInsideOrEqual(chatGptManagedProfileDir, dir) || pathInsideOrEqual(dir, chatGptManagedProfileDir));
+    if (overlapping) {
+      throw new Error("Invalid oracle config: browser.chatGptManagedProfileDir must be separate from browser.authSeedProfileDir and browser.runtimeProfilesDir");
+    }
+  }
 
   const chromiumKeychain = expectOptionalChromiumKeychain(auth.chromiumKeychain, "auth.chromiumKeychain");
   if (chromiumKeychain !== undefined && chromeCookiePath === undefined) {
@@ -681,6 +696,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
       authUrl: expectChatGptUrl(browser.authUrl, "browser.authUrl"),
       runMode: expectEnum(browser.runMode, "browser.runMode", BROWSER_RUN_MODES),
       chatGptRelayEndpoint,
+      chatGptManagedProfileDir,
       executablePath: expectOptionalAbsoluteNormalizedPath(browser.executablePath, "browser.executablePath"),
       userAgent: expectOptionalString(browser.userAgent, "browser.userAgent"),
       args: expectStringArray(browser.args, "browser.args"),

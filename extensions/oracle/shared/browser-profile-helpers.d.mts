@@ -71,3 +71,4 @@ export function detectDefaultLinuxCookieProfileSource(options?: BrowserPathOptio
 export function detectDefaultBrowserProfileSource(platform?: OraclePlatform, options?: BrowserPathOptions): string;
 export function scrubSweetCookieSafeStoragePasswordEnv(env?: NodeJS.ProcessEnv): void;
 export function sweetCookieSafeStoragePasswordScrubbedEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export function assertSafeBrowserLaunchArg(arg: string): void;

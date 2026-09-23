@@ -456,9 +456,9 @@ async function testOracleExtensionReadinessFollowsRelayEndpoint(): Promise<void>
     const warnings = () => ui.notifications.filter((notification) => notification.level === "warning");
     await sessionStart({}, createExtensionCtx(sessionManager, ui));
 
-    await waitForCondition(() => footer() === "<error>oracle: relay unavailable" || undefined, {
+    await waitForCondition(() => footer() === "<error>oracle: browser unavailable" || undefined, {
       timeoutMs: 2_000,
-      description: "relay unavailable footer",
+      description: "browser unavailable footer",
     });
     await sleep(400);
     assert(
@@ -483,9 +483,9 @@ async function testOracleExtensionReadinessFollowsRelayEndpoint(): Promise<void>
       stopped.close((error) => (error ? reject(error) : resolve()));
       stopped.closeAllConnections();
     });
-    await waitForCondition(() => footer() === "<error>oracle: relay unavailable" || undefined, {
+    await waitForCondition(() => footer() === "<error>oracle: browser unavailable" || undefined, {
       timeoutMs: 2_000,
-      description: "relay unavailable footer after the relay goes away",
+      description: "browser unavailable footer after the relay goes away",
     });
     assert(warnings().length === 2, `losing a recovered relay should warn again; got ${JSON.stringify(ui.notifications)}`);
   } finally {

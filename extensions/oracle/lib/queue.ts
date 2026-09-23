@@ -16,6 +16,7 @@ import { loadOracleConfig } from "./config.js";
 import { withLock } from "./locks.js";
 import { appendCleanupWarnings, isTerminalOracleJob, listOracleJobDirs, readJob, spawnWorker, terminateWorkerPid, updateJob, type OracleJob } from "./jobs.js";
 import { cleanupRuntimeArtifacts, releaseRuntimeLease, tryAcquireConversationLease, tryAcquireRuntimeLease } from "./runtime.js";
+import { sharedBrowserCleanupFields } from "../shared/managed-browser-helpers.mjs";
 
 export interface OracleQueuePosition {
   position: number;
@@ -131,8 +132,7 @@ export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueue
         runtimeProfileDir: runtimeLeaseAcquired ? job.runtimeProfileDir : undefined,
         runtimeSessionName: spawnedWorker ? job.runtimeSessionName : undefined,
         conversationId: conversationLeaseAcquired ? job.conversationId : undefined,
-        relayEndpoint: job.config.browser.chatGptRelayEndpoint,
-        relayTargetId: job.relayTargetId,
+        ...sharedBrowserCleanupFields(job),
       }).catch(() => ({ attempted: [], warnings: [] }));
       if (cleanupReport.warnings.length > 0) {
         await appendCleanupWarnings(job.id, cleanupReport.warnings, at).catch(() => undefined);

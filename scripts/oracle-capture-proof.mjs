@@ -11,6 +11,7 @@ import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import ts from 'typescript';
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
+import { sharedBrowserEndpoint, usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'oracle-capture-proof-'));
@@ -58,13 +59,14 @@ try {
   // and clicks use the real isolated page; only the saved conversation URL is synthetic.
   const source = readFileSync(new URL('../extensions/oracle/worker/run-job.mjs', import.meta.url), 'utf8');
   const tree = ts.createSourceFile('run-job.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  const names = new Set(['captureBoundTurn', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection', 'sleep']);
+  // `sleep` is imported by the worker from the shared time helpers, so it is injected, not extracted.
+  const names = new Set(['captureBoundTurn', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection']);
   const declarations = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
   assert.equal(declarations.length, names.size);
   const jobDir = join(root, 'job');
   await mkdir(jobDir);
   const job = { id: 'synthetic', responsePath: join(jobDir, 'response.md'), conversationId: 'synthetic', selection: { provider: 'chatgpt' }, config: { artifacts: { capture: true } } };
-  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','redactTransportSecrets','turnContentSha256','validateArtifactBytes','jobDir','evalPage','currentUrl','conversationIdFromUrl'];
+  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','redactTransportSecrets','turnContentSha256','validateArtifactBytes','jobDir','evalPage','currentUrl','conversationIdFromUrl','sleep','usesSharedBrowser'];
   // The browser adapter retains dead session identities and enforces the Unix socket limit.
   // Collection itself still executes production functions against real Chromium above.
   const factory = new Function(...dependencyNames, `let currentJob; let shuttingDown=false;
@@ -100,7 +102,7 @@ try {
     let result = await evaluate(expression);
     while (typeof result === 'string') { try { result = JSON.parse(result); } catch { break; } }
     return result;
-  },async () => 'https://chatgpt.com/c/synthetic',() => 'synthetic');
+  },async () => 'https://chatgpt.com/c/synthetic',() => 'synthetic',sleep,usesSharedBrowser);
   const binding = { conversationId: 'synthetic', responseIndex: 1, messageId: 'new' };
   const first = await worker.collect(job, binding);
   assert.equal(first.generationStatus, 'completed');
@@ -177,10 +179,10 @@ try {
   // that window is served by the dying daemon (orphan tab, then "Connection refused"). The worker's
   // browser teardown must return only once the driver no longer lists the session, and must not
   // spawn a daemon just to close a session that is not listed.
-  const teardownNames = new Set(['closeBrowser', 'agentBrowserSessionListed', 'waitForAgentBrowserSessionTeardown', 'sleep']);
+  const teardownNames = new Set(['closeBrowser', 'agentBrowserSessionListed', 'waitForAgentBrowserSessionTeardown']);
   const teardownDeclarations = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && teardownNames.has(node.name?.text));
   assert.equal(teardownDeclarations.length, teardownNames.size);
-  const teardown = new Function(`const AGENT_BROWSER_BIN='driver', AGENT_BROWSER_CLOSE_TIMEOUT_MS=2000; let cleaningUpBrowser=false, browserStarted=true, deepResearchCdp, currentJob;
+  const teardown = new Function('usesSharedBrowser', 'sharedBrowserEndpoint', 'sleep', `const AGENT_BROWSER_BIN='driver', AGENT_BROWSER_CLOSE_TIMEOUT_MS=2000; let cleaningUpBrowser=false, browserStarted=true, deepResearchCdp, currentJob;
     const calls=[]; let listedUntil=0; let inventoryBroken=false;
     function browserBaseArgs(job){ return ['--session', job.runtimeSessionName]; }
     async function terminateBrowserProcess(){}
@@ -190,7 +192,7 @@ try {
       throw new Error('unexpected driver call '+args.join(' ')); }
     let currentSession='oracle-live';
     ${teardownDeclarations.map((node) => node.getText(tree)).join('\n')}
-    return { calls, run: async (job, listed, broken=false) => { currentSession=job.runtimeSessionName; listedUntil = listed ? Date.now()+60_000 : 0; inventoryBroken=broken; browserStarted=true; await closeBrowser(job); } };`)();
+    return { calls, run: async (job, listed, broken=false) => { currentSession=job.runtimeSessionName; listedUntil = listed ? Date.now()+60_000 : 0; inventoryBroken=broken; browserStarted=true; await closeBrowser(job); } };`)(usesSharedBrowser, sharedBrowserEndpoint, sleep);
   const relayJob = { runtimeSessionName: 'oracle-live', config: { browser: { chatGptRelayEndpoint: 'http://127.0.0.1:9224' } } };
   const closeStartedAt = Date.now();
   await teardown.run(relayJob, true);

@@ -69,12 +69,27 @@ material, and select narrower inputs when the whole repository should not leave 
   and anything that can reach the relay endpoint can drive Chrome. The extension adds no
   authentication to that endpoint; keep it loopback-only.
 
+### Managed browser (opt-in, ChatGPT only)
+
+- No cookies are copied. Jobs drive one owned tab each in a Chrome running on the configured
+  Oracle-dedicated profile, and `oracle_auth` opens ChatGPT sign-in there instead of importing
+  cookies. The profile directory is agent-level only, must not be a real browser profile root,
+  and must stay separate from the seed and runtime profile directories.
+- Oracle attaches to a running Chrome only when the endpoint's live browser id matches the one
+  Chrome recorded inside that profile, so a stale record never binds the profile, and its account,
+  to another browser listening on a reused port.
+- DevTools listens on loopback only, on an ephemeral port, and only while that Chrome runs;
+  anything local that reaches the port can drive the browser. Oracle adds no wildcard
+  `--remote-allow-origins`.
+- Oracle quits only a Chrome its keeper spawned, by signalling that child process, never one it
+  found running; a keeper that dies leaves its browser up rather than guessing at a PID.
+
 ## Host trust boundary
 
 - Project-level `oracle.json` may override only `defaults`, `worker`, `poller`, `artifacts`, and
-  `cleanup`; any other key is rejected. Browser paths, cookie sources, keychain items, and the
-  relay endpoint are agent-level only, so a cloned repository cannot point the extension at a
-  different browser or credential source.
+  `cleanup`; any other key is rejected. Browser paths, cookie sources, keychain items, the relay
+  endpoint, and the managed browser profile are agent-level only, so a cloned repository cannot
+  point the extension at a different browser or credential source.
 - Project config is ignored when the host reports the project untrusted (`--no-approve` or a
   saved distrust decision). On OMP hosts without Pi's trust exports, project overrides require an
   explicit host trust decision or approval flag.

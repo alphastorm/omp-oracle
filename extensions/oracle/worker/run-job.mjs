@@ -22,6 +22,7 @@ import { killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowser
 import { getOracleJobsDir, getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
+import { acquireManagedBrowser, releaseManagedBrowser, sharedBrowserEndpoint, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
 import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from "./response-capture.mjs";
@@ -56,7 +57,7 @@ import {
 } from "./chatgpt-ui-helpers.mjs";
 import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
-import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
+import { assertNotKnownBrowserUserDataPath, assertSafeBrowserLaunchArg, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
@@ -121,6 +122,8 @@ let cleaningUpBrowser = false;
 let cleaningUpRuntime = false;
 let shuttingDown = false;
 let lastHeartbeatMs = 0;
+/** Lease that keeps the managed browser open while this worker's job uses it. */
+let managedBrowserLeaseKey;
 
 function providerForJob(job) {
   return job?.selection?.provider === "grok" ? "grok" : "chatgpt";
@@ -310,7 +313,10 @@ async function cleanupRuntime(job) {
       warnings.push(message);
       await log(message).catch(() => undefined);
     });
-    if (browserClosed && !job.config.browser.chatGptRelayEndpoint) {
+    // Once no lease and no page remain, the keeper quits a managed browser Oracle opened; a tab that failed to close keeps it open.
+    await releaseManagedBrowser(ORACLE_STATE_DIR, managedBrowserLeaseKey);
+    managedBrowserLeaseKey = undefined;
+    if (browserClosed && !usesSharedBrowser(job.config)) {
       try {
         assertSafeRuntimeProfilePath(job.runtimeProfileDir, "runtime profile", job.config);
         await rm(job.runtimeProfileDir, { recursive: true, force: true });
@@ -319,7 +325,7 @@ async function cleanupRuntime(job) {
         warnings.push(message);
         await log(message).catch(() => undefined);
       }
-    } else if (!browserClosed && !job.config.browser.chatGptRelayEndpoint) {
+    } else if (!browserClosed && !usesSharedBrowser(job.config)) {
       const message = `Runtime profile cleanup skipped because isolated browser close did not complete: ${job.runtimeProfileDir}`;
       warnings.push(message);
       await log(message).catch(() => undefined);
@@ -489,7 +495,8 @@ async function promoteQueuedJobsAfterCleanup() {
 
 function browserBaseArgs(job, options = {}) {
   const args = ["--session", job.runtimeSessionName];
-  if (job.config.browser.chatGptRelayEndpoint) args.push("--cdp", job.config.browser.chatGptRelayEndpoint, "--pin-tab");
+  const endpoint = sharedBrowserEndpoint(job);
+  if (endpoint) args.push("--cdp", endpoint, "--pin-tab");
   if (options.withLaunchOptions) {
     args.push("--profile", job.runtimeProfileDir);
     if (job.config.browser.executablePath) args.push("--executable-path", job.config.browser.executablePath);
@@ -556,15 +563,16 @@ async function closeBrowser(job) {
   if (cleaningUpBrowser) return;
   deepResearchCdp?.close();
   deepResearchCdp = undefined;
-  if (job.config.browser.chatGptRelayEndpoint && !job.relayTargetId && !browserStarted) return;
+  if (usesSharedBrowser(job.config) && !job.relayTargetId && !browserStarted) return;
   cleaningUpBrowser = true;
   let tabCleanupError;
   try {
-    if (job.config.browser.chatGptRelayEndpoint && job.relayTargetId) {
+    const endpoint = sharedBrowserEndpoint(job);
+    if (endpoint && job.relayTargetId) {
       try {
         await closeRelayTab({
           binary: AGENT_BROWSER_BIN, sessionName: job.runtimeSessionName,
-          endpoint: job.config.browser.chatGptRelayEndpoint, targetId: job.relayTargetId,
+          endpoint, targetId: job.relayTargetId, browserUrl: job.managedBrowser?.browserUrl,
         });
         currentJob = await mutateJob((latest) => ({ ...latest, relayTargetId: undefined }));
       } catch (error) {
@@ -586,21 +594,6 @@ async function closeBrowser(job) {
     await terminateBrowserProcess();
     browserStarted = false;
     cleaningUpBrowser = false;
-  }
-}
-
-function assertSafeBrowserLaunchArg(arg) {
-  const value = String(arg).trim().toLowerCase();
-  const managedFlags = [
-    "--user-data-dir",
-    "--remote-debugging-port",
-    "--remote-debugging-pipe",
-    "--remote-debugging-address",
-    "--remote-allow-origins",
-  ];
-  const flag = managedFlags.find((candidate) => value === candidate || value.startsWith(`${candidate}=`) || value.startsWith(`${candidate} `));
-  if (flag) {
-    throw new Error(`browser.args cannot override oracle-managed Chrome launch isolation flag ${flag}`);
   }
 }
 
@@ -663,11 +656,28 @@ async function waitForDevToolsEndpoint(job) {
   throw new Error(`Timed out waiting for Chrome DevTools endpoint at ${path}.`);
 }
 
+async function attachManagedBrowser(job) {
+  const executablePath = job.config.browser.executablePath;
+  if (!executablePath) throw new Error("The managed ChatGPT browser needs browser.executablePath, and no Chrome executable was detected.");
+  const managed = await acquireManagedBrowser({
+    stateDir: ORACLE_STATE_DIR,
+    profileDir: job.config.browser.chatGptManagedProfileDir,
+    executablePath,
+    args: safeBrowserLaunchArgs(job),
+    owner: `job:${job.id}`,
+  });
+  managedBrowserLeaseKey = managed.leaseKey;
+  await log(`${managed.launched ? "Opened" : "Reusing"} the managed ChatGPT browser at ${managed.endpoint}`);
+  currentJob = await mutateJob((latest) => ({ ...latest, managedBrowser: { endpoint: managed.endpoint, browserUrl: managed.browserUrl } }));
+  return currentJob;
+}
+
 async function launchBrowser(job, url) {
   await closeBrowser(job);
-  if (job.config.browser.chatGptRelayEndpoint) {
+  if (job.config.browser.chatGptManagedProfileDir) job = await attachManagedBrowser(job);
+  if (sharedBrowserEndpoint(job)) {
     browserStarted = true;
-    await log("Connecting the relay and acquiring the job-owned pinned tab");
+    await log("Connecting the shared Chrome and acquiring the job-owned pinned tab");
     // A fresh pinned CDP session creates its own tab before executing the command.
     // Navigate that tab instead of creating a second, untracked startup tab.
     const { stdout } = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "--json", "open", "about:blank"]);
@@ -2211,11 +2221,12 @@ let deepResearchCdp;
 let deepResearchPageSession;
 
 async function armDeepResearchFrameCapture(job) {
-  if (!job.config.browser.chatGptRelayEndpoint) {
-    throw new OracleWorkerError("deep_research_report_unreadable", "Deep Research needs the existing-Chrome relay transport (browser.chatGptRelayEndpoint); the report frame is not reachable from an isolated runtime.");
+  const endpoint = sharedBrowserEndpoint(job);
+  if (!endpoint) {
+    throw new OracleWorkerError("deep_research_report_unreadable", "Deep Research needs a shared Chrome transport (browser.chatGptRelayEndpoint or browser.chatGptManagedProfileDir); the report frame is not reachable from an isolated runtime.");
   }
   if (!job.relayTargetId) throw new Error("Deep Research frame capture needs the job-owned relay tab identity");
-  deepResearchCdp = await RelayCdpClient.connect(job.config.browser.chatGptRelayEndpoint);
+  deepResearchCdp = await RelayCdpClient.connect(endpoint);
   deepResearchPageSession = await deepResearchCdp.armFrameCapture(job.relayTargetId);
   await log("Armed frame capture on the job-owned relay tab for the Deep Research widget");
 }
@@ -2527,17 +2538,21 @@ async function run() {
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "cloning_runtime", {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: currentJob.config.browser.chatGptRelayEndpoint ? "Preparing a job-owned relay tab without copying a browser profile." : "Cloning the auth seed profile into the isolated runtime.",
+      message: currentJob.config.browser.chatGptRelayEndpoint
+        ? "Preparing a job-owned relay tab without copying a browser profile."
+        : currentJob.config.browser.chatGptManagedProfileDir ? "Preparing a job-owned tab in the managed ChatGPT browser." : "Cloning the auth seed profile into the isolated runtime.",
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     await closeBrowser(currentJob);
 
     // A profile clone can outlast the reconciler's stale-heartbeat window; keep heartbeating.
-    const seedGeneration = currentJob.config.browser.chatGptRelayEndpoint ? undefined : await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
+    const seedGeneration = usesSharedBrowser(currentJob.config) ? undefined : await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "launching_browser", {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: currentJob.config.browser.chatGptRelayEndpoint ? "Connecting to the existing Chrome relay." : "Launching the isolated oracle browser runtime.",
+      message: currentJob.config.browser.chatGptRelayEndpoint
+        ? "Connecting to the existing Chrome relay."
+        : currentJob.config.browser.chatGptManagedProfileDir ? "Opening or reusing the managed ChatGPT browser." : "Launching the isolated oracle browser runtime.",
       patch: { seedGeneration, heartbeatAt: new Date().toISOString() },
     }));
 
@@ -2757,7 +2772,7 @@ async function runRecollection() {
     process.on("SIGINT", () => onSignal("SIGINT"));
     try {
       await ensurePrivateDir(join(jobDir, "logs"));
-      if (!currentJob.config.browser.chatGptRelayEndpoint) await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
+      if (!usesSharedBrowser(currentJob.config)) await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
       // Arm before navigation; only the newly owned tab is touched.
       await launchBrowser(currentJob, "about:blank");
       if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);

@@ -8,7 +8,7 @@ import { createCipheriv, createHash, pbkdf2Sync, randomBytes, randomUUID } from 
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { basename, delimiter, dirname, join } from "node:path";
 import { ProjectTrustStore, SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -140,6 +140,7 @@ import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLo
 import {
   acquireConversationLease,
   acquireRuntimeLease,
+  assertOracleSubmitPrerequisites,
   cloneSeedProfileToRuntime,
   getProjectId,
   releaseConversationLease,
@@ -148,7 +149,7 @@ import {
   tryAcquireRuntimeLease,
 } from "../extensions/oracle/lib/runtime.ts";
 import { createArchiveForTesting, mergeArchiveEntryGroupsForTesting, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/archive.ts";
-import { getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools, resolveChatGptConversationReference } from "../extensions/oracle/lib/tools.ts";
+import { classifyOracleReadinessError, getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools, resolveChatGptConversationReference } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
 import platformSmokeConfig from "../platform-smoke.config.mjs";
@@ -1061,6 +1062,49 @@ async function testConfigRejectsChromiumKeychainOffMac(): Promise<void> {
       "config should reject macOS Keychain cookie-source config on non-macOS platforms",
       "auth.chromiumKeychain is macOS-only",
     );
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testManagedBrowserConfigAndReadiness(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-managed-config-"));
+  const agentExtensionsDir = join(fixtureDir, "agent", "extensions");
+  const profileDir = join(fixtureDir, "managed-profile");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const paths = { authSeedProfileDir: join(fixtureDir, "seed"), runtimeProfilesDir: join(fixtureDir, "runtimes"), executablePath: process.execPath };
+  const writeBrowserConfig = (browser: Record<string, unknown>) =>
+    writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({ browser: { ...paths, ...browser } })}\n`, { encoding: "utf8", mode: 0o600 });
+
+  try {
+    await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+    process.env.PI_CODING_AGENT_DIR = join(fixtureDir, "agent");
+
+    await writeBrowserConfig({ chatGptManagedProfileDir: profileDir, chatGptRelayEndpoint: "http://127.0.0.1:9222" });
+    assertThrows(() => loadOracleConfig(process.cwd()), "config should refuse an operator relay and a managed browser at once", "not both");
+    await writeBrowserConfig({ chatGptManagedProfileDir: join(paths.runtimeProfilesDir, "managed") });
+    assertThrows(() => loadOracleConfig(process.cwd()), "the managed profile must stay out of the runtime directories Oracle deletes", "must be separate from browser.authSeedProfileDir and browser.runtimeProfilesDir");
+
+    await writeBrowserConfig({ chatGptManagedProfileDir: profileDir });
+    const config = loadOracleConfig(process.cwd());
+    assert(resolveOracleConfigForProvider(config, "grok").browser.chatGptManagedProfileDir === undefined, "Grok jobs should never run in the ChatGPT managed browser");
+    const readiness = async () => {
+      try {
+        await assertOracleSubmitPrerequisites(config, "chatgpt");
+        return "ready";
+      } catch (error) {
+        return classifyOracleReadinessError(error).readiness;
+      }
+    };
+    assert(await readiness() === "auth_needed", "a managed profile that does not exist yet should read as needing sign-in");
+    await mkdir(profileDir);
+    assert(await readiness() === "ready", "a closed managed browser should be ready: the next job opens it");
+    if (process.platform !== "win32") {
+      await symlink(`${hostname()}-${process.pid}`, join(profileDir, "SingletonLock"));
+      assert(await readiness() === "browser_unavailable", "a managed profile open without Oracle's DevTools endpoint should block jobs as browser unavailable");
+    }
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
@@ -4240,7 +4284,6 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('"open", url'), "worker should navigate the connected oracle session without relaunch-scoped agent-browser flags after attaching to worker-owned Chrome");
   assert(workerSource.includes("await terminateBrowserProcess()"), "worker should await worker-owned Chrome teardown before profile cleanup");
   assert(workerSource.includes("Runtime profile cleanup skipped because isolated browser close did not complete"), "worker should not delete runtime profiles while its directly spawned browser may still be alive");
-  assert(workerSource.includes("browser.args cannot override oracle-managed Chrome launch isolation flag"), "worker should reject browser args that can override profile or DevTools isolation");
   assert(!workerSource.includes('[...browserBaseArgs(job, { withLaunchOptions: true, mode }), "open", url]'), "worker should not launch oracle browsers through agent-browser open with launch-scoped flags that conflict with unrelated sessions");
   assert(!runtimeSource.includes("assertNoForeignAgentBrowserSessions"), "submit preflight should not reject unrelated active agent-browser sessions now that worker-owned Chrome attach avoids global daemon takeover");
   assert(browserProfileHelpersSource.includes('readFileSync(localStatePath, "utf8")'), "browser profile helpers should read Chromium Local State as utf8 text directly");
@@ -6086,6 +6129,7 @@ async function runPlatformSanity(): Promise<void> {
   testAuthCookiePolicy();
   await testConfigRejectsPartialChromiumKeychain();
   await testConfigRejectsChromiumKeychainOffMac();
+  await testManagedBrowserConfigAndReadiness();
   await testChromiumCookieSourceReadsConfiguredKeychain();
   await testRuntimeConversationLeases(config);
   await testCleanupPendingRecoveryUnblocksAdmission(config);
@@ -6133,6 +6177,7 @@ async function main() {
   testAuthCookiePolicy();
   await testConfigRejectsPartialChromiumKeychain();
   await testConfigRejectsChromiumKeychainOffMac();
+  await testManagedBrowserConfigAndReadiness();
   await testChromiumCookieSourceReadsConfiguredKeychain();
   await testRuntimeConversationLeases(config);
   await testCleanupPendingRecoveryUnblocksAdmission(config);
