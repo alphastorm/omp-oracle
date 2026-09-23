@@ -309,6 +309,67 @@ to:
 preset "thinking_light"
 ```
 
+### Managed browser mode
+
+Changes that touch `browser.chatGptManagedProfileDir` (attach, keeper, sign-in, readiness) also get
+one run in that mode, through the Oh My Pi print-mode route above. The session gets its own state
+directory, which holds the keeper log and the profile lock, and a 15-second idle grace so the
+keeper's quit shows up while you watch:
+
+```bash
+set -euo pipefail
+
+REPO="$PWD"
+TEST_ROOT="/tmp/pi-oracle-managed-tests-$$"
+AGENT="$TEST_ROOT/agent"
+PROFILE="$TEST_ROOT/managed-profile"
+
+mkdir -p "$AGENT/extensions" "$TEST_ROOT/sessions" "$TEST_ROOT/jobs" "$TEST_ROOT/state" "$PROFILE"
+cp "<models.yml for the chosen model>" "$AGENT/models.yml"
+printf '{"browser":{"chatGptManagedProfileDir":"%s","args":["--disable-sync"]}}\n' "$PROFILE" > "$AGENT/extensions/oracle.json"
+
+PROMPT='Call oracle_preflight once for ChatGPT, then oracle_submit exactly once with prompt "Reply with exactly: MANAGED OK", files ["README.md"], preset "instant". Do not use bash. Report both results and one sentence of candid feedback on anything unclear or clunky.'
+env PI_CODING_AGENT_DIR="$AGENT" PI_ORACLE_JOBS_DIR="$TEST_ROOT/jobs" PI_ORACLE_STATE_DIR="$TEST_ROOT/state" \
+  PI_ORACLE_MANAGED_BROWSER_IDLE_MS=15000 PI_TELEMETRY=0 \
+  omp --standard --cwd "$REPO" -p --auto-approve --session-dir "$TEST_ROOT/sessions" \
+  --model <model id> --thinking low --no-extensions -e "$REPO/extensions/oracle/index.ts" "$PROMPT" < /dev/null
+```
+
+The empty profile is not signed in, so this run covers launch, attach, the per-command
+browser-identity checks, and the keeper without spending a ChatGPT response: the job fails at
+`verifying_auth` and asks you to rerun `/oracle-auth`. Running `oracle_auth` the same way opens a
+ChatGPT sign-in tab and says a person must sign in; close that tab afterwards, or the keeper keeps
+Chrome open for it.
+
+For a signed-in run, never point the session at a profile whose Chrome is serving live jobs, such
+as the Chrome behind your relay endpoint. Clone that profile into `$PROFILE` before running the
+session instead:
+
+```bash
+SIGNED_IN_PROFILE="<signed-in Chrome user-data directory>"
+rm -rf "$PROFILE"
+cp -c -R "$SIGNED_IN_PROFILE" "$PROFILE"
+# The live holder's singleton files would hand the launch to the running Chrome.
+rm -f "$PROFILE"/Singleton{Lock,Socket,Cookie} "$PROFILE/DevToolsActivePort"
+# A managed launch starts from a cleanly quit profile.
+node -e 'const fs = require("fs"), f = process.argv[1], p = JSON.parse(fs.readFileSync(f, "utf8")); p.profile = { ...p.profile, exit_type: "Normal", exited_cleanly: true }; fs.writeFileSync(f, JSON.stringify(p));' "$PROFILE/Default/Preferences"
+```
+
+The clone's cookies stay encrypted with this Mac's Chrome Safe Storage key, so it signs in only
+with the same Chrome on the same machine, and `--disable-sync` in the config keeps it from syncing
+as the live profile's Chrome client. Delete `$TEST_ROOT` afterwards: the clone holds session
+cookies.
+
+Expected results:
+
+- the worker log shows `Opened the managed ChatGPT browser at http://127.0.0.1:<port>` (`Reusing …`
+  when a Chrome started with `--remote-debugging-port=0` already serves the profile), and
+  `job.json` records that endpoint under `managedBrowser`
+- the signed-in job completes with the requested reply and no cleanup warnings
+- `$TEST_ROOT/state/managed-browser.log` shows `started Chrome`, then, about 15 seconds after the
+  last job and page are gone, `quit Chrome … with no job and no page` and `exited (exit code 0)`
+- `agent-browser session list` no longer lists the job's `runtimeSessionName`
+
 ### Cleanup
 
 The snippet already kills the temporary `tmux` sessions on exit.
