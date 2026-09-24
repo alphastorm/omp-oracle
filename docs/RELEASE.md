@@ -115,6 +115,50 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.1 (2026-09-24, `7c39d31`)
+
+- Scope: the composer hydration fix found by the operator's diligence pipeline (`76d27d0`,
+  verified red against the production error on the pre-fix worker and green after) and the
+  composer-proof endpoint requirement with its sanity rule against hardcoded browser endpoints
+  (`bb35a08`).
+- Live eight-preset ChatGPT proof accepted on `7c39d31` in one runner invocation, routed to the
+  diligence account with `PI_ORACLE_PROOF_RELAY=http://127.0.0.1:9333`: `pro_standard`
+  `9a05069b` 60 s, `pro_extended` `9f3e82fc` 58 s, `thinking_light` `6017462d` 50 s,
+  `thinking_standard` `cbbd9997` 43 s, `thinking_extended` `6fb020ef` 44 s, `thinking_heavy`
+  `b0846697` 51 s, `instant` `8416b15a` 43 s, `instant_auto_switch` `325cd63c` 44 s; all eight
+  completed with both markers. These are the composer fix's first live jobs.
+- Crabbox lanes on `7c39d31`: macOS `platform-build` PASS (52.8 s) and `real-extension` PASS
+  (6.2 s), Ubuntu `platform-build` PASS (38.1 s) and `real-extension` PASS (4.8 s);
+  `npm run release:check` passed as one composition on the same clean tree.
+- Published `omp-oracle@0.4.1` from `7c39d31` under the founder's authorization for the rollout.
+  The first `npm publish --ignore-scripts` expired waiting for the browser approval (npm's auth
+  poll returned `E404` after about five minutes; nothing was published); the second, started once
+  the founder was ready, completed in 18 s. Registry `gitHead`
+  `7c39d31e37a60363d6a9949fb3ad8a176de82464`, shasum `006f989f12b88d6b4d84bc51ed69dc1c44fdc015`,
+  85 files, `latest` (visible about 2.5 minutes after publish). Tag `v0.4.1` and the
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.1) name the same
+  commit. Installed with `omp plugin uninstall omp-oracle` and
+  `omp plugin install omp-oracle@0.4.1` (a real directory).
+- Managed-mode cutover of the operator's configuration: the `oracle-diligence-chrome` Hub process
+  (the 9333 relay Chrome) was stopped. Its stop killed the whole process tree (exit 143) and left
+  `exit_type: Crashed` plus a stale `SingletonLock` in the profile, so `exit_type` was reset to
+  `Normal` before the first managed launch. The agent-scope config (dotfiles-private `c6a9bfa`)
+  now sets `browser.chatGptManagedProfileDir` to the diligence profile in place of the relay
+  endpoint, and the diligence pipeline's dispatcher accepts the managed transport in its
+  preflight check (alpha-diligence `2269397`; isolated-seed and not-ready preflights are still
+  refused).
+- Managed-mode Deep Research on the operator's real configuration through that dispatcher (fresh
+  OMP session, installed 0.4.1): job `b1a51038` recorded `packageVersion 0.4.1` and the installed
+  path; Oracle opened the diligence Chrome (keeper-launched, DevTools on an ephemeral port),
+  armed frame capture before send, read the report from the widget, collected the native Markdown
+  export (1,618 bytes), and completed in 2.2 minutes with no cleanup warnings. Collection is
+  `partial` only for two optional frame-artifact candidates; nothing required was missing. The
+  dispatcher's `read` returned the complete job, and the keeper quit Chrome after the 120 s idle
+  grace (exit 0).
+- Not yet supported: the preset proof runner resolves only relay endpoints, and the operator no
+  longer has one, so the next release needs managed-profile support in the runner before its
+  proof.
+
 #### 0.4.0 (2026-09-24, `09d33f3`)
 
 - Scope: `browser.chatGptManagedProfileDir`, an opt-in managed ChatGPT browser (`4e376b0`), with
