@@ -8,9 +8,7 @@ history is kept below the divider.
 
 ### Fixed
 - a ChatGPT job could stop before inserting its prompt with `Could not clear ChatGPT composer draft; prompt was not inserted`. ChatGPT renders a fallback textbox before its editable composer hydrates, and the worker resolved the composer's accessibility reference before clearing, so it cleared and filled that stale fallback. The worker now waits up to 15 seconds for the visible, editable composer, clears and verifies any restored draft, and only then resolves the textbox it fills; a composer that never becomes editable still fails closed with the same error. Observed on an installed 0.3.4 Deep Research job, which failed before sending anything. `npm run proof:capture` runs the production composer writer through delayed hydration with a restored draft, a second replacement, and a noneditable composer
-
-### Changed
-- `scripts/oracle-composer-proof.mjs` accepts `ORACLE_COMPOSER_CDP_URL` to target a browser other than the default `http://127.0.0.1:9224`
+- `scripts/oracle-composer-proof.mjs` drove whichever browser listened on `http://127.0.0.1:9224`, the personal browser relay, unless `ORACLE_COMPOSER_CDP_URL` said otherwise: the silent default 0.3.3 removed from the preset proof runner. It now refuses to run without `ORACLE_COMPOSER_CDP_URL` and prints the endpoint before its first browser command, and the sanity harness fails on any maintained source that gives a browser endpoint a hardcoded loopback fallback
 
 ## 0.4.0 - 2026-09-24
 

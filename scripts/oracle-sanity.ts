@@ -6068,6 +6068,24 @@ async function testSanityRunnerIsolation(): Promise<void> {
   assert((await readFile(new URL("./oracle-sanity.ts", import.meta.url), "utf8")).includes("assertIsolatedSanityEnvironment();"), "sanity entrypoint should fail fast when invoked without isolated oracle temp dirs");
 }
 
+// A maintainer tool that falls back to a fixed loopback endpoint drives whichever signed-in browser
+// listens there: the preset proof runner (0.3.3) and the composer proof both defaulted to the
+// personal relay. Browser endpoints come from configuration or an explicit variable, never a fallback.
+async function testMaintainedSourcesNeverDefaultToABrowserEndpoint(): Promise<void> {
+  const loopbackDefault = /(?:\|\||\?\?|=)\s*["'`](?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d/;
+  const offenders: string[] = [];
+  for (const dir of ["scripts", "extensions"]) {
+    const root = new URL(`../${dir}/`, import.meta.url);
+    for (const entry of await readdir(root, { recursive: true })) {
+      const relative = entry.replaceAll("\\", "/");
+      if (!/\.[cm]?[jt]s$/.test(relative) || relative.includes("node_modules/")) continue;
+      const lines = (await readFile(new URL(relative, root), "utf8")).split("\n");
+      lines.forEach((line, index) => { if (loopbackDefault.test(line)) offenders.push(`${dir}/${relative}:${index + 1}`); });
+    }
+  }
+  assert(offenders.length === 0, `maintained sources must not fall back to a fixed loopback browser endpoint: ${offenders.join(", ")}`);
+}
+
 function testResponseChrome(): void {
   assert(stripChatGptResponseChrome("Stopped thinking\nAnswer body\nDo you like this personality?\n") === "Answer body", "Response chrome must not contaminate the answer");
 }
@@ -6264,6 +6282,7 @@ async function main() {
   await testArchiveOversizeErrorExplainsRetryPlan();
   sanityProgress("shared/helper suites");
   await testSanityRunnerIsolation();
+  await testMaintainedSourcesNeverDefaultToABrowserEndpoint();
   testDurableWorkerHandoff();
   testSharedJobCoordinationHelpers();
   await testSharedProcessHelpers();
