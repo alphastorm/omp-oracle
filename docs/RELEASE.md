@@ -59,7 +59,7 @@ Before a release, run live jobs through the loaded extension for every ChatGPT p
 `ORACLE_SUBMIT_PRESETS`. Each prompt must make the saved response contain the exact markers
 `PRESET <preset> OK` and `PACKAGE omp-oracle`. The runner submits one such job per canonical
 preset from isolated OMP print-mode sessions (isolated agent dir, sessions, jobs, and state under
-`/tmp/omp-oracle-proof`; relay transport; this checkout's extension source), waits for each to
+`/tmp/omp-oracle-proof`; the operator's ChatGPT transport; this checkout's extension source), waits for each to
 complete, writes `.artifacts/chatgpt-preset-proof/latest.json`, and runs the checker:
 
 ```bash
@@ -69,15 +69,18 @@ PI_ORACLE_PROOF_MODEL=<omp model id> PI_ORACLE_PROOF_MODELS_YML=<models.yml for 
 
 `PI_ORACLE_PROOF_MODEL` is the model the isolated session uses to call `oracle_submit` (a zero-cost
 local model is fine); its `models.yml` is copied into the isolated agent dir because that dir has no
-other configuration. The relay endpoint selects the signed-in Chrome, i.e. the ChatGPT account the
+other configuration. The transport selects the signed-in Chrome, i.e. the ChatGPT account the
 eight live jobs consume, so it has no default: the runner takes `PI_ORACLE_PROOF_RELAY` when set and
-otherwise `browser.chatGptRelayEndpoint` from the operator's agent-scope config
-(`$PI_CODING_AGENT_DIR/extensions/oracle.json`, default `~/.omp/agent/extensions/oracle.json`),
-the same account the operator's real jobs use; it prints the resolved endpoint and its source
-before the first submit and refuses to run when neither is set. `--dry-run` resolves everything and
-prints the plan without submitting. Pass preset ids as arguments to rerun a subset; a partial rerun
-keeps the other presets' entries from the existing proof file. The manual equivalent starts from
-the checked, intentionally non-valid template:
+otherwise the operator's agent-scope config (`$PI_CODING_AGENT_DIR/extensions/oracle.json`, default
+`~/.omp/agent/extensions/oracle.json`), the same account the operator's real jobs use: its
+`browser.chatGptRelayEndpoint`, or its `browser.chatGptManagedProfileDir`, which the isolated
+sessions then open like any managed-browser job. It prints the resolved transport, its source, and
+the exact isolated config before the first submit, and refuses to run when the config names
+neither. A managed-profile proof keeps its own state directory, so its keeper does not see the
+operator's leases; run it while the operator's own jobs are idle, as with the relay. `--dry-run`
+resolves everything and prints the plan without submitting. Pass preset ids as arguments to rerun a
+subset; a partial rerun keeps the other presets' entries from the existing proof file. The manual
+equivalent starts from the checked, intentionally non-valid template:
 
 ```bash
 mkdir -p .artifacts/chatgpt-preset-proof

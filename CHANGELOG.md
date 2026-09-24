@@ -4,6 +4,11 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+- the preset proof runner read only `browser.chatGptRelayEndpoint`, so with the operator on the managed browser it refused to run. It now follows the operator's own ChatGPT transport: an explicit `PI_ORACLE_PROOF_RELAY`, otherwise the config's relay endpoint or its `browser.chatGptManagedProfileDir`, and it still refuses when the config names neither. The runner prints the exact isolated config its sessions load before the first submit
+
 ## 0.4.1 - 2026-09-24
 
 ### Fixed

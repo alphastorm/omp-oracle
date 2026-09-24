@@ -6086,6 +6086,43 @@ async function testMaintainedSourcesNeverDefaultToABrowserEndpoint(): Promise<vo
   assert(offenders.length === 0, `maintained sources must not fall back to a fixed loopback browser endpoint: ${offenders.join(", ")}`);
 }
 
+// The preset proof spends live jobs on whichever account its transport reaches, so the runner takes
+// the operator's own transport (relay or managed profile), lets an explicit relay override it, and
+// refuses rather than guess. The dry run prints the exact isolated config the jobs would load.
+async function testPresetProofRunnerFollowsTheOperatorTransport(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-proof-transport-"));
+  try {
+    const agentDir = join(fixtureDir, "agent");
+    await mkdir(join(agentDir, "extensions"), { recursive: true });
+    const configPath = join(agentDir, "extensions", "oracle.json");
+    const modelsYml = join(fixtureDir, "models.yml");
+    await writeFile(modelsYml, "providers: {}\n");
+    const dryRun = async (browser: Record<string, string> | undefined, relay = "") => {
+      if (browser) await writeFile(configPath, JSON.stringify({ browser }));
+      else await rm(configPath, { force: true });
+      return await runProcess(process.execPath, ["scripts/oracle-chatgpt-preset-proof-run.mjs", "--dry-run"], {
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_ORACLE_PROOF_MODEL: "sanity/model", PI_ORACLE_PROOF_MODELS_YML: modelsYml, PI_ORACLE_PROOF_RELAY: relay },
+        timeoutMs: 20_000,
+      });
+    };
+    const managed = await dryRun({ chatGptManagedProfileDir: "/tmp/oracle-sanity-managed-profile" });
+    assert(managed.code === 0 && managed.stdout.includes('Isolated config: {"browser":{"chatGptManagedProfileDir":"/tmp/oracle-sanity-managed-profile"}}'),
+      `the proof runner should run through the operator's managed browser profile: ${managed.stdout}${managed.stderr}`);
+    const relay = await dryRun({ chatGptRelayEndpoint: "http://127.0.0.1:9333" });
+    assert(relay.code === 0 && relay.stdout.includes('Isolated config: {"browser":{"chatGptRelayEndpoint":"http://127.0.0.1:9333"}}'),
+      `the proof runner should run through the operator's relay endpoint: ${relay.stdout}${relay.stderr}`);
+    const override = await dryRun({ chatGptManagedProfileDir: "/tmp/oracle-sanity-managed-profile" }, "http://127.0.0.1:9444");
+    assert(override.code === 0 && override.stdout.includes('Isolated config: {"browser":{"chatGptRelayEndpoint":"http://127.0.0.1:9444"}}'),
+      `an explicit PI_ORACLE_PROOF_RELAY should win over the operator's config: ${override.stdout}${override.stderr}`);
+    const neither = await dryRun({});
+    assert(neither.code !== 0 && !neither.stdout.includes("Isolated config:"), "the proof runner should refuse when the operator config names no ChatGPT transport");
+    const missing = await dryRun(undefined);
+    assert(missing.code !== 0 && !missing.stdout.includes("Isolated config:"), "the proof runner should refuse when there is no operator config");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 function testResponseChrome(): void {
   assert(stripChatGptResponseChrome("Stopped thinking\nAnswer body\nDo you like this personality?\n") === "Answer body", "Response chrome must not contaminate the answer");
 }
@@ -6283,6 +6320,7 @@ async function main() {
   sanityProgress("shared/helper suites");
   await testSanityRunnerIsolation();
   await testMaintainedSourcesNeverDefaultToABrowserEndpoint();
+  await testPresetProofRunnerFollowsTheOperatorTransport();
   testDurableWorkerHandoff();
   testSharedJobCoordinationHelpers();
   await testSharedProcessHelpers();
