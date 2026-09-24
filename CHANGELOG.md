@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.4.1 - 2026-09-24
 
 ### Fixed
 - a ChatGPT job could stop before inserting its prompt with `Could not clear ChatGPT composer draft; prompt was not inserted`. ChatGPT renders a fallback textbox before its editable composer hydrates, and the worker resolved the composer's accessibility reference before clearing, so it cleared and filled that stale fallback. The worker now waits up to 15 seconds for the visible, editable composer, clears and verifies any restored draft, and only then resolves the textbox it fills; a composer that never becomes editable still fails closed with the same error. Observed on an installed 0.3.4 Deep Research job, which failed before sending anything. `npm run proof:capture` runs the production composer writer through delayed hydration with a restored draft, a second replacement, and a noneditable composer
