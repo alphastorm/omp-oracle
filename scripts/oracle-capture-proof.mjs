@@ -276,7 +276,54 @@ document.querySelector('button').onclick = () => setTimeout(() => { const option
   } finally {
     fixture.close();
   }
-  console.log(JSON.stringify({ status: 'passed', syntheticOnly: true, exactCode: true, richDom: true, genericDownload: true, frameExport: true, hostDelegatedNativeExport: true, idempotentCollection: true, partialPreserved: true, oldTurnClicks: 0, sends: 0 }));
+  // The shell exposes a fallback textbox before the real editor hydrates.
+  // Run the actual prompt writer against that predecessor state in owned Chromium.
+  {
+    const composerNames = new Set(['setComposerText', 'toJsonScript', 'toAsyncJsonScript']);
+    const composerDeclarations = tree.statements.filter(node => ts.isFunctionDeclaration(node) && composerNames.has(node.name?.text));
+    assert.equal(composerDeclarations.length, composerNames.size);
+    const writeComposer = new Function('evalPage', 'snapshotText', 'findEntry', 'isGrokJob', 'labelsForJob', 'agentBrowser',
+      composerDeclarations.map(node => node.getText(tree)).join('\n') + '\nreturn setComposerText;')(
+      async (_job, expression) => JSON.parse(await evaluate(
+        `(async () => {
+          if (window.hydrateOnComposerRead) {
+            window.hydrateOnComposerRead = false;
+            setTimeout(() => {
+              const editor = document.createElement('div');
+              editor.id = 'prompt-textarea'; editor.contentEditable = 'true';
+              editor.textContent = 'PREVIOUS OWNED DRAFT';
+              document.querySelector('textarea').replaceWith(editor);
+            }, 50);
+          }
+          return await (` + expression + `);
+        })()`)),
+      async () => evaluate(`[{kind:'textbox', label:'Chat with ChatGPT', ref:document.querySelector('#prompt-textarea') ? 'editor' : 'fallback'}]`),
+      (entries, predicate) => entries.find(predicate), () => false,
+      () => ({composer:'Chat with ChatGPT'}),
+      async (_job, command, ref, text) => {
+        assert.equal(command, 'fill');
+        await evaluate(`(() => {
+          const editor = document.querySelector(` + JSON.stringify(ref === 'editor' ? '#prompt-textarea' : 'textarea') + `);
+          if (!editor?.isContentEditable) throw new Error('Stale fallback textbox reference');
+          editor.focus(); document.execCommand('insertText', false, ` + JSON.stringify(text) + `);
+        })()`);
+      },
+    );
+    await evaluate(`document.body.innerHTML='<textarea aria-label="Chat with ChatGPT">PREVIOUS OWNED DRAFT</textarea>';window.hydrateOnComposerRead=true;`);
+    await writeComposer({}, 'ONLY THE NEW PROMPT');
+    assert.equal(await evaluate("document.querySelector('#prompt-textarea').innerText"), 'ONLY THE NEW PROMPT');
+    await writeComposer({}, 'SECOND REPLACEMENT');
+    assert.equal(await evaluate("document.querySelector('#prompt-textarea').innerText"), 'SECOND REPLACEMENT');
+    // A noneditable replacement must time out without altering or filling it.
+    await evaluate("document.querySelector('#prompt-textarea').contentEditable='false';window.realDateNow=Date.now;let clock=0;Date.now=()=>clock+=20000;");
+    try {
+      await assert.rejects(writeComposer({}, 'MUST NOT BE INSERTED'), /Could not clear ChatGPT composer draft/);
+      assert.equal(await evaluate("document.querySelector('#prompt-textarea').innerText"), 'SECOND REPLACEMENT');
+    } finally {
+      await evaluate('Date.now=window.realDateNow;');
+    }
+  }
+  console.log(JSON.stringify({ status: 'passed', syntheticOnly: true, exactCode: true, richDom: true, genericDownload: true, frameExport: true, hostDelegatedNativeExport: true, idempotentCollection: true, partialPreserved: true, composerHydration: true, restoredDraftReplacement: true, oldTurnClicks: 0, sends: 0 }));
 } finally {
   cdp?.close();
   processHandle.kill('SIGTERM');

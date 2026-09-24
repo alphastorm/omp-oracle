@@ -1091,14 +1091,17 @@ async function setComposerText(job, text) {
     if (!result?.ok) throw new Error("Could not find Grok composer textbox");
     return;
   }
-  const snapshot = await snapshotText(job);
-  const labels = labelsForJob(job);
-  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === labels.composer);
-  if (!entry) throw new Error("Could not find ChatGPT composer textbox");
   // Keyboard select-all can miss a large restored draft; fill then appends to it.
   // Use the editor's native editing commands and verify clearing before insertion.
-  const cleared = await evalPage(job, toJsonScript(`
-    const el = document.querySelector('#prompt-textarea');
+  const cleared = await evalPage(job, toAsyncJsonScript(`
+    // The accessible fallback textarea can precede the hydrated editable editor.
+    const timeoutAt = Date.now() + 15_000;
+    let el;
+    while (Date.now() < timeoutAt) {
+      el = document.querySelector('#prompt-textarea');
+      if (el?.isContentEditable && el.getClientRects().length) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     if (!el?.isContentEditable) return false;
     el.focus();
     if (document.activeElement !== el) return false;
@@ -1107,6 +1110,11 @@ async function setComposerText(job, text) {
     return !el.innerText.trim();
   `));
   if (!cleared) throw new Error("Could not clear ChatGPT composer draft; prompt was not inserted");
+  // Resolve the textbox only after hydration; the old fallback reference is stale.
+  const snapshot = await snapshotText(job);
+  const labels = labelsForJob(job);
+  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === labels.composer);
+  if (!entry) throw new Error("Could not find ChatGPT composer textbox");
   await agentBrowser(job, "fill", entry.ref, text);
 }
 

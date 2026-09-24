@@ -2,6 +2,7 @@
 // Exercise actual worker functions on an explicitly owned ChatGPT tab; never send.
 // Usage: node scripts/oracle-composer-proof.mjs SESSION TARGET [DRAFT] [EXISTING_DRAFT]
 // Add --research-tool to prove fill -> Deep Research selection, retaining the tab for inspection.
+// ORACLE_COMPOSER_CDP_URL selects an explicit endpoint (default: http://127.0.0.1:9224).
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -12,7 +13,7 @@ import { isDeepResearchMenuEntry, snapshotHasDeepResearchPill } from '../extensi
 const researchTool = process.argv.includes('--research-tool');
 const [session, target, draftFile, existingDraftFile] = process.argv.slice(2).filter(v => v !== '--research-tool');
 assert(session && target, 'Supply an existing pinned diagnostic session and its owned target ID');
-const prefix = ['--session', session, '--cdp', 'http://127.0.0.1:9224', '--pin-tab'];
+const prefix = ['--session', session, '--cdp', process.env.ORACLE_COMPOSER_CDP_URL || 'http://127.0.0.1:9224', '--pin-tab'];
 const binary = process.env.AGENT_BROWSER_PATH || '/opt/homebrew/bin/agent-browser';
 const run = (args, input) => execFileSync(binary, [...prefix, ...args], {
   encoding: 'utf8', input, timeout: 35000, maxBuffer: 4 * 1024 * 1024,
