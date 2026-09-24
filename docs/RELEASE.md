@@ -115,6 +115,54 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.0 (2026-09-24, `09d33f3`)
+
+- Scope: `browser.chatGptManagedProfileDir`, an opt-in managed ChatGPT browser (`4e376b0`), with
+  the focused cross-family review's findings closed (`86e76fb`: a per-command browser-identity
+  recheck with a sticky `managed_browser_changed` verdict, canonical profile keys, Grok-seed
+  separation, and the `-switch`/`/switch` launch-flag guard bypass, which also reached isolated
+  launches); relay readiness that names an unreachable endpoint and follows its recovery
+  (`572e4a6`); and the managed smoke recipe in the test plan (`ab0ea57`).
+- Managed-mode live proof before release, from source in isolated sessions: launch, reuse of an
+  operator-opened Chrome, sign-in, and idle quit on the diligence profile (`4e376b0`);
+  port-takeover tracers with a real replacement browser ending in `managed_browser_changed` in
+  2.0 s (readiness loop) and 25.1 s (in-flight navigation); and a signed-in Instant job
+  `99598637` on an APFS clone of the diligence profile, complete in 35 s on `86e76fb`, with the
+  keeper quitting Chrome 15 s after the job.
+- Live eight-preset ChatGPT proof accepted on `09d33f3`, routed to the diligence account with
+  `PI_ORACLE_PROOF_RELAY=http://127.0.0.1:9333`: `pro_standard` `aa666210` 61 s, `pro_extended`
+  `ae1aea20` 55 s, `thinking_light` `65b89ad7` 45 s, `thinking_standard` `eaf65ac7` 48 s,
+  `thinking_extended` `4c4b98fa` (167 s from job creation), `thinking_heavy` `38ababf3` 43 s,
+  `instant` `efa5a896` 43 s, `instant_auto_switch` `1602f216` 45 s; all eight completed with both
+  markers. The first runner invocation was killed by the operator shell's 300-second deadline
+  after four presets, with `thinking_extended` in flight; that job completed on its own, the five
+  completed jobs seeded the proof file, and a partial rerun supplied the other three, so the
+  checker validated every entry from disk. The proof shared the dedicated Chrome with the
+  operator's diligence pipeline: pipeline Deep Research attempt `29cba501` (installed 0.3.4)
+  started during it and failed before insertion on the composer hydration race fixed after this
+  release (`76d27d0`).
+- Crabbox lanes on `09d33f3`: macOS `platform-build` PASS (52.6 s) and `real-extension` PASS
+  (7.5 s), Ubuntu `platform-build` PASS (44.9 s) and `real-extension` PASS (7.2 s). The first
+  `release:check` stopped at the doctor because the Ubuntu image
+  `omp-oracle-platform-smoke:node24` had been pruned; after the documented `docker build` (8 s
+  from cache), `npm run release:check` passed as one composition on the same clean tree.
+- Published `omp-oracle@0.4.0` from `09d33f3` by the agent under explicit founder authorization.
+  The stored registry token answered 401, so `npm login --auth-type=web` and then
+  `npm publish --ignore-scripts` ran as supervised PTY processes and the founder completed both
+  browser approvals. Registry `gitHead` `09d33f37700ecb6a549054539e22f9542d57a7ee`, shasum
+  `58bd3c8de2f06d2afe80b4e771f72b12cf1d9767`, 85 files, `latest` (visible within about a minute).
+  Tag `v0.4.0` and the [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.0)
+  name the same commit.
+- Installed on Oh My Pi 18.2.11 with `omp plugin uninstall omp-oracle` and
+  `omp plugin install omp-oracle@0.4.0` (`~/.omp/plugins/node_modules/omp-oracle`, a real
+  directory); the operator's configuration stayed on the 9333 relay. Installed-package jobs from
+  the operator's diligence pipeline then ran through it, each recording `packageVersion 0.4.0` and
+  the installed path: Instant `689ce19f` complete, Deep Research `3bfccbb4` complete in 17 minutes
+  with a 43,862-character report (collection `partial`: optional `native_markdown_export` and one
+  frame artifact missing, nothing required), and Pro `d7ae3b35` still generating at this entry.
+- Not yet run: the managed-mode cutover of the operator's configuration and a managed-mode Deep
+  Research job; both wait for the diligence pipeline to be idle.
+
 #### 0.3.4 (2026-09-21, `302eeee`)
 
 - Scope: a second debt/perf pass on the clean `0.3.3` tree. `sha256File` read the whole archive
