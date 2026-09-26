@@ -6,6 +6,9 @@ history is kept below the divider.
 
 ## Unreleased
 
+### Added
+- brand assets at parity with the sibling OMP projects, specified in `docs/BRANDING.md`: the Lens mark for dark and light backgrounds, a favicon, and banner and social-preview sources in `assets/` with their renders, regenerated and checked by `npm run render:assets`. The site now shows the mark, takes the Answer rose accent, names `og.png` as a large social card, and ships `robots.txt`, `sitemap.xml`, and `llms.txt`; the Pages deploy stages the mark, favicon, and preview from `assets/` instead of keeping copies in `site/`. `npm run test:site`, now part of the local gate, fails when a site page references an asset the deployment would not serve, when a staged asset's source could change without redeploying, when the declared preview size disagrees with `og.png`, or when the sitemap and canonical links drift. The repository's GitHub social preview is uploaded by hand from `assets/og.png`
+
 ### Fixed
 - the preset proof runner read only `browser.chatGptRelayEndpoint`, so with the operator on the managed browser it refused to run. It now follows the operator's own ChatGPT transport: an explicit `PI_ORACLE_PROOF_RELAY`, otherwise the config's relay endpoint or its `browser.chatGptManagedProfileDir`, and it still refuses when the config names neither. The runner prints the exact isolated config its sessions load before the first submit
 

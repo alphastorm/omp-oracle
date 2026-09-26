@@ -14,9 +14,9 @@ behavior claims are proven, not described.
 ## What a change needs
 
 1. **The local gate.** `npm run verify:oracle` runs syntax and bundle checks, helper unit tests,
-   both typechecks, the sanity harness, and `npm pack --dry-run`. The sanity harness also pins
-   documentation contracts; if you change a command, tool, limit, or preset, update `README.md`
-   and the relevant `docs/` page in the same change.
+   the site coherence test, both typechecks, the sanity harness, and `npm pack --dry-run`. The
+   sanity harness also pins documentation contracts; if you change a command, tool, limit, or
+   preset, update `README.md` and the relevant `docs/` page in the same change.
 2. **An isolated-session smoke** for code changes, following
    [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md): load the local extension in an isolated session,
    exercise the changed path, and record what you saw. Use the `instant` or `thinking_light`

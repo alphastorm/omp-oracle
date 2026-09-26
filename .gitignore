@@ -13,3 +13,8 @@ review.md
 
 # CueLoop local/runtime state (do not commit)
 .cueloop/
+
+# Staged into site/ from assets/ by .github/workflows/pages.yml; never commit copies.
+site/logo.svg
+site/favicon.svg
+site/og.png

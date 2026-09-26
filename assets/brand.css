@@ -1,0 +1,80 @@
+/* OMP Oracle exported-artwork tokens (docs/BRANDING.md). Artwork only: the public site and any
+   runtime surface use system font stacks and never load this file or its webfonts. */
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap");
+
+:root {
+  --ground: #060809;
+  --ink-dark: #0B0E11;
+  --ink: #E8ECEF;
+  --body: #B6BEC7;
+  --muted: #8A939D;
+  --line: rgba(232, 236, 239, 0.10);
+  --line-strong: rgba(232, 236, 239, 0.22);
+  --answer: #DE82B7;
+  --answer-glow: rgba(222, 130, 183, 0.18);
+  --kinship: #F97316;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+.canvas { position: relative; overflow: hidden; isolation: isolate; background: var(--ground); }
+.canvas::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  opacity: 0.5;
+  background-image:
+    linear-gradient(rgba(232, 236, 239, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232, 236, 239, 0.025) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+.canvas::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  z-index: -1;
+  background: linear-gradient(90deg, transparent, rgba(222, 130, 183, 0.4), transparent);
+}
+
+.mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+.eyebrow {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-name { font-size: 21px; font-weight: 600; letter-spacing: -.015em; }
+.brand-rule { width: 1px; height: 20px; background: var(--line-strong); }
+
+/* The mark at illustration scale: the canonical logo.svg over a soft answer-rose glow at its dot. */
+.lens { position: relative; justify-self: center; }
+.lens img { display: block; width: 100%; height: 100%; }
+.lens::before {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  z-index: -1;
+  background:
+    radial-gradient(circle, rgba(222, 130, 183, 0.34) 0%, transparent 16%),
+    radial-gradient(circle, var(--answer-glow) 0%, transparent 60%);
+}
+
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--answer); }
+/* Kinship: upstream orange, at most once per surface, only beside an Oh My Pi mention. */
+.kin { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--kinship); }

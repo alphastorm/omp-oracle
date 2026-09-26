@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="OMP Oracle">
+  <rect x="12" y="16" width="10" height="64" rx="2" fill="#E8ECEF"></rect>
+  <rect x="12" y="16" width="22" height="10" rx="2" fill="#E8ECEF"></rect>
+  <rect x="12" y="70" width="22" height="10" rx="2" fill="#E8ECEF"></rect>
+  <rect x="74" y="16" width="10" height="64" rx="2" fill="#E8ECEF"></rect>
+  <rect x="62" y="16" width="22" height="10" rx="2" fill="#E8ECEF"></rect>
+  <rect x="62" y="70" width="22" height="10" rx="2" fill="#E8ECEF"></rect>
+  <circle cx="48" cy="48" r="8" fill="#DE82B7"></circle>
+</svg>

@@ -1,0 +1,40 @@
+# OMP Oracle
+
+> Extension for Oh My Pi (OMP) and pi that sends hard, long-running work to ChatGPT or Grok through
+> the web app. `/oracle` packs a context-rich archive of the repository, hands it with the prompt to
+> the selected provider in an isolated browser session, and returns immediately. The answer is saved
+> to disk, and the session that asked gets one best-effort wake-up when it lands. Uses the operator's
+> own ChatGPT or Grok subscription, not an API key. Experimental public beta. Community project; not
+> affiliated with or endorsed by the Oh My Pi maintainers, the pi-oracle maintainer, OpenAI, or xAI.
+
+## Install
+
+- Oh My Pi: `omp install omp-oracle`. pi: `pi install npm:omp-oracle`.
+- `omp-oracle` is this fork's npm package. `pi-oracle` on npm is the upstream package, does not carry
+  the fork's changes, and must not stay installed alongside it.
+
+## Boundaries
+
+- Per job, exactly two things leave the machine, under the operator's own account: the prompt and one
+  project archive (`.tar.zst` for ChatGPT up to 250 MiB, `.tar.gz` for Grok up to 200 MiB).
+- Archive inputs must resolve inside the project without symlink escapes; `.git`, tool state,
+  `secrets/`, `.env*`, keys, and databases are excluded by default.
+- The operator's real browser profile is read for cookies once, read-only, and never automated by
+  default; driving a signed-in Chrome through the relay is opt-in.
+- No telemetry and no hosted control plane. A single-operator local tool, not a hosted, multi-user, or
+  API-key route.
+
+## Canonical documents
+
+- [README](https://github.com/alphastorm/omp-oracle#readme): what a run looks like, install, commands, tools, configuration
+- [Architecture](https://github.com/alphastorm/omp-oracle/blob/main/docs/ARCHITECTURE.md): design source of truth
+- [Security](https://github.com/alphastorm/omp-oracle/blob/main/docs/SECURITY.md): what leaves the machine, provider credentials, trust boundaries
+- [Compatibility](https://github.com/alphastorm/omp-oracle/blob/main/docs/COMPATIBILITY.md): exact support and limits
+- [Operations](https://github.com/alphastorm/omp-oracle/blob/main/docs/OPERATIONS.md): config files, auth transports, job outputs, troubleshooting
+- [Release](https://github.com/alphastorm/omp-oracle/blob/main/docs/RELEASE.md): release flow and evidence ledger
+- [Upstream](https://github.com/alphastorm/omp-oracle/blob/main/docs/UPSTREAM.md): relationship to fitchmultz/pi-oracle
+- [Changelog](https://github.com/alphastorm/omp-oracle/blob/main/CHANGELOG.md)
+
+## Web pages
+
+- [Overview](https://alphastorm.github.io/omp-oracle/)

@@ -10,7 +10,8 @@ This file contains project-specific guidance for this repository.
 - `prompts/` contains the `/oracle` and `/oracle-followup` prompt templates.
 - `scripts/oracle-sanity.ts` is the main regression/source-contract sanity harness; it also pins documentation contracts in `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, and `docs/TEST_PLAN.md`. `npm run verify:oracle` is the local full gate.
 - `README.md` is the user-facing entry point. `docs/ARCHITECTURE.md` is the durable design source of truth; `docs/SECURITY.md`, `docs/COMPATIBILITY.md`, `docs/OPERATIONS.md`, `docs/TEST_PLAN.md`, `docs/PLATFORM_SMOKE.md`, `docs/RELEASE.md`, and `docs/UPSTREAM.md` follow the layout of the other `omp-*` repositories.
-- `site/` is the GitHub Pages source; `.github/workflows/` holds the CI local gate and the Pages deploy.
+- `site/` is the GitHub Pages source; `.github/workflows/` holds the CI local gate and the Pages deploy, which stages the site's mark, favicon, and social preview from `assets/` so `site/` never carries copies.
+- `assets/` holds the canonical brand mark, favicon, and the editable banner and social-preview HTML sources with their PNG renders (`npm run render:assets`). `docs/BRANDING.md` is the brand source of truth.
 
 ## Naming
 - The npm package is `omp-oracle`; `pi-oracle` on npm is the upstream package and must not be presented as an install path for this fork.

@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - site/**
+      - assets/logo.svg
+      - assets/favicon.svg
+      - assets/og.png
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -27,6 +30,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The site carries no copies of brand assets; stage each from its canonical source so a brand
+      # refresh cannot leave the site stale. One `cp <source> site/<name>` per asset:
+      # scripts/site-coherence.test.mjs reads this list, and .gitignore ignores the staged copies.
+      - name: Stage canonical brand assets
+        run: |
+          cp assets/logo.svg site/logo.svg
+          cp assets/favicon.svg site/favicon.svg
+          cp assets/og.png site/og.png
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

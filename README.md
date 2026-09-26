@@ -1,5 +1,11 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
+  <img src="assets/logo-light.svg" alt="" width="72" height="72">
+</picture>
+
 # OMP Oracle
 
 **Send the hard question to ChatGPT or Grok. Keep working. Read the answer when it lands.**
@@ -443,6 +449,7 @@ npm run verify:oracle        # everyday local gate; `npm test` is an alias
 | Platform matrix proof | `npm run smoke:platform:all` |
 | ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` |
 | Publish/release gate | `npm run release:check` |
+| Brand artwork, after editing `assets/*.html` | `npm run render:assets`, then `npm run render:assets -- --check` |
 
 `npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`: the local gate,
 fresh live ChatGPT preset proof for every canonical model preset (the eight non-tool presets; `deep_research` is excluded), then doctor-first macOS and Ubuntu
@@ -463,8 +470,9 @@ recovery drill are in the [test plan](docs/TEST_PLAN.md); the Crabbox gate is in
 | [`prompts/oracle-followup.md`](prompts/oracle-followup.md) | Hidden `/oracle-followup` command-dispatch workflow |
 | `scripts/oracle-sanity*` | Local sanity harness, including documentation contracts |
 | `scripts/platform-smoke*` | Crabbox macOS, Ubuntu, and Windows release smoke gate |
-| `site/` | Public website source |
-| `docs/` | [Architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY.md), [compatibility](docs/COMPATIBILITY.md), [operations](docs/OPERATIONS.md), [test plan](docs/TEST_PLAN.md), [platform smoke](docs/PLATFORM_SMOKE.md), [release](docs/RELEASE.md), [upstream](docs/UPSTREAM.md) |
+| `site/` | Public website source; the Pages deploy stages its mark, favicon, and social preview from `assets/` |
+| `assets/` | Brand mark, favicon, and the banner and social-preview sources with their renders ([branding](docs/BRANDING.md)) |
+| `docs/` | [Architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY.md), [compatibility](docs/COMPATIBILITY.md), [operations](docs/OPERATIONS.md), [test plan](docs/TEST_PLAN.md), [platform smoke](docs/PLATFORM_SMOKE.md), [release](docs/RELEASE.md), [upstream](docs/UPSTREAM.md), [branding](docs/BRANDING.md) |
 
 ## Contributing and releases
 
