@@ -52,7 +52,7 @@ import {
   stripChatGptResponseChrome,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
-import { assistantSnapshotSlice, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
+import { composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
 import {
   buildConversationLeaseMetadata,
   buildRuntimeLeaseMetadata,
@@ -5959,20 +5959,18 @@ function testChatGptFlowHelpers(): void {
   const uploadName = "context-upload.tar.zst";
   const longComposer = `- textbox "Chat with ChatGPT" [ref=e1]: ${uploadName}\n${"case evidence\n".repeat(100)}`;
   const completedUpload = `${longComposer}\n- button "Send prompt" [ref=e2]\n- button "${uploadName}" [ref=e3]`;
-  assert(composerFileEntryCount(completedUpload, uploadName, "Chat with ChatGPT") === 1, "multiline prompt text must not hide a completed attachment");
-  assert(composerFileEntryCount(longComposer, uploadName, "Chat with ChatGPT") === 0, "mentioning a filename in the prompt is not an attachment");
-  assert(composerFileEntryCount(`- button "${uploadName}" [ref=e1]`, uploadName, "Chat with ChatGPT") === 0, "a file outside an identified composer must not confirm an upload");
-  const snapshot = [
-    '- heading "ChatGPT said:" [level=2, ref=e1]',
-    '- paragraph [ref=e2]: First answer',
-    '- heading "ChatGPT said:" [level=2, ref=e3]',
-    '- paragraph [ref=e4]: Second answer',
-    '- textbox "Chat with ChatGPT" [ref=e5]',
+  assert(composerFileEntryCount(completedUpload, uploadName) === 1, "multiline prompt text must not hide a completed attachment");
+  assert(composerFileEntryCount(longComposer, uploadName) === 0, "mentioning a filename in the prompt is not an attachment");
+  assert(composerFileEntryCount(`- button "${uploadName}" [ref=e1]`, uploadName) === 0, "a file outside an identified composer must not confirm an upload");
+  // Observed 2026-09-29: the current composer shows a pending attachment only as its remove control.
+  const currentShellUpload = [
+    `- button "Remove ${uploadName}" [ref=e83]`,
+    `- textbox "Ask ChatGPT" [ref=e84]: ${uploadName}`,
+    '- button "Add files and more" [expanded=false, ref=e85]',
+    '- button "Send" [ref=e88]',
   ].join("\n");
-  assert(
-    assistantSnapshotSlice(snapshot, "Chat with ChatGPT", 1)?.includes("Second answer"),
-    "conversation helpers should isolate the requested assistant snapshot slice",
-  );
+  assert(composerFileEntryCount(currentShellUpload, uploadName) === 1, "the current composer's remove control confirms a pending attachment");
+  assert(!isConversationPathUrl("https://chatgpt.com/c/local-chatgpt%3A74e48caf-e71d-45ac-bd11-6e2d151ddf3d"), "the optimistic local URL of a just-sent chat is not a stable conversation identity");
   assert(stripUrlQueryAndHash("https://chatgpt.com/c/abc?model=gpt#section") === "https://chatgpt.com/c/abc", "conversation helpers should strip query/hash components from ChatGPT URLs");
   assert(isConversationPathUrl("https://chatgpt.com/c/abc-123"), "conversation helpers should recognize ChatGPT conversation URLs");
   assert(isConversationPathUrl("https://grok.com/chat/abc-123"), "conversation helpers should recognize Grok conversation URLs");

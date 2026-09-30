@@ -16,7 +16,7 @@ import { sleep } from "../shared/time-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
-import { buildAllowedChatGptOrigins } from "./chatgpt-ui-helpers.mjs";
+import { buildAllowedChatGptOrigins, CHATGPT_ADD_FILES_LABEL, isChatGptComposerEntry } from "./chatgpt-ui-helpers.mjs";
 import { stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 
@@ -43,10 +43,6 @@ const configLoad =
     typeof parsedConfigPayload.configLoad === "object"
     ? parsedConfigPayload.configLoad
     : undefined;
-const CHATGPT_LABELS = {
-  composer: "Chat with ChatGPT",
-  addFiles: "Add files and more",
-};
 const LOGIN_PROBE_TIMEOUT_MS = 5_000;
 const CHATGPT_COOKIE_ORIGINS = [
   "https://chatgpt.com",
@@ -730,8 +726,6 @@ function classifyChatPage({ url, snapshot, body, probe }) {
     cookieSourceLabel: cookieSourceLabel(),
     runtimeProfileDir,
     logPath: LOG_PATH,
-    composerLabel: CHATGPT_LABELS.composer,
-    addFilesLabel: CHATGPT_LABELS.addFiles,
   });
 }
 
@@ -810,7 +804,7 @@ async function waitForImportedAuthReady() {
     await writeFile(BODY_PATH, `${body}\n`, { mode: 0o600 }).catch(() => undefined);
     const classification = classifyChatPage({ url, snapshot, body, probe });
     await log(
-      `poll ${iteration}: url=${JSON.stringify(url)} probe=${JSON.stringify(probe)} classification=${classification.state} hasComposer=${preferredProvider() === "grok" ? snapshot.includes('Ask Grok anything') || snapshot.includes('contenteditable') : snapshot.includes(`textbox \"${CHATGPT_LABELS.composer}\"`)} hasAddFiles=${preferredProvider() === "grok" ? snapshot.includes('button \"Attach\"') : snapshot.includes(`button \"${CHATGPT_LABELS.addFiles}\"`)}`,
+      `poll ${iteration}: url=${JSON.stringify(url)} probe=${JSON.stringify(probe)} classification=${classification.state} hasComposer=${preferredProvider() === "grok" ? snapshot.includes('Ask Grok anything') || snapshot.includes('contenteditable') : parseSnapshotEntries(snapshot).some(isChatGptComposerEntry)} hasAddFiles=${preferredProvider() === "grok" ? snapshot.includes('button \"Attach\"') : snapshot.includes(`button \"${CHATGPT_ADD_FILES_LABEL}\"`)}`,
     );
     if (classification.state === "authenticated_and_ready") return classification;
     if (classification.state === "auth_transitioning") {

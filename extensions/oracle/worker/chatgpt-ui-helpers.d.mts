@@ -8,6 +8,14 @@ export interface OracleUiSelection {
 }
 
 export declare const CHATGPT_CANONICAL_APP_ORIGINS: readonly string[];
+export declare const CHATGPT_COMPOSER_LABELS: readonly string[];
+export declare const CHATGPT_ADD_FILES_LABEL: string;
+export declare const CHATGPT_SEND_LABELS: readonly string[];
+export declare const CHATGPT_STOP_LABELS: readonly string[];
+export declare const CHATGPT_COMPOSER_EDITOR_SELECTOR: string;
+export declare const CHATGPT_STOP_CONTROL_SELECTOR: string;
+export declare const CHATGPT_ATTACH_FILES_INPUT_SELECTOR: string;
+export declare const CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR: string;
 
 export declare function buildAllowedChatGptOrigins(chatUrl: string, authUrl?: string): string[];
 export declare function stripChatGptResponseChrome(value: string | undefined): string;
@@ -26,9 +34,11 @@ export declare function parsePowerSliderDescription(description: string | undefi
 export declare function powerSliderTargetLabel(selection: OracleUiSelection): string;
 export declare function powerSliderStepKey(currentLabel: string, targetLabel: string): "ArrowLeft" | "ArrowRight" | undefined;
 export declare function isDeepResearchMenuEntry(entry: { kind?: string; label?: string; disabled?: boolean }): boolean;
-export declare function snapshotHasDeepResearchPill(snapshot: string, composerLabel?: string): boolean;
+export declare function snapshotHasDeepResearchPill(snapshot: string): boolean;
 export declare function classifyDeepResearchTurn(turn: { snapshot?: string; text?: string }): "started" | "reply";
 export declare function parseDeepResearchWidgetText(text: string | undefined): { completed: boolean; report: string };
+export declare function isChatGptComposerEntry(entry: import("./artifact-heuristics.d.mts").SnapshotEntry): boolean;
+export declare function isChatGptStopEntry(entry: import("./artifact-heuristics.d.mts").SnapshotEntry): boolean;
 export declare function snapshotHasUsableComposerControls(snapshot: string): boolean;
 export declare function snapshotHasModelOpener(snapshot: string): boolean;
 export declare function matchesModelConfigurationOpener(entry: import("./artifact-heuristics.d.mts").SnapshotEntry): boolean;

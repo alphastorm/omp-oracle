@@ -16,8 +16,7 @@ export interface OracleSendAcceptanceState {
   stopStreaming?: boolean;
 }
 
-export declare function assistantSnapshotSlice(snapshot: string, composerLabel: string, responseIndex: number): string | undefined;
-export declare function composerFileEntryCount(snapshot: string, fileLabel: string, composerLabel: string): number;
+export declare function composerFileEntryCount(snapshot: string, fileLabel: string): number;
 export declare function stripUrlQueryAndHash(url: string | undefined): string;
 export declare function isConversationPathUrl(url: string): boolean;
 export declare function conversationIdFromUrl(url: string | undefined): string | undefined;

@@ -13,6 +13,7 @@ import ts from 'typescript';
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
 import { sharedBrowserEndpoint, usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
+import { CHATGPT_COMPOSER_EDITOR_SELECTOR, isChatGptComposerEntry } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'oracle-capture-proof-'));
 const chrome = process.env.CHROME_BIN || ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium', '/usr/bin/google-chrome'].find(existsSync);
@@ -54,6 +55,25 @@ try {
   await evaluate(`document.querySelector('[data-message-id=new]').insertAdjacentHTML('beforeend', '<div data-message-id="other">stray</div>')`);
   await assert.rejects(evaluate(captureExpression({ responseIndex: 1 })), /spans several message IDs/);
   await evaluate(`document.querySelector('[data-message-id=other]').remove()`);
+  // The redesigned shell carries the message id as data-chatgpt-selection-message-id on the turn
+  // root; exact identity must still bind across a shifted positional index.
+  const renameIds = (from, to) => evaluate(`for (const el of document.querySelectorAll('[${from}]')) { el.setAttribute('${to}', el.getAttribute('${from}')); el.removeAttribute('${from}'); }`);
+  await renameIds('data-message-id', 'data-chatgpt-selection-message-id');
+  assert.equal((await evaluate(captureExpression({ responseIndex: 0, messageId: 'new' }))).codeBlocks[0].text, exact, 'Redesigned message identity must survive a shifted positional index');
+  await assert.rejects(evaluate(captureExpression({ responseIndex: 1, messageId: 'missing' })), /message ID/);
+  await renameIds('data-chatgpt-selection-message-id', 'data-message-id');
+  // The redesigned shell renders the Deep research widget in a sibling block of the reply, inside
+  // the prompt's exchange (data-turn-key). The reply's frames are that exchange's, never another's.
+  await evaluate(`document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(`<div id="exchange-proof">
+<div data-turn-key="u1"><div><h4>You said:</h4><div data-chatgpt-search-message-ids="u1">first prompt</div></div>
+<div><div data-chatgpt-search-message-ids="tool1"><iframe title="Deep research" src="about:blank#first"></iframe></div></div>
+<div><div><h4 data-conversation-role="assistant">ChatGPT said:</h4><div data-chatgpt-selection-message-id="dr1">Deep Research has started.</div></div></div></div>
+<div data-turn-key="u2"><div><h4>You said:</h4><div>second prompt</div></div>
+<div><div><h4 data-conversation-role="assistant">ChatGPT said:</h4><div data-chatgpt-selection-message-id="plain2">Plain answer.</div></div></div></div></div>`)})`);
+  const researchTurn = await evaluate(captureExpression({ responseIndex: 2, messageId: 'dr1' }));
+  assert.deepEqual(researchTurn.frames.map((frame) => frame.src), ['about:blank#first'], 'The reply binds the widget frame of its own exchange');
+  assert.deepEqual((await evaluate(captureExpression({ responseIndex: 3, messageId: 'plain2' }))).frames, [], 'A later exchange never borrows an earlier widget frame');
+  await evaluate(`document.getElementById('exchange-proof').remove()`);
 
   // Exercise production persistence/collection functions, not a reimplementation. Browser reads
   // and clicks use the real isolated page; only the saved conversation URL is synthetic.
@@ -277,48 +297,61 @@ document.querySelector('button').onclick = () => setTimeout(() => { const option
     fixture.close();
   }
   // The shell exposes a fallback textbox before the real editor hydrates.
-  // Run the actual prompt writer against that predecessor state in owned Chromium.
+  // Run the actual prompt writer against that predecessor state in owned Chromium, for the earlier
+  // `#prompt-textarea` editor and for the current labeled contenteditable textbox without an id.
   {
     const composerNames = new Set(['setComposerText', 'toJsonScript', 'toAsyncJsonScript']);
     const composerDeclarations = tree.statements.filter(node => ts.isFunctionDeclaration(node) && composerNames.has(node.name?.text));
     assert.equal(composerDeclarations.length, composerNames.size);
-    const writeComposer = new Function('evalPage', 'snapshotText', 'findEntry', 'isGrokJob', 'labelsForJob', 'agentBrowser',
+    const editorExpression = `[...document.querySelectorAll(${JSON.stringify(CHATGPT_COMPOSER_EDITOR_SELECTOR)})].find((el) => el.isContentEditable)`;
+    const writeComposer = new Function('evalPage', 'snapshotText', 'findEntry', 'isGrokJob', 'agentBrowser', 'CHATGPT_COMPOSER_EDITOR_SELECTOR', 'isChatGptComposerEntry',
       composerDeclarations.map(node => node.getText(tree)).join('\n') + '\nreturn setComposerText;')(
       async (_job, expression) => JSON.parse(await evaluate(
         `(async () => {
           if (window.hydrateOnComposerRead) {
+            const shell = window.hydrateOnComposerRead;
             window.hydrateOnComposerRead = false;
             setTimeout(() => {
               const editor = document.createElement('div');
-              editor.id = 'prompt-textarea'; editor.contentEditable = 'true';
+              if (shell === 'current') {
+                editor.setAttribute('role', 'textbox');
+                editor.setAttribute('aria-label', 'Ask ChatGPT');
+              } else {
+                editor.id = 'prompt-textarea';
+              }
+              editor.contentEditable = 'true';
               editor.textContent = 'PREVIOUS OWNED DRAFT';
               document.querySelector('textarea').replaceWith(editor);
             }, 50);
           }
           return await (` + expression + `);
         })()`)),
-      async () => evaluate(`[{kind:'textbox', label:'Chat with ChatGPT', ref:document.querySelector('#prompt-textarea') ? 'editor' : 'fallback'}]`),
+      async () => evaluate(`[{kind:'textbox', label:document.querySelector('textarea')?.getAttribute('aria-label') || 'Ask ChatGPT', ref:(${editorExpression}) ? 'editor' : 'fallback'}]`),
       (entries, predicate) => entries.find(predicate), () => false,
-      () => ({composer:'Chat with ChatGPT'}),
       async (_job, command, ref, text) => {
         assert.equal(command, 'fill');
         await evaluate(`(() => {
-          const editor = document.querySelector(` + JSON.stringify(ref === 'editor' ? '#prompt-textarea' : 'textarea') + `);
+          const editor = ` + (ref === 'editor' ? editorExpression : `document.querySelector('textarea')`) + `;
           if (!editor?.isContentEditable) throw new Error('Stale fallback textbox reference');
           editor.focus(); document.execCommand('insertText', false, ` + JSON.stringify(text) + `);
         })()`);
       },
+      CHATGPT_COMPOSER_EDITOR_SELECTOR, isChatGptComposerEntry,
     );
-    await evaluate(`document.body.innerHTML='<textarea aria-label="Chat with ChatGPT">PREVIOUS OWNED DRAFT</textarea>';window.hydrateOnComposerRead=true;`);
-    await writeComposer({}, 'ONLY THE NEW PROMPT');
-    assert.equal(await evaluate("document.querySelector('#prompt-textarea').innerText"), 'ONLY THE NEW PROMPT');
-    await writeComposer({}, 'SECOND REPLACEMENT');
-    assert.equal(await evaluate("document.querySelector('#prompt-textarea').innerText"), 'SECOND REPLACEMENT');
+    const editorText = () => evaluate(`(${editorExpression}).innerText`);
+    for (const [shell, fallbackLabel] of [['legacy', 'Chat with ChatGPT'], ['current', 'Ask ChatGPT']]) {
+      await evaluate(`document.body.innerHTML='<textarea aria-label="${fallbackLabel}">PREVIOUS OWNED DRAFT</textarea>';window.hydrateOnComposerRead=${JSON.stringify(shell)};`);
+      await writeComposer({}, 'ONLY THE NEW PROMPT');
+      assert.equal(await editorText(), 'ONLY THE NEW PROMPT', `${shell} composer`);
+      await writeComposer({}, 'SECOND REPLACEMENT');
+      assert.equal(await editorText(), 'SECOND REPLACEMENT', `${shell} composer`);
+    }
+    assert.equal(await evaluate("document.querySelector('#prompt-textarea')"), null, 'The current shell has no legacy editor id');
     // A noneditable replacement must time out without altering or filling it.
-    await evaluate("document.querySelector('#prompt-textarea').contentEditable='false';window.realDateNow=Date.now;let clock=0;Date.now=()=>clock+=20000;");
+    await evaluate("document.querySelector('[aria-label=\"Ask ChatGPT\"]').contentEditable='false';window.realDateNow=Date.now;let clock=0;Date.now=()=>clock+=20000;");
     try {
       await assert.rejects(writeComposer({}, 'MUST NOT BE INSERTED'), /Could not clear ChatGPT composer draft/);
-      assert.equal(await evaluate("document.querySelector('#prompt-textarea').innerText"), 'SECOND REPLACEMENT');
+      assert.equal(await evaluate("document.querySelector('[aria-label=\"Ask ChatGPT\"]').innerText"), 'SECOND REPLACEMENT');
     } finally {
       await evaluate('Date.now=window.realDateNow;');
     }

@@ -4,6 +4,43 @@ import test from "node:test";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 import { classifyDeepResearchTurn, effortSelectionVisible, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotHasUsableComposerControls, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel } from "./chatgpt-ui-helpers.mjs";
 
+// Composer fragment of the authenticated redesigned shell, captured 2026-09-29 by a failed job.
+const CURRENT_SHELL_COMPOSER = [
+  '- button "Temporary chat" [ref=e11]',
+  '- button "Chat" [ref=e12]',
+  '- button "Work" [ref=e13]',
+  '- heading "What’s on the agenda today?" [level=1, ref=e114]',
+  '- button "Add files and more" [expanded=false, ref=e117]',
+  '- textbox "Ask ChatGPT" [ref=e115]: ',
+  '- button "Select ChatGPT model" [expanded=false, ref=e118]',
+  '- button "Dictate" [ref=e119]',
+  '- button "Start Voice" [ref=e116]',
+].join("\n");
+
+test("the redesigned shell is ready only with an enabled Ask ChatGPT composer beside Add files", () => {
+  assert.equal(snapshotHasUsableComposerControls(CURRENT_SHELL_COMPOSER), true);
+  assert.equal(snapshotHasUsableComposerControls(CURRENT_SHELL_COMPOSER.replace("[ref=e115]", "[disabled, ref=e115]")), false);
+  assert.equal(snapshotHasUsableComposerControls(CURRENT_SHELL_COMPOSER.replace('textbox "Ask ChatGPT"', 'textbox "Work with ChatGPT"')), false);
+  assert.equal(snapshotHasUsableComposerControls(CURRENT_SHELL_COMPOSER.replace('button "Add files and more"', 'button "Attach"')), false);
+});
+
+test("the Select ChatGPT model button opens the Power menu, which is open only while expanded", () => {
+  assert.equal(snapshotHasModelOpener(CURRENT_SHELL_COMPOSER), true);
+  assert.equal(snapshotCanSafelySkipModelConfiguration(CURRENT_SHELL_COMPOSER, { modelFamily: "pro", effort: "extended" }), false);
+  // Live `snapshot -i` of the open picker (2026-09-30): the menu node itself is not listed.
+  const open = [
+    '- button "Select ChatGPT model" [expanded=true, ref=e118]',
+    '- button "Dictate" [ref=e119]',
+    '- menuitem "Select model" [ref=e5]',
+    '- menuitem "Power" [ref=e3]',
+    '  - generic [ref=e15] clickable [cursor:pointer, onclick]',
+  ].join("\n");
+  assert.equal(snapshotHasPowerSliderMenu(open), true);
+  assert.equal(snapshotHasModelConfigurationUi(open), true);
+  const lingering = open.replace("[expanded=true, ref=e118]", "[expanded=false, ref=e118]");
+  assert.equal(snapshotHasPowerSliderMenu(lingering), false);
+});
+
 test("a versioned Pro button opens configuration without attesting its effort", () => {
   const snapshot = '- button "6 Pro" [expanded=false, ref=e48]';
   assert.equal(snapshotHasModelOpener(snapshot), true);
@@ -111,6 +148,14 @@ test("the Deep research entry in the tools menu is the role-less clickable whose
   assert.equal(matches[0].ref, "@e125");
 });
 
+test("the redesigned tools menu offers Deep research as a button whose name joins title and description", () => {
+  const [entry] = parseSnapshotEntries('- button "Deep research Get a detailed report" [ref=e131]');
+  assert.equal(isDeepResearchMenuEntry(entry), true);
+  // The bare title is a selected-tool pill or navigation, never the menu entry.
+  const [pill] = parseSnapshotEntries('- button "Deep research" [expanded=false, ref=e19]');
+  assert.equal(isDeepResearchMenuEntry(pill), false);
+});
+
 test("the Deep research pill is recognized only inside the composer textbox", () => {
   const enabled = [
     '- generic "(function qCe(e,t){})" [ref=e114] clickable [onclick]',
@@ -148,6 +193,8 @@ test("the Deep Research placeholder turn is never a completed report", () => {
   assert.equal(classifyDeepResearchTurn({ snapshot: '- button "Copy response" [ref=e114]', text: "Worked for 6s\nDeep Research has started working on your omp-oracle / pi-oracle query. It will provide a report." }), "started");
   assert.equal(classifyDeepResearchTurn({ snapshot: '- button "Copy response" [ref=e114]', text: "Before I start, which npm registry scope should I focus on?" }), "reply");
   assert.equal(classifyDeepResearchTurn({ snapshot: "", text: "" }), "reply");
+  // The redesigned shell names the widget frame for the app.
+  assert.equal(classifyDeepResearchTurn({ snapshot: '- button "Open app in tab" [ref=e88]\n- Iframe "Deep research" [ref=e89]', text: "" }), "started");
 });
 
 test("the finished widget text yields the report without the animated counter, keeping citation markers", () => {

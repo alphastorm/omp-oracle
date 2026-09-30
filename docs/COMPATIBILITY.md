@@ -56,7 +56,10 @@ Known limits are part of the claim; read them before installing.
   exposes only the current stop; the worker focuses it, steps with arrow keys, and verifies each
   step from the slider's own description. Both Pro presets land on the single `Pro` stop and
   `thinking_light` shares `Medium` with `thinking_standard`; `Select model` is left on `Latest`.
-  Older tier menus remain supported. The relay tab's composer keeps the last stop a job set.
+  The redesigned shell (from 2026-09-29) opens the same slider from the `Select ChatGPT model`
+  button. Older tier menus remain supported. The last stop a job sets stays selected afterwards;
+  the redesigned shell saves it to the account (`user_last_used_model_config`), so it becomes the
+  default in the account's other chats and browsers.
 - **Experimental public beta.** Provider UI, auth, model controls, and artifact download behavior
   drift; release proof is re-run per release, not continuously.
 - **`pi-oracle` on npm is the upstream package**, not this fork; it must not stay installed
@@ -76,10 +79,12 @@ Known limits are part of the claim; read them before installing.
   Windows, a profile open without Oracle's DevTools endpoint surfaces only when a launch is handed
   off to it. The window takes focus when Chrome creates it for the first job tab.
 - **Deep Research reports are read through CDP frame capture (verified 2026-09-20).** The report
-  renders inside a cross-origin, sandboxed ChatGPT App iframe (`internal://deep-research`) whose
-  same-origin child frame holds the text; the top document keeps a model-written placeholder and
-  the conversation API carries no report. The worker arms `Target.setAutoAttach` on its pinned tab
-  before sending — Chrome only surfaces frames created after arming — and reads
+  renders inside a cross-origin, sandboxed ChatGPT App iframe (named `internal://deep-research`
+  inside the reply; in the redesigned shell named `Deep research`, in a block beside the reply
+  within the same exchange) whose same-origin child frame holds the text; the top
+  document keeps a model-written placeholder and the conversation API carries no report. The
+  worker arms `Target.setAutoAttach` on its pinned tab before sending — Chrome only surfaces
+  frames created after arming — and reads
   `frames[0].document.body.innerText` from the attached session. Relay transport only; a
   `deep_research` job on the isolated profile fails with `deep_research_report_unreadable`. Live
   proof: one job completed with a 13.5K-character report in 5 minutes. Excluded from the release

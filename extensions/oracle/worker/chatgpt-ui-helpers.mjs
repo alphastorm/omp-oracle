@@ -18,6 +18,35 @@ export const CHATGPT_CANONICAL_APP_ORIGINS = Object.freeze([
   "https://chat.openai.com",
 ]);
 
+// Accessible names of the ChatGPT controls the worker drives. The redesigned web app (observed
+// 2026-09-29) comes first; the earlier names stay recognized because the redesign rolls out per
+// account, so one operator can meet either shell.
+export const CHATGPT_COMPOSER_LABELS = Object.freeze(["Ask ChatGPT", "Chat with ChatGPT"]);
+export const CHATGPT_ADD_FILES_LABEL = "Add files and more";
+export const CHATGPT_SEND_LABELS = Object.freeze(["Send", "Send prompt"]);
+export const CHATGPT_STOP_LABELS = Object.freeze(["Stop", "Stop answering", "Stop streaming", "Stop generating"]);
+// The editable composer: the earlier `#prompt-textarea` editor, or the current contenteditable
+// textbox, which carries its accessible name as aria-label and has no id.
+export const CHATGPT_COMPOSER_EDITOR_SELECTOR = [
+  "#prompt-textarea",
+  ...CHATGPT_COMPOSER_LABELS.map((label) => `[contenteditable="true"][aria-label="${label}"]`),
+].join(", ");
+// The composer's submit control while a turn generates. The current shell has no stop test id: one
+// button switches its aria-label between Send and Stop.
+export const CHATGPT_STOP_CONTROL_SELECTOR = [
+  '[data-testid="stop-button"]',
+  ...CHATGPT_STOP_LABELS.map((label) => `button[aria-label="${label}"]:not(:disabled)`),
+].join(", ");
+// The current general file input. Photo and video inputs precede it in document order, so a bare
+// `input[type=file]` would hand the archive to an image picker.
+export const CHATGPT_ATTACH_FILES_INPUT_SELECTOR = 'input[type="file"][aria-label="Attach files"]';
+// A Deep research tool selected in the current composer is an app mention inside the editor.
+export const CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR = '[app-mention-name="deep-research"]';
+// The current model picker opener and its menu share this name; the preceding shell named the open
+// picker and its menu "Thinking effort". Both host the Power slider.
+const MODEL_PICKER_LABEL = "Select ChatGPT model";
+const POWER_MENU_LABELS = new Set([MODEL_PICKER_LABEL, "Thinking effort"]);
+
 /** @type {Record<OracleUiModelFamily, string>} */
 const MODEL_FAMILY_PREFIX = {
   instant: "Instant ",
@@ -487,24 +516,26 @@ export function effortSelectionVisible(snapshot, effortLabel) {
   });
 }
 
+// The picker's expanded opener is the authority for "open": the redesigned shell's interactive
+// snapshot lists the Power and Select model items but omits the menu node that holds them.
 function hasCurrentPowerEffortMenu(entries) {
   const hasExpandedEffortOpener = entries.some(
-    (entry) => !entry.disabled && entry.kind === "button" && normalizeText(entry.label) === "Thinking effort" && /\bexpanded=true\b/.test(String(entry.line || "")),
-  );
-  const hasEffortMenu = entries.some(
-    (entry) => !entry.disabled && entry.kind === "menu" && normalizeText(entry.label) === "Thinking effort",
+    (entry) => !entry.disabled && entry.kind === "button" && POWER_MENU_LABELS.has(normalizeText(entry.label)) && /\bexpanded=true\b/.test(String(entry.line || "")),
   );
   const menuItems = new Set(
     entries.filter((entry) => !entry.disabled && entry.kind === "menuitem").map((entry) => normalizeText(entry.label)),
   );
-  return hasExpandedEffortOpener && hasEffortMenu && menuItems.has("Power") && menuItems.has("Select model");
+  return hasExpandedEffortOpener && menuItems.has("Power") && menuItems.has("Select model");
 }
 
-// Deep Research is a composer tool, not a model tier. The "Add files and more" menu lists it as a
-// role-less clickable whose label concatenates title and description ("Deep researchGet a detailed
-// report"); once selected, the composer textbox carries a "Deep research" pill. After send, the
-// assistant turn is a fixed placeholder while a cross-origin App widget renders the actual report.
-const DEEP_RESEARCH_MENU_LABEL_PATTERN = /^Deep research/i; // title and description are concatenated without a separator
+// Deep Research is a composer tool, not a model tier. The "Add files and more" menu lists it with a
+// label that joins title and description: a role-less clickable "Deep researchGet a detailed report"
+// in the earlier shell, a button "Deep research Get a detailed report" in the current one. Once
+// selected, the earlier composer textbox carried a "Deep research" pill; the current one holds an
+// app mention (CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR) that only the DOM exposes reliably. After
+// send, a cross-origin App widget renders the actual report.
+const DEEP_RESEARCH_MENU_LABEL_PATTERN = /^Deep research\s*\S/i; // the description always follows the title
+const DEEP_RESEARCH_MENU_ENTRY_KINDS = new Set(["generic", "button", "menuitem"]);
 const DEEP_RESEARCH_PILL_LABEL = "deep research";
 const DEEP_RESEARCH_PLACEHOLDER_PATTERN = /^Deep Research has started working on your\b/i; // model-written; the topic varies
 
@@ -513,19 +544,18 @@ const DEEP_RESEARCH_PLACEHOLDER_PATTERN = /^Deep Research has started working on
  * @returns {boolean}
  */
 export function isDeepResearchMenuEntry(entry) {
-  return !entry.disabled && entry.kind === "generic" && typeof entry.label === "string" && DEEP_RESEARCH_MENU_LABEL_PATTERN.test(normalizeText(entry.label));
+  return !entry.disabled && DEEP_RESEARCH_MENU_ENTRY_KINDS.has(entry.kind || "") && typeof entry.label === "string" && DEEP_RESEARCH_MENU_LABEL_PATTERN.test(normalizeText(entry.label));
 }
 
 /**
- * True when the composer textbox carries the Deep research pill: a "Deep research" generic nested
- * directly beneath the composer textbox line.
+ * True when the earlier composer textbox carries the Deep research pill: a "Deep research" generic
+ * nested directly beneath the composer textbox line.
  * @param {string} snapshot
- * @param {string} [composerLabel]
  * @returns {boolean}
  */
-export function snapshotHasDeepResearchPill(snapshot, composerLabel = "Chat with ChatGPT") {
+export function snapshotHasDeepResearchPill(snapshot) {
   const lines = String(snapshot || "").split("\n");
-  const textboxIndex = lines.findIndex((line) => line.includes(`textbox "${composerLabel}"`));
+  const textboxIndex = lines.findIndex((line) => CHATGPT_COMPOSER_LABELS.some((label) => line.includes(`textbox "${label}"`)));
   if (textboxIndex < 0) return false;
   const textboxIndent = lines[textboxIndex].search(/\S/);
   for (let index = textboxIndex + 1; index < lines.length; index += 1) {
@@ -539,11 +569,13 @@ export function snapshotHasDeepResearchPill(snapshot, composerLabel = "Chat with
   return false;
 }
 
-const DEEP_RESEARCH_WIDGET_PATTERN = /Iframe "internal:\/\/deep-research"/;
+// The widget iframe's accessible name: the earlier shell titled it internal://deep-research, the
+// current one "Deep research".
+const DEEP_RESEARCH_WIDGET_PATTERN = /Iframe "(?:internal:\/\/deep-research|Deep research)"/;
 
 /**
  * Classify the assistant turn of a Deep Research submission. "started" means the research widget
- * (a cross-origin App iframe titled internal://deep-research) is on the page, or the assistant
+ * (a cross-origin App iframe, see DEEP_RESEARCH_WIDGET_PATTERN) is on the page, or the assistant
  * text is the model-written "Deep Research has started working…" placeholder; "reply" means the
  * model answered or asked something instead of starting research.
  * @param {{ snapshot?: string; text?: string }} turn
@@ -691,14 +723,32 @@ export function snapshotHasModelConfigurationUi(snapshot) {
 }
 
 /**
+ * A composer textbox of either ChatGPT shell, in any state.
+ * @param {SnapshotEntry} entry
+ * @returns {boolean}
+ */
+export function isChatGptComposerEntry(entry) {
+  return entry.kind === "textbox" && typeof entry.label === "string" && CHATGPT_COMPOSER_LABELS.includes(entry.label);
+}
+
+/**
+ * An enabled stop control of either ChatGPT shell: a turn is still generating.
+ * @param {SnapshotEntry} entry
+ * @returns {boolean}
+ */
+export function isChatGptStopEntry(entry) {
+  return entry.kind === "button" && !entry.disabled && typeof entry.label === "string" && CHATGPT_STOP_LABELS.includes(entry.label);
+}
+
+/**
  * @param {string} snapshot
  * @returns {boolean}
  */
 export function snapshotHasUsableComposerControls(snapshot) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
-  const hasComposer = entries.some((entry) => entry.kind === "textbox" && entry.label === "Chat with ChatGPT" && !entry.disabled);
-  const hasAddFiles = entries.some((entry) => entry.kind === "button" && entry.label === "Add files and more" && !entry.disabled);
+  const hasComposer = entries.some((entry) => isChatGptComposerEntry(entry) && !entry.disabled);
+  const hasAddFiles = entries.some((entry) => entry.kind === "button" && entry.label === CHATGPT_ADD_FILES_LABEL && !entry.disabled);
   return hasComposer && hasAddFiles;
 }
 
@@ -711,14 +761,16 @@ export function snapshotHasModelOpener(snapshot) {
 }
 
 /**
- * Composer openers are model chips, not arbitrary family-prefixed response actions.
+ * Composer openers are the current picker button or model chips, not arbitrary family-prefixed
+ * response actions.
  * @param {SnapshotEntry} entry
  * @returns {boolean}
  */
 export function matchesModelConfigurationOpener(entry) {
   if (entry.disabled || entry.kind !== "button" || typeof entry.label !== "string") return false;
   const label = normalizeChipLabel(entry.label).replace(/^\d+(?:\.\d+)*\s+/, "");
-  return label === "Model"
+  return label === MODEL_PICKER_LABEL
+    || label === "Model"
     || label === "Model selector"
     || COMPACT_INTELLIGENCE_OPENER_PATTERN.test(label)
     || EFFORT_LABELS.has(label)

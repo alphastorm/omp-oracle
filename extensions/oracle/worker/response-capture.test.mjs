@@ -9,14 +9,16 @@ import { collectNativeDownload, collectionOutcome, redactTransportSecrets, valid
 import { formatOracleJobSummary } from '../shared/job-observability-helpers.mjs';
 import { chatGptGenerationActive, chatGptStreamingVisible, providerSendAccepted } from './chatgpt-flow-helpers.mjs';
 
-test('accepted continuation recognizes Stop answering controls but not quoted prose', () => {
+test('accepted continuation recognizes stop controls but not quoted prose', () => {
   const before = { url: 'https://chatgpt.com/c/existing', assistantCount: 3, stopStreaming: false };
-  for (const label of ['Stop answering', 'Stop streaming', 'Stop generating']) {
-    const snapshot = '- textbox "Chat with ChatGPT" [ref=e1]\n- button "' + label + '" [ref=e2]';
+  for (const [composer, label] of [['Chat with ChatGPT', 'Stop answering'], ['Chat with ChatGPT', 'Stop streaming'], ['Chat with ChatGPT', 'Stop generating'], ['Ask ChatGPT', 'Stop']]) {
+    const snapshot = '- textbox "' + composer + '" [ref=e1]\n- button "' + label + '" [ref=e2]';
     assert(providerSendAccepted(before, { ...before, stopStreaming: chatGptStreamingVisible(snapshot) }));
   }
   assert.equal(chatGptStreamingVisible('- textbox "Stop answering" [ref=e1]\n- button "Send prompt" [ref=e2]\nStop streaming'), false);
   assert.equal(chatGptStreamingVisible('- button "Stop answering" [ref=e1] [disabled]'), false);
+  // The redesigned composer relabels one submit button; its Send state is idle.
+  assert.equal(chatGptStreamingVisible('- textbox "Ask ChatGPT" [ref=e1]\n- button "Send" [ref=e2]'), false);
 });
 
 // Observed live on 2026-09-21: ChatGPT labels a freshly streamed assistant turn's action bar

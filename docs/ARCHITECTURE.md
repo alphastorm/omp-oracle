@@ -214,11 +214,14 @@ Per job:
     Research) the tool is enabled after the prompt is filled and before the upload and verified by
     its pill, model configuration is skipped, CDP frame capture is armed on the pinned relay tab
     before send (`Target.setAutoAttach` is not retroactive), and once the assistant turn shows the
-    research widget the report is polled from the attached iframe session
-    (`frames[0].document.body.innerText`) until `Research completed in` appears; a reply instead
-    of a research start, a missing tool, or an unreadable widget fail with a stable `errorCode`
-13. bind the completed assistant turn (`conversationId` + `responseIndex`, then the exact
-    `data-message-id` and a content hash) and record `generationStatus: completed`
+    research widget (inside the reply in the earlier shell; in the redesigned one, in a sibling
+    block of the reply's own exchange, `data-turn-key`) the report is polled from the attached
+    iframe session (`frames[0].document.body.innerText`) until `Research completed in` appears; a
+    reply instead of a research start, a missing tool, or an unreadable widget fail with a stable
+    `errorCode`
+13. bind the completed assistant turn (`conversationId` + `responseIndex`, then the exact message
+    id, `data-message-id` or the redesigned shell's `data-chatgpt-selection-message-id`, and a
+    content hash) and record `generationStatus: completed`
 14. collect the bound turn only (never the whole conversation): scoped DOM evidence, exact code
     payloads, derived Markdown, stable source URLs, and any response-local artifacts, writing
     `response.capture.json` plus `collectionStatus` with required/optional gaps
@@ -496,10 +499,16 @@ Require all of:
 
 - ChatGPT origin is correct
 - not on `/auth/*`
-- composer exists
+- an enabled composer textbox: `Ask ChatGPT` in the redesigned shell (rolled out from 2026-09-29), `Chat with ChatGPT` in the earlier one
 - `Add files and more` exists
-- model selector / selected model control exists
 - no login/challenge/outage signals
+
+The model picker is not a readiness signal: model configuration opens and verifies it afterwards,
+and a Deep Research job never touches it. The `Work` mode composer (`Work with ChatGPT`) is a
+different product and never counts as ready. The control names both shells use (composer, send,
+stop, model picker) and the composer editor's DOM selector live in one vocabulary in
+`extensions/oracle/worker/chatgpt-ui-helpers.mjs`; readiness, auth bootstrap, the worker's
+composer, upload, send, and completion paths, and the composer and capture proofs all read it.
 
 ### Login required
 

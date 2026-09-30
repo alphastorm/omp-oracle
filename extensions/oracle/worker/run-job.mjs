@@ -28,7 +28,14 @@ import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from "./response-capture.mjs";
 import {
   buildAllowedChatGptOrigins,
+  CHATGPT_ADD_FILES_LABEL,
+  CHATGPT_ATTACH_FILES_INPUT_SELECTOR,
+  CHATGPT_COMPOSER_EDITOR_SELECTOR,
+  CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR,
+  CHATGPT_SEND_LABELS,
+  CHATGPT_STOP_CONTROL_SELECTOR,
   deriveAssistantCompletionSignature,
+  isChatGptComposerEntry,
   matchesCompactIntelligenceControlLabel,
   matchesModelConfigurationOpener,
   matchesModelFamilyLabel,
@@ -70,9 +77,7 @@ const ORACLE_JOBS_DIR = getOracleJobsDir();
 const jobDir = join(ORACLE_JOBS_DIR, `oracle-${jobId}`);
 const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
-  composer: "Chat with ChatGPT",
-  addFiles: "Add files and more",
-  send: "Send prompt",
+  addFiles: CHATGPT_ADD_FILES_LABEL,
   close: "Close",
   autoSwitchToThinking: "Auto-switch to Thinking",
   configure: "Configure...",
@@ -135,6 +140,16 @@ function isGrokJob(job) {
 
 function labelsForJob(job) {
   return isGrokJob(job) ? GROK_LABELS : CHATGPT_LABELS;
+}
+
+// ChatGPT's send control has carried more than one accessible name; Grok's has one.
+function sendLabelsForJob(job) {
+  return isGrokJob(job) ? [GROK_LABELS.send] : CHATGPT_SEND_LABELS;
+}
+
+function findSendEntry(job, snapshot) {
+  const labels = sendLabelsForJob(job);
+  return findEntry(snapshot, (candidate) => candidate.kind === "button" && !candidate.disabled && labels.includes(candidate.label));
 }
 
 async function ensurePrivateDir(path) {
@@ -983,13 +998,11 @@ async function expandCurrentPowerControls(job, snapshot) {
 }
 
 function composerControlsVisible(snapshot, job = currentJob) {
-  const labels = labelsForJob(job);
+  if (!isGrokJob(job)) return snapshotHasUsableComposerControls(snapshot);
   const entries = parseSnapshotEntries(snapshot);
-  const hasComposer = isGrokJob(job)
-    ? entries.some((entry) => !entry.disabled && ((entry.kind === "textbox" && entry.label === labels.composer) || /editable/.test(String(entry.line || ""))))
-    : entries.some((entry) => entry.kind === "textbox" && entry.label === labels.composer && !entry.disabled);
+  const hasComposer = entries.some((entry) => !entry.disabled && ((entry.kind === "textbox" && entry.label === GROK_LABELS.composer) || /editable/.test(String(entry.line || ""))));
   const hasAddFiles = entries.some(
-    (entry) => entry.kind === "button" && entry.label === labels.addFiles && !entry.disabled,
+    (entry) => entry.kind === "button" && entry.label === GROK_LABELS.addFiles && !entry.disabled,
   );
   return hasComposer && hasAddFiles;
 }
@@ -1098,11 +1111,12 @@ async function setComposerText(job, text) {
     const timeoutAt = Date.now() + 15_000;
     let el;
     while (Date.now() < timeoutAt) {
-      el = document.querySelector('#prompt-textarea');
-      if (el?.isContentEditable && el.getClientRects().length) break;
+      el = [...document.querySelectorAll(${JSON.stringify(CHATGPT_COMPOSER_EDITOR_SELECTOR)})]
+        .find((candidate) => candidate.isContentEditable && candidate.getClientRects().length);
+      if (el) break;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    if (!el?.isContentEditable) return false;
+    if (!el) return false;
     el.focus();
     if (document.activeElement !== el) return false;
     document.execCommand('selectAll', false, null);
@@ -1112,8 +1126,7 @@ async function setComposerText(job, text) {
   if (!cleared) throw new Error("Could not clear ChatGPT composer draft; prompt was not inserted");
   // Resolve the textbox only after hydration; the old fallback reference is stale.
   const snapshot = await snapshotText(job);
-  const labels = labelsForJob(job);
-  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === labels.composer);
+  const entry = findEntry(snapshot, isChatGptComposerEntry);
   if (!entry) throw new Error("Could not find ChatGPT composer textbox");
   await agentBrowser(job, "fill", entry.ref, text);
 }
@@ -1381,14 +1394,10 @@ async function waitForUploadConfirmed(job, fileLabel, baselineCount) {
       throw new Error(`Upload error detected: ${errorText}`);
     }
 
-    const labels = labelsForJob(job);
-    const sendEntry = findEntry(
-      snapshot,
-      (candidate) => candidate.kind === "button" && candidate.label === labels.send && !candidate.disabled,
-    );
+    const sendEntry = findSendEntry(job, snapshot);
     const fileCount = isGrokJob(job) && snapshot.includes(fileLabel)
       ? baselineCount + 1
-      : composerFileEntryCount(snapshot, fileLabel, labels.composer);
+      : composerFileEntryCount(snapshot, fileLabel);
 
     if ((sendEntry || isGrokJob(job)) && fileCount > baselineCount) {
       stableCount += 1;
@@ -1415,24 +1424,20 @@ async function waitForSendReady(job) {
       throw new Error(`Upload error detected: ${errorText}`);
     }
 
-    const labels = labelsForJob(job);
-    const entry = findEntry(
-      snapshot,
-      (candidate) => candidate.kind === "button" && candidate.label === labels.send && !candidate.disabled,
-    );
+    const entry = findSendEntry(job, snapshot);
     if (entry) return entry;
     await sleep(1000);
   }
-  throw new Error(`Timed out waiting for ${labelsForJob(job).send} to become enabled`);
+  throw new Error(`Timed out waiting for ${sendLabelsForJob(job)[0]} to become enabled`);
 }
 
 async function activateSendButton(job) {
   const result = await evalPage(job, toJsonScript(`
-    const labels = ${JSON.stringify(labelsForJob(job))};
+    const labels = ${JSON.stringify(sendLabelsForJob(job))};
     const buttons = Array.from(document.querySelectorAll('button'));
     const button = buttons.find((candidate) => {
       const label = (candidate.getAttribute('aria-label') || candidate.textContent || '').trim();
-      return label === labels.send;
+      return labels.includes(label);
     });
     if (!button) return { ok: false, reason: 'send button not found' };
     if (button.disabled || button.getAttribute('aria-disabled') === 'true') return { ok: false, reason: 'send button disabled' };
@@ -1461,12 +1466,12 @@ async function clickSend(job, baselineAssistantCount) {
   await waitForSendReady(job);
   const beforeSend = await sendAcceptanceState(job, baselineAssistantCount);
   const activation = await activateSendButton(job);
-  if (!activation?.ok) throw new Error(`Could not activate ${labelsForJob(job).send}: ${activation?.reason || "DOM activation failed"}`);
-  await log(`Activated ${labelsForJob(job).send}; waiting for provider acceptance evidence`);
+  if (!activation?.ok) throw new Error(`Could not activate ${sendLabelsForJob(job)[0]}: ${activation?.reason || "DOM activation failed"}`);
+  await log(`Activated ${sendLabelsForJob(job)[0]}; waiting for provider acceptance evidence`);
   if (await waitForSendAccepted(job, beforeSend, { timeoutMs: 20_000 })) return;
 
   await captureDiagnostics(job, "send-not-accepted");
-  throw new Error(`${isGrokJob(job) ? "Grok" : "ChatGPT"} message did not leave the composer after activating ${labelsForJob(job).send}`);
+  throw new Error(`${isGrokJob(job) ? "Grok" : "ChatGPT"} message did not leave the composer after activating ${sendLabelsForJob(job)[0]}`);
 }
 
 async function waitForSendAccepted(job, beforeSend, options = {}) {
@@ -1609,11 +1614,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
         await agentBrowser(job, "wait", "100");
         const afterEscape = await snapshotText(job);
         if (snapshotHasModelConfigurationUi(afterEscape)) {
-          const composer = findEntry(
-            afterEscape,
-            (candidate) => candidate.kind === "textbox"
-              && candidate.label === labelsForJob(job).composer && !candidate.disabled,
-          );
+          const composer = findEntry(afterEscape, (candidate) => isChatGptComposerEntry(candidate) && !candidate.disabled);
           if (composer) await clickRef(job, composer.ref).catch(() => undefined);
         }
       }
@@ -1834,11 +1835,22 @@ async function configureModel(job) {
   await waitForModelConfigurationToSettle(job, { stronglyVerified });
 }
 
+// The earlier composer shows a selected tool as a snapshot pill; the current one holds an app
+// mention inside the editor that only the DOM exposes reliably.
+async function deepResearchToolSelected(job, snapshot) {
+  if (snapshotHasDeepResearchPill(snapshot)) return true;
+  const result = await evalPage(job, toJsonScript(`
+    const editors = [...document.querySelectorAll(${JSON.stringify(CHATGPT_COMPOSER_EDITOR_SELECTOR)})];
+    return { present: editors.some((editor) => Boolean(editor.querySelector(${JSON.stringify(CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR)}))) };
+  `));
+  return result?.present === true;
+}
+
 // Deep Research is enabled after the prompt is in the composer: filling the textbox replaces its
 // content, and the tool is a pill that lives inside the textbox.
 async function enableDeepResearch(job) {
   const before = await snapshotText(job);
-  if (snapshotHasDeepResearchPill(before, labelsForJob(job).composer)) {
+  if (await deepResearchToolSelected(job, before)) {
     await log("Deep Research tool already enabled in the composer");
     return;
   }
@@ -1847,8 +1859,9 @@ async function enableDeepResearch(job) {
   // Filling expands/animates the composer. Wait for a stationary, uncovered
   // control and keep the tool pill out of the prompt text (not inside a path).
   const settled = await evalPage(job, toAsyncJsonScript(`
-    const editor = document.querySelector("#prompt-textarea");
-    if (!editor?.isContentEditable) return false;
+    const editor = [...document.querySelectorAll(${JSON.stringify(CHATGPT_COMPOSER_EDITOR_SELECTOR)})]
+      .find((candidate) => candidate.isContentEditable && candidate.getClientRects().length);
+    if (!editor) return false;
     editor.focus();
     const range = document.createRange();
     range.selectNodeContents(editor);
@@ -1894,7 +1907,7 @@ async function enableDeepResearch(job) {
   await clickRef(job, entry.ref);
   await agentBrowser(job, "wait", "800");
   const after = await snapshotText(job);
-  if (!snapshotHasDeepResearchPill(after, labelsForJob(job).composer)) {
+  if (!(await deepResearchToolSelected(job, after))) {
     throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research did not appear in the composer after selecting it");
   }
   await log("Deep Research tool enabled and verified in the composer");
@@ -1932,18 +1945,26 @@ async function uploadArchive(job) {
   const fileLabel = basename(job.archivePath);
   const addFilesSnapshot = await snapshotText(job);
   const labels = labelsForJob(job);
-  const baselineComposerFileCount = composerFileEntryCount(addFilesSnapshot, fileLabel, labels.composer);
-  const addFilesEntry = findEntry(
-    addFilesSnapshot,
-    (candidate) => candidate.label === labels.addFiles && candidate.kind === "button",
-  );
-  if (!addFilesEntry) {
-    throw new Error(`Could not find "${labels.addFiles}" button`);
+  const baselineComposerFileCount = composerFileEntryCount(addFilesSnapshot, fileLabel);
+  // The current ChatGPT shell keeps its general file input mounted beside photo and video inputs;
+  // the earlier shell and Grok mount a single input from the attach menu.
+  const directInput = !isGrokJob(job) && (await evalPage(job, toJsonScript(`
+    return { present: Boolean(document.querySelector(${JSON.stringify(CHATGPT_ATTACH_FILES_INPUT_SELECTOR)})) };
+  `)))?.present === true;
+  if (directInput) {
+    await agentBrowser(job, "upload", CHATGPT_ATTACH_FILES_INPUT_SELECTOR, job.archivePath);
+  } else {
+    const addFilesEntry = findEntry(
+      addFilesSnapshot,
+      (candidate) => candidate.label === labels.addFiles && candidate.kind === "button",
+    );
+    if (!addFilesEntry) {
+      throw new Error(`Could not find "${labels.addFiles}" button`);
+    }
+    await clickRef(job, addFilesEntry.ref);
+    await agentBrowser(job, "wait", "500");
+    await agentBrowser(job, "upload", "input[type=file]", job.archivePath);
   }
-
-  await clickRef(job, addFilesEntry.ref);
-  await agentBrowser(job, "wait", "500");
-  await agentBrowser(job, "upload", "input[type=file]", job.archivePath);
   await log(`Selected archive for upload: ${job.archivePath}`);
   if (isGrokJob(job)) {
     const deadline = Date.now() + 5 * 60 * 1000;
@@ -2076,10 +2097,11 @@ async function waitForStableChatUrl(job, previousChatUrl) {
 }
 
 // ChatGPT's composer swaps Send for a stop control while a turn is generating, and keeps it until
-// after the turn's text is final. That test id is the authoritative generation signal; an
-// unreadable probe returns undefined so the accessibility labels decide instead of failing open.
+// after the turn's text is final. That control (a stop test id in the earlier shell, the submit
+// button labeled Stop in the current one) is the authoritative generation signal; an unreadable
+// probe returns undefined so the accessibility labels decide instead of failing open.
 const CHATGPT_STOP_CONTROL_SCRIPT = toJsonScript(`
-  return { present: Boolean(document.querySelector('[data-testid="stop-button"]')) };
+  return { present: Boolean(document.querySelector(${JSON.stringify(CHATGPT_STOP_CONTROL_SELECTOR)})) };
 `);
 
 async function chatGptStopControlPresent(job) {

@@ -10,8 +10,11 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
     .filter((node) => node.textContent?.trim() === "ChatGPT said:");
   const headingRoots = headings.map((heading) => heading.nextElementSibling);
   const responseRoots = headingRoots.some((node) => (node?.textContent || '').trim()) ? headingRoots : nodes;
-  const rootIds = (node) => new Set([node.getAttribute("data-message-id"), node.closest("[data-message-id]")?.getAttribute("data-message-id"),
-    ...[...node.querySelectorAll("[data-message-id]")].map((child) => child.getAttribute("data-message-id"))].filter(Boolean));
+  // The earlier shell marks a message with data-message-id; the redesigned one marks the turn root
+  // after its "ChatGPT said:" heading with data-chatgpt-selection-message-id.
+  const idAttributes = ["data-message-id", "data-chatgpt-selection-message-id"];
+  const rootIds = (node) => new Set(idAttributes.flatMap((name) => [node.getAttribute(name), node.closest(`[${name}]`)?.getAttribute(name),
+    ...[...node.querySelectorAll(`[${name}]`)].map((child) => child.getAttribute(name))]).filter(Boolean));
   const rootId = (node) => {
     if (!node) return undefined;
     const ids = rootIds(node);
@@ -119,7 +122,11 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
     node.setAttribute('data-oracle-capture', marker);
     return [{ candidateId: `candidate-${hash.toString(16)}`, label: stableLabel, selector: `[data-oracle-capture="${marker}"]`, fileName, nativeMarkdown: report && /markdown|\.md\b/i.test(label) }];
   });
-  const frames = [...root.querySelectorAll('iframe')].map((node, index) => {
+  // The earlier shell renders a tool widget (the Deep research iframe) inside the reply's root; the
+  // redesigned one renders it in a sibling block of the same exchange (`data-turn-key`, one per
+  // prompt), so a root without its own frame takes the frames of that exchange only.
+  const frameScope = root.querySelector('iframe') ? root : root.closest('[data-turn-key]') || root;
+  const frames = [...frameScope.querySelectorAll('iframe')].map((node, index) => {
     const marker = `oracle-frame-${responseIndex}-${index}`;
     node.setAttribute('data-oracle-capture', marker);
     return { selector: `[data-oracle-capture="${marker}"]`, src: node.src };

@@ -36,6 +36,4 @@ export declare function classifyChatAuthPage(args: {
   cookieSourceLabel: string;
   runtimeProfileDir: string;
   logPath: string;
-  composerLabel?: string;
-  addFilesLabel?: string;
 }): OracleAuthPageClassification;

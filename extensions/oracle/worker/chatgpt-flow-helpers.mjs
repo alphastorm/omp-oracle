@@ -1,5 +1,5 @@
 // Purpose: Provide pure provider conversation-state helpers used by the oracle worker.
-// Responsibilities: Slice assistant snapshots, count composer attachments, normalize URLs, and track stable conversation URLs.
+// Responsibilities: Count composer attachments, normalize URLs, and track stable conversation URLs.
 // Scope: Pure worker flow logic only; browser I/O and polling loops stay in run-job.mjs.
 // Usage: Imported by run-job.mjs and sanity tests to validate conversation-state heuristics without driving a browser.
 // Invariants/Assumptions: Snapshot text comes from agent-browser `snapshot -i`; URL inputs may be malformed and must fail safely.
@@ -9,11 +9,11 @@
 /** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleStaleStopState} OracleStaleStopState */
 
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
+import { isChatGptComposerEntry, isChatGptStopEntry } from "./chatgpt-ui-helpers.mjs";
 
 /** @param {string} snapshot @returns {boolean} */
 export function chatGptStreamingVisible(snapshot) {
-  return parseSnapshotEntries(snapshot).some((entry) => entry.kind === "button" && !entry.disabled
-    && /^(?:Stop answering|Stop streaming|Stop generating)$/.test(entry.label || ""));
+  return parseSnapshotEntries(snapshot).some(isChatGptStopEntry);
 }
 
 /**
@@ -24,8 +24,8 @@ export function chatGptStreamingVisible(snapshot) {
  * persistence, so no assistant-action label count is evidence that generation finished: counting
  * "Copy response" never matches a live turn (the job hangs) and matches mid-rehydration, when the
  * turn text is still partially rendered (the job captures a truncated response). `domStopButton`
- * is the `[data-testid="stop-button"]` reading, which stays present until after the text is final;
- * the accessibility labels remain a fallback for when that test id drifts.
+ * is the DOM reading of CHATGPT_STOP_CONTROL_SELECTOR, which stays present until after the text is
+ * final; the accessibility labels remain a fallback for when that markup drifts.
  *
  * @param {{ snapshot: string, domStopButton?: boolean }} args
  * @returns {boolean}
@@ -37,46 +37,23 @@ export function chatGptGenerationActive({ snapshot, domStopButton }) {
 
 /**
  * Count nearby UI controls, not text lines: a multiline composer value can span hundreds of lines.
+ * An attached file shows as a control named for it, or (current shell) only as its "Remove <file>"
+ * control until the message is sent.
  * @param {string} snapshot
  * @param {string} fileLabel
- * @param {string} composerLabel
  * @returns {number}
  */
-export function composerFileEntryCount(snapshot, fileLabel, composerLabel) {
+export function composerFileEntryCount(snapshot, fileLabel) {
   const entries = parseSnapshotEntries(snapshot);
-  const composerIndex = entries.findLastIndex((entry) => entry.kind === "textbox" && entry.label === composerLabel);
+  const composerIndex = entries.findLastIndex(isChatGptComposerEntry);
   if (composerIndex === -1) return 0;
+  const labels = new Set([fileLabel, `Remove ${fileLabel}`]);
   let count = 0;
   const end = Math.min(entries.length, composerIndex + 17);
   for (let index = Math.max(0, composerIndex - 16); index < end; index += 1) {
-    if (entries[index].label === fileLabel) count += 1;
+    if (labels.has(entries[index].label ?? "")) count += 1;
   }
   return count;
-}
-
-/**
- * @param {string} snapshot
- * @param {string} composerLabel
- * @param {number} responseIndex
- * @returns {string | undefined}
- */
-export function assistantSnapshotSlice(snapshot, composerLabel, responseIndex) {
-  const lines = snapshot.split("\n");
-  const assistantHeadingIndices = lines.flatMap((line, index) => (line.includes('heading "ChatGPT said:"') ? [index] : []));
-  const startIndex = assistantHeadingIndices[responseIndex];
-  if (startIndex === undefined) return undefined;
-
-  const endCandidates = [];
-  const nextAssistantIndex = assistantHeadingIndices[responseIndex + 1];
-  if (nextAssistantIndex !== undefined) endCandidates.push(nextAssistantIndex);
-
-  const composerIndex = lines.findIndex(
-    (line, index) => index > startIndex && line.includes(`textbox "${composerLabel}"`),
-  );
-  if (composerIndex !== -1) endCandidates.push(composerIndex);
-
-  const endIndex = endCandidates.length > 0 ? Math.min(...endCandidates) : undefined;
-  return lines.slice(startIndex, endIndex).join("\n");
 }
 
 /**

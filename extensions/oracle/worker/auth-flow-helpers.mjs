@@ -9,9 +9,6 @@ import { snapshotHasUsableComposerControls } from "./chatgpt-ui-helpers.mjs";
 /** @typedef {import("./auth-flow-helpers.d.mts").OracleAuthLoginProbe} OracleAuthLoginProbe */
 /** @typedef {import("./auth-flow-helpers.d.mts").OracleAuthPageClassification} OracleAuthPageClassification */
 
-const DEFAULT_COMPOSER_LABEL = "Chat with ChatGPT";
-const DEFAULT_ADD_FILES_LABEL = "Add files and more";
-
 /**
  * @param {unknown} result
  * @returns {OracleAuthLoginProbe}
@@ -57,21 +54,13 @@ export function buildAccountChooserCandidateLabels(name) {
  *   cookieSourceLabel: string;
  *   runtimeProfileDir: string;
  *   logPath: string;
- *   composerLabel?: string;
- *   addFilesLabel?: string;
  * }} args
  * @returns {OracleAuthPageClassification}
  */
 export function classifyChatAuthPage(args) {
   const text = `${args.snapshot}\n${args.body}`;
-  const composerLabel = args.composerLabel || DEFAULT_COMPOSER_LABEL;
-  const addFilesLabel = args.addFilesLabel || DEFAULT_ADD_FILES_LABEL;
   const onAllowedOrigin = args.allowedOrigins.some((origin) => args.url.startsWith(origin));
-  const hasComposer = args.snapshot.includes(`textbox "${composerLabel}"`);
-  const hasAddFiles = args.snapshot.includes(`button "${addFilesLabel}"`);
-  const hasUsableComposer = composerLabel === DEFAULT_COMPOSER_LABEL && addFilesLabel === DEFAULT_ADD_FILES_LABEL
-    ? snapshotHasUsableComposerControls(args.snapshot)
-    : hasComposer && hasAddFiles;
+  const hasUsableComposer = snapshotHasUsableComposerControls(args.snapshot);
 
   const challengePatterns = [
     /just a moment/i,
