@@ -160,6 +160,15 @@ Artifact run ids live under the gitignored `.artifacts/` root.
   keeper-run Chrome had left, and the job completed in 75 s. It also returned the account's saved
   tier to `Pro`: the redesigned shell saves the last stop a job sets to the account, and the
   proof's canonical order ends on `instant`.
+- Post-release checks of the two redesigned paths the proof and smokes had not reached. Model
+  files render inside the reply root: read-only on an existing thread with PDF, Markdown, and ZIP
+  outputs, the worker's capture listed each `Download file` control and inline `Download` link as
+  a candidate and excluded the prompt's own uploads. A `pro_standard` job through the installed
+  package asking for a CSV (`d178bf26`, 117 s) collected `oracle_artifact_probe.csv` through the
+  redesigned `Download file` control, byte-exact and `validated`, with `collectionStatus:
+  complete`; the model answered with the file card alone, without the requested text line. The
+  no-send composer proof passed on the live page with a 41,250-byte draft (written, verified,
+  replaced, and cleared).
 
 #### 0.4.1 (2026-09-24, `7c39d31`)
 
