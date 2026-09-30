@@ -118,6 +118,49 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.2 (2026-09-30, `18c0538`)
+
+- Scope: the redesigned ChatGPT web app (`e4f4b07`). An account on the redesign failed every job
+  at `verifying_auth` (native job `cb21df26`: `Timed out waiting for the ChatGPT chat UI to become
+  ready`); readiness was proved red against that job's retained snapshot and green after, offline.
+  Two further failures surfaced live and were fixed before release: the model picker's open state
+  (the redesigned interactive snapshot omits the menu node) and the Deep Research widget, which
+  renders beside the reply rather than inside it (job `77be598d` failed with
+  `deep_research_report_unreadable` while its research ran on; the frame binding was proved red,
+  then green, against that same live conversation without sending). Also the preset proof
+  runner's managed-browser transport (`24754e2`) and the brand assets (`d9720ba`).
+- Live on the redesigned shell from source before release, through isolated print-mode sessions
+  on the diligence account's managed browser: `instant` `2aa05254` (slider Pro to Instant, 44 s);
+  a same-thread `thinking_light` follow-up `cc177f25` (Instant to Medium, `responseIndex` 1); and
+  `deep_research` `5ff15fc5`, whose widget frame attached 21 s after send, whose report was read
+  from the widget about 3 minutes later, and whose native Markdown export (1,104 bytes) was
+  collected with `collectionStatus: complete`. The no-send composer proof passed on the live page
+  for a plain prompt and with the Deep Research tool selected.
+- Live eight-preset ChatGPT proof accepted on `18c0538` in one runner invocation, the first
+  through the operator's managed browser: `pro_standard` `6f7519b5` 52 s, `pro_extended`
+  `42cf0506` 87 s, `thinking_light` `3f9d77b9` 48 s, `thinking_standard` `4b72b86a` 43 s,
+  `thinking_extended` `0550739e` 41 s, `thinking_heavy` `13a05622` 42 s, `instant` `8c67cafc`
+  44 s, `instant_auto_switch` `6ab5864c` 41 s; all eight completed with both markers, and the
+  slider named every stop it reached (Instant 1, Medium 2, High 3, Extra High 4, Pro 5 of 5).
+- Crabbox lanes on `18c0538`: macOS `platform-build` PASS (54.9 s) and `real-extension` PASS
+  (6.1 s), Ubuntu `platform-build` PASS (52.1 s) and `real-extension` PASS (4.6 s), after
+  rebuilding the pruned `omp-oracle-platform-smoke:node24` image; `npm run release:check` passed
+  as one composition on the same clean tree.
+- Published `omp-oracle@0.4.2` from `18c0538` under the founder's authorization. npm auth had
+  expired (`npm whoami` returned `E401`), so `npm login --auth-type=web` ran first; both browser
+  approvals completed within their windows, and the publish took 21 s. Registry `gitHead`
+  `18c0538c00563b37550b6a8ca35ee46d737f7b30`, shasum `a3f6f2228d2756ec3835b9408ce32f1d0496a1e1`,
+  86 files, `latest` (visible within about 2 minutes). Tag `v0.4.2` and the
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.2) name the same
+  commit. Installed with `omp plugin uninstall omp-oracle` and
+  `omp plugin install omp-oracle@0.4.2` (dotfiles-private `996b160`).
+- Installed package on the operator's real configuration (a fresh print-mode session loading the
+  installed entry point): `pro_standard` job `86db08b4` recorded `packageVersion 0.4.2` and the
+  installed path; the operator's keeper opened the diligence Chrome past the lock an exited
+  keeper-run Chrome had left, and the job completed in 75 s. It also returned the account's saved
+  tier to `Pro`: the redesigned shell saves the last stop a job sets to the account, and the
+  proof's canonical order ends on `instant`.
+
 #### 0.4.1 (2026-09-24, `7c39d31`)
 
 - Scope: the composer hydration fix found by the operator's diligence pipeline (`76d27d0`,
