@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.4.2 - 2026-09-30
 
 ### Added
 - brand assets at parity with the sibling OMP projects, specified in `docs/BRANDING.md`: the Lens mark for dark and light backgrounds, a favicon, and banner and social-preview sources in `assets/` with their renders, regenerated and checked by `npm run render:assets`. The site now shows the mark, takes the Answer rose accent, names `og.png` as a large social card, and ships `robots.txt`, `sitemap.xml`, and `llms.txt`; the Pages deploy stages the mark, favicon, and preview from `assets/` instead of keeping copies in `site/`. `npm run test:site`, now part of the local gate, fails when a site page references an asset the deployment would not serve, when a staged asset's source could change without redeploying, when the declared preview size disagrees with `og.png`, or when the sitemap and canonical links drift. The repository's GitHub social preview is uploaded by hand from `assets/og.png`
