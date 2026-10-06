@@ -170,7 +170,7 @@ Artifact run ids live under the gitignored `.artifacts/` root.
   installed entry point): `pro_standard` job `44bb5bb2` recorded `packageVersion 0.4.3` and the
   installed path, completed in 42 s, and returned the account's saved tier from `Instant` to `Pro`.
   Sessions started before the install keep 0.4.2's extension code (its pollers and wake-up
-  delivery) until restarted; jobs they start run the installed 0.4.3 worker.
+  delivery) until restarted.
 
 #### 0.4.2 (2026-09-30, `18c0538`)
 
