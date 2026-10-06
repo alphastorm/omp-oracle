@@ -1075,7 +1075,7 @@ export function resolveArchiveInputs(cwd: string, files: string[]): { absolute: 
     }
     const relative = relativeFromCwd === "" ? "." : relativeFromCwd.split(sep).join("/");
     if (!existsSync(absolute)) {
-      throw new Error(`Archive input does not exist: ${file}`);
+      throw new Error(`Archive input does not exist: ${file} (resolved against project root ${resolve(cwd)})`);
     }
     if (!isPathInsideDirectory(realCwd, realpathSync(absolute))) {
       throw new Error(`Archive input must resolve inside the project cwd without symlink escapes: ${file}`);

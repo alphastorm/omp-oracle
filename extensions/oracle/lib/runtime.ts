@@ -372,6 +372,15 @@ function activeJobExists(jobId: string): boolean {
   }
 }
 
+/** Read-only admission census; preflight must not acquire leases or sweep stale owners. */
+export function countLiveRuntimeLeases(): number {
+  let count = 0;
+  for (const lease of listLeaseMetadata<OracleRuntimeLeaseMetadata>("runtime")) {
+    if (activeJobExists(lease.jobId)) count++;
+  }
+  return count;
+}
+
 async function collectLiveRuntimeLeases(): Promise<OracleRuntimeLeaseMetadata[]> {
   const existing = listLeaseMetadata<OracleRuntimeLeaseMetadata>("runtime");
   const liveLeases: OracleRuntimeLeaseMetadata[] = [];

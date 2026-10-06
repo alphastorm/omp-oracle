@@ -64,6 +64,7 @@ import {
   allocateRuntime,
   assertOracleSubmitPrerequisites,
   cleanupRuntimeArtifacts,
+  countLiveRuntimeLeases,
   getProjectId,
   getSessionId,
   hasPersistedSessionFile,
@@ -137,6 +138,24 @@ const ORACLE_CANCEL_PARAMS = Type.Object({
 
 const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
 const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = resolveOracleProviderArchivePlan("chatgpt").maxArchiveBytes;
+type OracleCapacity = { activeJobs: number; maxActiveJobs: number; queuedJobs: number; maxQueuedJobs: number };
+
+function maxQueuedJobsForConfig(config: OracleConfig): number {
+  return config.browser.maxConcurrentJobs * MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME;
+}
+
+function getOracleCapacity(config: OracleConfig): OracleCapacity {
+  let queuedJobs = 0;
+  for (const jobDir of listOracleJobDirs()) {
+    if (readJob(jobDir)?.status === "queued") queuedJobs++;
+  }
+  return {
+    activeJobs: countLiveRuntimeLeases(),
+    maxActiveJobs: config.browser.maxConcurrentJobs,
+    queuedJobs,
+    maxQueuedJobs: maxQueuedJobsForConfig(config),
+  };
+}
 function prepareOracleProviderAliases<T>(args: unknown, toolName: string): T {
   const record = asRecord(args);
   if (!record) return args as T;
@@ -595,12 +614,13 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
-  if (toolName === "oracle_submit" && message.startsWith("Archive input does not exist: ")) {
+  const missingArchiveInput = message.match(/^Archive input does not exist: (.*) \(resolved against project root (.*)\)$/s);
+  if (toolName === "oracle_submit" && missingArchiveInput) {
     return {
       code: "archive_input_missing",
       message,
-      rejectedValue: message.replace(/^Archive input does not exist: /, ""),
-      suggestedNextStep: "Retry with an existing project-relative file or directory.",
+      rejectedValue: missingArchiveInput[1],
+      suggestedNextStep: `Retry with an existing file or directory relative to project root ${missingArchiveInput[2]}.`,
     };
   }
 
@@ -731,6 +751,7 @@ function buildOracleToolErrorResult(
 
 type OraclePreflightDetails = {
   ready: boolean;
+  capacity?: OracleCapacity;
   provider?: OracleProvider;
   session: {
     persisted: boolean;
@@ -767,9 +788,11 @@ function formatOracleProviderLabel(provider: OracleProvider | undefined): string
 
 function formatOraclePreflightResponse(details: OraclePreflightDetails): string {
   const providerLabel = formatOracleProviderLabel(details.provider);
+  const capacityLine = details.capacity ? `Capacity: ${details.capacity.activeJobs}/${details.capacity.maxActiveJobs} active, ${details.capacity.queuedJobs}/${details.capacity.maxQueuedJobs} queued (global).` : undefined;
   if (details.ready) {
     return [
       `Oracle preflight ready for ${providerLabel}.`,
+      capacityLine,
       details.session.sessionFile ? `Persisted pi session (current run): ${details.session.sessionFile}` : undefined,
       details.auth.seedProfileDir ? `Auth seed profile (${providerLabel} login source): ${details.auth.seedProfileDir}` : undefined,
       details.auth.relayEndpoint
@@ -783,6 +806,7 @@ function formatOraclePreflightResponse(details: OraclePreflightDetails): string 
 
   return [
     `Oracle preflight blocked: ${details.error?.message ?? "unknown blocker"}`,
+    capacityLine,
     `Preflight checks the persisted pi session, local oracle config, and ${details.auth.relayEndpoint ? "relay transport" : details.auth.managedProfileDir ? "managed browser profile" : `${providerLabel} auth seed`} before any archive work starts.`,
     details.error?.suggestedNextStep ? `Suggested next step: ${details.error.suggestedNextStep}` : undefined,
   ].filter(Boolean).join("\n");
@@ -805,6 +829,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
   }
 
   let config;
+  let capacity: OracleCapacity | undefined;
   let provider: OracleProvider | undefined;
   try {
     const followUpJobId = params.followUpJobId;
@@ -816,6 +841,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
       throw new Error("oracle_preflight chatGptConversationId must be a string");
     }
     const baseConfig = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isOracleProjectTrusted(ctx) });
+    capacity = getOracleCapacity(baseConfig);
     const target = resolveConversationTarget({ followUpJobId, chatGptConversationId, cwd: ctx.cwd, config: baseConfig });
     provider = normalizeOracleProvider(params.provider, target.provider ?? baseConfig.defaults.provider, "oracle_preflight");
     if (target.provider && provider !== target.provider) {
@@ -830,6 +856,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
       config: { ready: false },
       auth: { ready: false },
       error: buildOracleToolErrorDetails("oracle_preflight", error, asRecord(params) ?? {}),
+      capacity,
     };
   }
 
@@ -844,6 +871,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
       config: { ready: true },
       auth: preflightAuthDetails(config, AUTH_NEEDED_ERROR_CODES[errorDetails.code] !== true),
       error: errorDetails,
+      capacity,
     };
   }
 
@@ -853,6 +881,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
     session: { persisted: true, sessionFile },
     config: { ready: true },
     auth: preflightAuthDetails(config, true),
+    capacity,
   };
 }
 
@@ -1010,7 +1039,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
 
             if (!runtimeAttempt.acquired) {
               const queuePressure = await getQueuedArchivePressure();
-              const maxQueuedJobs = config.browser.maxConcurrentJobs * MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME;
+              const maxQueuedJobs = maxQueuedJobsForConfig(config);
               const maxQueuedArchiveBytes = config.browser.maxConcurrentJobs * MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME;
               const queueAdmissionFailure = getQueueAdmissionFailure({
                 queuePressure,

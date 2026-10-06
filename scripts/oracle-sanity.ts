@@ -1415,10 +1415,23 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
   const defaultSeedDir = join(agentExtensionsDir, "oracle-auth-seed-profile");
   const grokSeedDir = `${defaultSeedDir}-grok`;
   const configPath = join(agentExtensionsDir, "oracle.json");
+  const capacityJobIds: string[] = [];
 
   try {
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, maxConcurrentJobs: 3 } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    const capacityConfig = loadOracleConfig(process.cwd(), { projectConfigTrusted: true });
+    const activeId = await createJobForTest(capacityConfig, fixtureDir, sessionFile);
+    const queuedId = await createJobForTest(capacityConfig, fixtureDir, sessionFile, { initialState: "queued" });
+    const historicalId = await createTerminalJob(capacityConfig, fixtureDir, sessionFile);
+    capacityJobIds.push(activeId, queuedId, historicalId);
+    await updateJob(historicalId, (job) => ({ ...job, cleanupWarnings: ["Historical cleanup warning"], cleanupAttemptCount: 5, cleanupPending: false }));
+    for (const id of [activeId, historicalId]) {
+      const job = readJob(id)!;
+      await writeLeaseMetadata("runtime", job.runtimeId, buildRuntimeLeaseMetadata(job, new Date().toISOString()));
+    }
+    await writeLeaseMetadata("runtime", "capacity-missing-job", { jobId: "capacity-missing-job", runtimeId: "capacity-missing-job" });
+    const leasesBefore = JSON.stringify(listLeaseMetadata("runtime"));
 
     const noSessionResult = await preflightTool.execute!("oracle-preflight-no-session", {}, undefined, () => { }, noSessionCtx) as { details?: unknown };
     const noSessionDetails = asRecord(noSessionResult.details);
@@ -1435,6 +1448,10 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     assert(missingSeedError?.code === "auth_seed_profile_missing", "oracle preflight should surface auth_seed_profile_missing when the seed dir is absent");
     assert(missingSeedAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should report the configured auth seed path");
     assert(missingSeedText.includes("Preflight checks the persisted pi session, local oracle config, and ChatGPT auth seed"), "blocked oracle preflight text should explain what readiness covers before archive work starts");
+    const blockedCapacity = asRecord(missingSeedDetails?.capacity);
+    assert(blockedCapacity?.activeJobs === 1 && blockedCapacity.maxActiveJobs === 3 && blockedCapacity.queuedJobs === 1 && blockedCapacity.maxQueuedJobs === 3, "blocked preflight must report global live runtime and queued capacity with configured limits");
+    assert(missingSeedText.includes("Capacity: 1/3 active, 1/3 queued (global)."), "blocked preflight must explain global capacity in text");
+    assert(JSON.stringify(listLeaseMetadata("runtime")) === leasesBefore, "capacity inspection must not acquire or prune runtime leases");
 
     await writeFile(configPath, `${JSON.stringify({ defaults: { provider: "grok" }, browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     const grokDefaultConfig = loadOracleConfig(process.cwd(), { projectConfigTrusted: true });
@@ -1492,6 +1509,11 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     assert(readyDetails?.ready === true, "oracle preflight should report ready=true once persisted session and auth seed prerequisites are satisfied");
     assert(readyAuth?.ready === true && readyAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should report the ready auth seed path");
     assert(readyText.includes("Preflight validates the persisted pi session, local oracle config, and ChatGPT auth seed created by oracle_auth"), "ready oracle preflight text should explain why oracle_auth matters");
+    const readyCapacity = asRecord(readyDetails?.capacity);
+    assert(readyCapacity?.activeJobs === 1 && readyCapacity.maxActiveJobs === 2 && readyCapacity.queuedJobs === 1 && readyCapacity.maxQueuedJobs === 2 && readyText.includes("Capacity: 1/2 active, 1/2 queued (global)."), "ready preflight must report capacity across project boundaries");
+    const invalidTargetResult = await preflightTool.execute!("oracle-preflight-capacity-invalid-target", { chatGptConversationId: "not/a/conversation" }, undefined, () => {}, persistedCtx) as { details?: unknown };
+    assert(asRecord(asRecord(invalidTargetResult.details)?.capacity)?.activeJobs === 1, "preflight must retain capacity whenever config loaded, even when conversation-target validation blocks readiness");
+    assert(JSON.stringify(listLeaseMetadata("runtime")) === leasesBefore, "ready and validation-blocked capacity reads must remain read-only");
 
     const missingExecutablePath = join(fixtureDir, "missing-chrome");
     await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, executablePath: missingExecutablePath } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -1553,6 +1575,11 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    for (const id of capacityJobIds) {
+      await releaseRuntimeLease(readJob(id)?.runtimeId);
+      await cleanupJob(id);
+    }
+    await releaseLease("runtime", "capacity-missing-job");
     await rm(fixtureDir, { recursive: true, force: true });
   }
 }
@@ -4532,6 +4559,30 @@ function testArchiveRejectsBlankInputs(): void {
   assert(repoInputs.length === 1 && repoInputs[0]?.relative === ".", "archive input resolution should keep '.' as the explicit whole-repo sentinel");
 }
 
+async function testArchiveMissingInputNamesProjectRoot(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-sanity-archive-root-"));
+  const agentDir = join(fixtureDir, "agent");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const input = "synthetic-missing.md";
+  try {
+    await mkdir(join(fixtureDir, ".git"));
+    await mkdir(join(agentDir, "extensions"), { recursive: true });
+    await writeFile(join(agentDir, "extensions", "oracle.json"), JSON.stringify({ browser: { authSeedProfileDir: join(fixtureDir, "seed") } }));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    assertThrows(() => resolveArchiveInputs(fixtureDir, [input]), "missing archive inputs must name the project root", `Archive input does not exist: ${input} (resolved against project root ${fixtureDir})`);
+    const pi = createPiHarness();
+    registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
+    const ctx = createExtensionCtx({ getSessionFile: () => "/tmp/oracle-sanity-archive-root-session.jsonl" } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub(), fixtureDir);
+    const result = await pi.tools.get("oracle_submit")!.execute!("oracle-archive-root", { prompt: "Synthetic archive root test", files: [input] }, undefined, () => {}, ctx) as { details?: unknown };
+    const error = asRecord(asRecord(result.details)?.error);
+    assert(error?.code === "archive_input_missing" && error.rejectedValue === input && String(error.suggestedNextStep).includes(fixtureDir), "archive_input_missing must reject only the input and name the resolution root in its next step");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testArchiveResolutionPreservesSignificantWhitespace(): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-whitespace-"));
   const spacedFile = " leading-space.md";
@@ -5261,7 +5312,7 @@ async function testWorkerFieldPresentation(config: OracleConfig): Promise<void> 
     const pi = createPiHarness();
     registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
     const readTool = pi.tools.get("oracle_read")!;
-    const result = await readTool.execute!("oracle-presentation-test", { jobId }, undefined, () => {}, createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"]));
+    const result = await readTool.execute!("oracle-presentation-test", { jobId }, undefined, () => {}, createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"])) as { details?: unknown };
     const details = asRecord(asRecord(result.details)?.job);
     assert(details?.recollectionNeeded === true && details.promptSendState === "attempted" && JSON.stringify(details.observedSelection) === JSON.stringify(job.observedSelection) && JSON.stringify(details.observedTurn) === JSON.stringify(job.observedTurn) && details.cleanupAttemptCount === 2 && details.cleanupRetryAt === at, "oracle_read details must expose the new worker and cleanup retry fields");
   } finally {
@@ -6311,6 +6362,7 @@ async function runPlatformSanity(): Promise<void> {
   await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
   testArchiveEntryGroupMergeHandlesLargeArrays();
   testArchiveRejectsBlankInputs();
+  await testArchiveMissingInputNamesProjectRoot();
   await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();
   await testArchiveSubprocessTimeoutKillsHungChildren();
@@ -6415,6 +6467,7 @@ async function main() {
   await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
   testArchiveEntryGroupMergeHandlesLargeArrays();
   testArchiveRejectsBlankInputs();
+  await testArchiveMissingInputNamesProjectRoot();
   await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();
   await testArchiveSubprocessTimeoutKillsHungChildren();
