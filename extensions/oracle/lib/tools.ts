@@ -38,6 +38,7 @@ import {
   createJob,
   getJobDir,
   getSessionFile,
+  getWakeupSessionKey,
   hasDurableWorkerHandoff,
   hasRetainedPreSubmitArchive,
   isOpenOracleJob,
@@ -1234,11 +1235,13 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           // Collection-only worker run, awaited in-turn; its own deadlines end it in minutes, this backstop ends a wedged transport.
           await execFileAsync(resolveNodeExecutable(), [workerPath, job.id, "--recollect", ...(explicit ? [explicit] : [])], { maxBuffer: 1024 * 1024, timeout: 10 * 60 * 1000 });
         } else if (params.responseIndex !== undefined || params.messageId !== undefined) throw new Error("Turn binding parameters require action=recollect.");
+        const readerSessionFile = getSessionFile(ctx);
         const latest = isTerminalOracleJob(job)
           ? await markWakeupSettled(job.id, {
             source: "oracle_read",
-            sessionFile: getSessionFile(ctx),
+            sessionFile: readerSessionFile,
             cwd: ctx.cwd,
+            allowBeforeFirstAttempt: getWakeupSessionKey(readerSessionFile, ctx.cwd) === `${job.projectId}::${job.sessionId}`,
           })
           : job;
         const current = latest ?? readJob(job.id) ?? job;

@@ -296,6 +296,8 @@ export function appendAssistantMessage(
 
 export type PollerTestContext = ExtensionContext & {
   ui: UiStub;
+  idle: boolean;
+  pendingMessages: boolean;
   isIdle: () => boolean;
   hasPendingMessages: () => boolean;
 };
@@ -307,8 +309,10 @@ export function createPollerCtx(sessionManager: SessionManager, cwd = process.cw
     sessionManager,
     hasUI: mode === "tui" || mode === "rpc",
     ui: createUiStub(),
-    isIdle: () => true,
-    hasPendingMessages: () => false,
+    idle: true,
+    pendingMessages: false,
+    isIdle(this: PollerTestContext) { return this.idle; },
+    hasPendingMessages(this: PollerTestContext) { return this.pendingMessages; },
   } as unknown as PollerTestContext;
 }
 
@@ -401,14 +405,18 @@ export function createExtensionCtx(
   ui = createUiStub(),
   cwd = process.cwd(),
   mode: ExtensionContext["mode"] = "tui",
-): ExtensionContext {
+): PollerTestContext {
   return {
     cwd,
     mode,
     hasUI: mode === "tui" || mode === "rpc",
     sessionManager,
     ui,
-  } as unknown as ExtensionContext;
+    idle: true,
+    pendingMessages: false,
+    isIdle(this: PollerTestContext) { return this.idle; },
+    hasPendingMessages(this: PollerTestContext) { return this.pendingMessages; },
+  } as unknown as PollerTestContext;
 }
 
 export interface FixtureJobOptions {

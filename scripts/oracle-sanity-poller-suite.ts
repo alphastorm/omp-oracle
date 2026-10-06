@@ -58,6 +58,105 @@ import {
   waitForProcessStartedAtValue,
 } from "./oracle-sanity-support.ts";
 
+export async function testBusySessionDefersWakeup(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const manager = createPersistedSessionManager("busy-wakeup");
+  const sessionFile = manager.getSessionFile()!;
+  const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
+  const ctx = createPollerCtx(manager);
+  ctx.idle = false;
+  const pi = createPiHarness();
+  let claims = 0;
+  try {
+    await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs", { hooks: { beforeNotificationClaim: () => { claims++; } } });
+    assert(pi.sentMessages.length === 0, "a busy session must not receive any completion wake-up");
+    assert(claims === 0 && !readJob(jobId)?.notifyClaimedAt && !readJob(jobId)?.wakeupAttemptCount && !readJob(jobId)?.notifiedAt, "busy scans must skip claims and wake-up delivery state entirely");
+    ctx.idle = true;
+    ctx.pendingMessages = true;
+    await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs");
+    assert(pi.sentMessages.length === 0 && !readJob(jobId)?.wakeupAttemptCount, "pending host messages must defer completion wake-ups even while idle");
+    ctx.pendingMessages = false;
+    const isIdle = ctx.isIdle;
+    ctx.isIdle = () => { throw new Error("Synthetic host state error"); };
+    await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs");
+    assert(pi.sentMessages.length === 0 && !readJob(jobId)?.wakeupAttemptCount, "a throwing idle probe must count as busy");
+    ctx.isIdle = isIdle;
+    const hasPendingMessages = ctx.hasPendingMessages;
+    ctx.hasPendingMessages = () => { throw new Error("Synthetic pending state error"); };
+    await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs");
+    assert(pi.sentMessages.length === 0 && !readJob(jobId)?.wakeupAttemptCount, "a throwing pending-message probe must count as busy");
+    ctx.hasPendingMessages = hasPendingMessages;
+    await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs", { hooks: { beforeNotificationPersist: () => { ctx.idle = false; } } });
+    assert(pi.sentMessages.length === 0 && !readJob(jobId)?.wakeupAttemptCount && !readJob(jobId)?.notifyClaimedBy, "delivery must re-check idleness after candidate hooks and release abandoned claims");
+    let busyProbeReads = 0;
+    ctx.isIdle = function() { busyProbeReads++; return isIdle.call(this); };
+    startPoller(pi, ctx, 25, "/tmp/fake-oracle-worker.mjs");
+    await waitForCondition(() => busyProbeReads > 0 || undefined, { timeoutMs: 1500, description: "captured busy session probe" });
+    assert(pi.sentMessages.length === 0 && !readJob(jobId)?.wakeupAttemptCount, "a live poller must retain a deferred completion while its captured session state is busy");
+    ctx.idle = true;
+    await waitForCondition(() => pi.sentMessages.length === 1 || undefined, { timeoutMs: 1500, description: "deferred idle completion" });
+    assert(readJob(jobId)?.wakeupAttemptCount === 1 && Boolean(readJob(jobId)?.notifiedAt), "returning to idle must deliver exactly one deferred wake-up");
+  } finally {
+    stopPollerForSession(sessionFile, process.cwd());
+    await waitForAllPollersToQuiesce();
+    await cleanupJob(jobId);
+  }
+}
+
+export async function testOriginReadSuppressesDeferredWakeup(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const manager = createPersistedSessionManager("origin-read-wakeup");
+  const ctx = createExtensionCtx(manager);
+  const jobId = await createTerminalJob(config, process.cwd(), manager.getSessionFile()!);
+  ctx.idle = false;
+  const pi = createPiHarness();
+  registerOracleTools(pi, "/tmp/fake-oracle-worker.mjs");
+  try {
+    const readTool = pi.tools.get("oracle_read")!;
+    const otherManager = createPersistedSessionManager("other-read-wakeup");
+    await readTool.execute!("oracle-other-read", { jobId }, undefined, () => {}, createExtensionCtx(otherManager));
+    assert(!readJob(jobId)?.wakeupSettledAt && readJob(jobId)?.wakeupObservedSource === "oracle_read", "another session's pre-send tool read must remain observe-only");
+    await readTool.execute!("oracle-origin-read", { jobId }, undefined, () => {}, ctx);
+    assert(Boolean(readJob(jobId)?.wakeupSettledAt) && readJob(jobId)?.wakeupSettledBeforeFirstAttempt === true, "origin-session oracle_read must settle an unsent terminal wake-up");
+    await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs");
+    ctx.idle = true;
+    await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs");
+    assert(pi.sentMessages.length === 0 && !readJob(jobId)?.wakeupAttemptCount && !readJob(jobId)?.notifiedAt, "a deferred completion read by its origin must never wake when the session becomes idle");
+  } finally {
+    stopPollerForSession(manager.getSessionFile(), process.cwd());
+    await cleanupJob(jobId);
+  }
+}
+
+export async function testIdleCompletionsShareOneWakeup(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const manager = createPersistedSessionManager("batch-wakeup");
+  const ctx = createPollerCtx(manager);
+  const jobIds = [await createTerminalJob(config, process.cwd(), manager.getSessionFile()!), await createTerminalJob(config, process.cwd(), manager.getSessionFile()!)];
+  const pi = createPiHarness();
+  const sendOptions: unknown[] = [];
+  pi.sendMessage = (message, options) => { pi.sentMessages.push(message); sendOptions.push(options); ctx.idle = false; };
+  try {
+    await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs");
+    assert(pi.sentMessages.length === 1, "two idle completions must produce exactly one host follow-up turn");
+    const message = pi.sentMessages[0];
+    const content = String(message.content);
+    assert(jobIds.every((id) => content.includes(id)), "the batch wake-up must name every completed job");
+    assert(content.startsWith("Oracle jobs have finished.") && content.split("This is a one-time completion wake-up").length === 2, "batch content must have one shared header and safety sentence");
+    const details = asRecord(message.details);
+    assert(Array.isArray(details?.jobs) && details.jobs.length === 2 && details.jobs.every((entry) => jobIds.includes(asRecord(entry)?.jobId as string) && asRecord(entry)?.status === "complete"), "batch details must contain each job id and status");
+    assert(JSON.stringify(sendOptions[0]) === JSON.stringify({ triggerTurn: true, deliverAs: "followUp" }) && message.customType === "oracle-job-wakeup", "batch delivery must preserve the host follow-up contract");
+    assert(ctx.ui.notifications.length === 1 && jobIds.every((id) => Boolean(readJob(id)?.notifiedAt) && readJob(id)?.wakeupAttemptCount === 1 && !readJob(id)?.notifyClaimedBy), "batch delivery must notify once and finish every job's notification state");
+    const legacyJobId = await createTerminalJob(config, process.cwd(), manager.getSessionFile()!);
+    jobIds.push(legacyJobId);
+    await scanOracleJobsOnce(pi, createCommandCtx(manager), "/tmp/fake-oracle-worker.mjs");
+    assert(Number(pi.sentMessages.length) === 2 && asRecord(pi.sentMessages[1].details)?.jobId === legacyJobId && !asRecord(pi.sentMessages[1].details)?.jobs, "hosts without activity probes must retain single-job wake-up details and delivery");
+  } finally {
+    stopPollerForSession(manager.getSessionFile(), process.cwd());
+    for (const id of jobIds) await cleanupJob(id);
+  }
+}
+
 async function testNotificationClaims(config: OracleConfig): Promise<void> {
   const cwd = process.cwd();
   const sessionId = "/tmp/oracle-sanity-session-a.jsonl";
@@ -832,6 +931,8 @@ async function testStoppingPollerCancelsInFlightStaleContextAccess(config: Oracl
       throwIfStale();
       return ui;
     },
+    isIdle() { throwIfStale(); return true; },
+    hasPendingMessages() { throwIfStale(); return false; },
   } as unknown as ExtensionContext;
 
   let releaseScan: () => void = () => undefined;
@@ -1479,6 +1580,9 @@ async function testPollerWakeupDeliveryIsDedupedWithoutDurableNotifications(conf
 }
 
 export async function runPollerSanitySuite(config: OracleConfig): Promise<void> {
+  await testBusySessionDefersWakeup(config);
+  await testOriginReadSuppressesDeferredWakeup(config);
+  await testIdleCompletionsShareOneWakeup(config);
   await testNotificationClaims(config);
   await testMarkJobNotifiedRejectsStaleClaimant(config);
   await testOracleSubmitRejectsMissingSessionIdentity();

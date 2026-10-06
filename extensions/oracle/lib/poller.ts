@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Poller scans are serialized per session key, wake-up delivery is best-effort, and terminal-job notifications always re-read durable job state before send.
 import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildOracleStatusText, buildOracleWakeupNotificationContent, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
+import { buildOracleStatusText, buildOracleWakeupBatchNotificationContent, buildOracleWakeupNotificationContent, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
 import { isProcessAlive, readProcessStartedAt } from "../shared/process-helpers.mjs";
 import { parseTimestamp } from "../shared/time-helpers.mjs";
 import { isLockTimeoutError, listLeaseMetadata, releaseLease, withGlobalReconcileLock, writeLeaseMetadata } from "./locks.js";
@@ -34,6 +34,8 @@ interface OraclePollerContextSnapshot {
   sessionFile: string | undefined;
   hasUI: boolean;
   ui: ExtensionContext["ui"];
+  isIdle?: () => boolean;
+  hasPendingMessages?: () => boolean;
 }
 
 interface OracleActivePoller {
@@ -144,12 +146,27 @@ function jobCanNotifyContext(
 }
 
 function snapshotPollerContext(ctx: ExtensionContext): OraclePollerContextSnapshot {
+  const isIdle = ctx.isIdle;
+  const hasPendingMessages = ctx.hasPendingMessages;
   return {
     cwd: ctx.cwd,
     sessionFile: getSessionFile(ctx),
     hasUI: ctx.hasUI,
     ui: ctx.ui,
+    isIdle: typeof isIdle === "function" ? () => isIdle.call(ctx) : undefined,
+    hasPendingMessages: typeof hasPendingMessages === "function" ? () => hasPendingMessages.call(ctx) : undefined,
   };
+}
+
+function canDeliverWakeup(snapshot: OraclePollerContextSnapshot, lifecycle: OraclePollerLifecycle): boolean {
+  if (lifecycle.isActive?.() === false) return false;
+  try {
+    if (!(snapshot.isIdle?.() ?? true)) return false;
+    if (lifecycle.isActive?.() === false) return false;
+    return !(snapshot.hasPendingMessages?.() ?? false) && lifecycle.isActive?.() !== false;
+  } catch {
+    return false;
+  }
 }
 
 function getJobCountsForSession(sessionFile: string | undefined, cwd: string): { active: number; queued: number } {
@@ -208,17 +225,18 @@ function applyReadinessCheck(snapshot: OraclePollerContextSnapshot, sessionKey: 
   refreshOracleStatusSnapshot(snapshot);
 }
 
-function requestWakeupTurn(pi: ExtensionAPI, job: OraclePollerJob): void {
+function requestWakeupTurn(pi: ExtensionAPI, jobs: OraclePollerJob[]): void {
+  const entries = jobs.map((job) => ({ job, options: {
+    responsePath: job.responsePath,
+    responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath)),
+    artifactsPath: `${getJobDir(job.id)}/artifacts`,
+  } }));
   pi.sendMessage(
     {
       customType: ORACLE_WAKEUP_REMINDER_CUSTOM_TYPE,
       display: false,
-      content: buildOracleWakeupNotificationContent(job, {
-        responsePath: job.responsePath,
-        responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath)),
-        artifactsPath: `${getJobDir(job.id)}/artifacts`,
-      }),
-      details: { jobId: job.id, status: job.status },
+      content: entries.length === 1 ? buildOracleWakeupNotificationContent(entries[0].job, entries[0].options) : buildOracleWakeupBatchNotificationContent(entries),
+      details: jobs.length === 1 ? { jobId: jobs[0].id, status: jobs[0].status } : { jobs: jobs.map((job) => ({ jobId: job.id, status: job.status })) },
     },
     { triggerTurn: true, deliverAs: "followUp" },
   );
@@ -282,6 +300,8 @@ async function scan(
   }
   if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
 
+  if (!canDeliverWakeup(snapshot, lifecycle)) return;
+
   const terminalJobs = listOracleJobDirs()
     .map((jobDir) => readJob(jobDir))
     .filter((job): job is NonNullable<typeof job> => Boolean(job))
@@ -297,30 +317,30 @@ async function scan(
     })
     .map((job) => job.id);
 
-  for (const jobId of candidateJobIds) {
-    if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
-    await hooks.beforeNotificationClaim?.(jobId);
-    if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
-    const claimed = await tryClaimNotification(jobId, notificationClaimant);
-    if (!claimed) continue;
+  const claimedJobIds = new Set<string>();
+  const deliverables: OraclePollerJob[] = [];
+  const releaseClaim = async (jobId: string) => {
+    claimedJobIds.delete(jobId);
+    await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+  };
+  try {
+    for (const jobId of candidateJobIds) {
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
+      if (!canDeliverWakeup(snapshot, lifecycle)) return;
+      await hooks.beforeNotificationClaim?.(jobId);
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
+      if (!canDeliverWakeup(snapshot, lifecycle)) return;
+      const claimed = await tryClaimNotification(jobId, notificationClaimant);
+      if (!claimed) continue;
+      claimedJobIds.add(jobId);
 
-    try {
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-        return;
-      }
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
       await hooks.afterNotificationClaim?.(claimed);
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-        return;
-      }
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
       const preNotifyLiveWakeupTargets = await resolveLiveWakeupTargets();
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-        return;
-      }
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
       if (!jobCanNotifyContext(claimed, currentSessionFile, snapshot.cwd, preNotifyLiveWakeupTargets)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        await releaseClaim(jobId);
         continue;
       }
 
@@ -330,58 +350,61 @@ async function scan(
           notificationSessionFile: currentSessionFile,
         });
       }
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-        return;
-      }
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
       await hooks.beforeNotificationPersist?.(claimed);
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-        return;
-      }
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
       const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-        return;
-      }
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
       if (!jobCanNotifyContext(claimed, currentSessionFile, snapshot.cwd, preWakeupLiveWakeupTargets)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        await releaseClaim(jobId);
         continue;
       }
       const deliverable = readJob(jobId);
-      if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now())) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+      if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now()) || !shouldRequestWakeup(deliverable)) {
+        await releaseClaim(jobId);
         continue;
       }
+      if (!canDeliverWakeup(snapshot, lifecycle)) return;
+      await hooks.beforeMarkJobNotified?.(deliverable);
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
+      deliverables.push(deliverable);
+    }
 
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-        return;
+    if (deliverables.length === 0 || !canDeliverWakeup(snapshot, lifecycle)) return;
+    const batchLiveWakeupTargets = await resolveLiveWakeupTargets();
+    if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
+    if (!canDeliverWakeup(snapshot, lifecycle)) return;
+    const delivered: OraclePollerJob[] = [];
+    for (const candidate of deliverables) {
+      const jobId = candidate.id;
+      const deliverable = readJob(jobId);
+      if (!deliverable || deliverable.notifyClaimedBy !== notificationClaimant || shouldPruneTerminalJob(deliverable, Date.now()) || !shouldRequestWakeup(deliverable) || !jobCanNotifyContext(deliverable, currentSessionFile, snapshot.cwd, batchLiveWakeupTargets)) {
+        await releaseClaim(jobId);
+        continue;
       }
+      if (!canDeliverWakeup(snapshot, lifecycle)) return;
       const notedWakeup = await noteWakeupRequested(jobId);
       if (!notedWakeup) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        await releaseClaim(jobId);
         continue;
       }
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
-        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-        return;
-      }
-      await hooks.beforeMarkJobNotified?.(deliverable);
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
       await markJobNotified(jobId, notificationClaimant, {
         notificationSessionKey: pollerKey,
         notificationSessionFile: currentSessionFile,
       });
       if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
-      requestWakeupTurn(pi, deliverable);
-      if (snapshot.hasUI) {
-        snapshot.ui.notify(`Oracle job ${claimed.id} is ${claimed.status}.`, "info");
-      }
-      await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-    } catch (error) {
-      await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-      throw error;
+      delivered.push(deliverable);
     }
+    if (delivered.length === 0 || !canDeliverWakeup(snapshot, lifecycle)) return;
+    requestWakeupTurn(pi, delivered);
+    if (lifecycle.isActive?.() !== false && snapshot.hasUI) {
+      snapshot.ui.notify(delivered.length === 1
+        ? "Oracle job " + delivered[0].id + " is " + delivered[0].status + "."
+        : "Oracle jobs have finished: " + delivered.map((job) => job.id + " (" + job.status + ")").join(", ") + ".", "info");
+    }
+  } finally {
+    for (const jobId of claimedJobIds) await releaseClaim(jobId);
   }
 }
 

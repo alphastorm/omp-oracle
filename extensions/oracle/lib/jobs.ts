@@ -811,7 +811,7 @@ export async function noteWakeupRequested(jobId: string, at = new Date().toISOSt
   }
 }
 
-function getWakeupSessionKey(sessionFile: string | undefined, cwd: string | undefined): string | undefined {
+export function getWakeupSessionKey(sessionFile: string | undefined, cwd: string | undefined): string | undefined {
   if (!sessionFile || !cwd) return undefined;
   const projectId = getProjectId(cwd);
   return `${projectId}::${getSessionId(sessionFile, projectId)}`;

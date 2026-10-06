@@ -231,16 +231,16 @@ export function formatOracleJobSummary(job, options = {}) {
 /**
  * @param {OracleJobSummaryLike} job
  * @param {{ responsePath?: string; responseAvailable?: boolean; artifactsPath?: string }} [options]
- * @returns {string}
+ * @returns {string[]}
  */
-export function buildOracleWakeupNotificationContent(job, options = {}) {
+function buildOracleWakeupNotificationLines(job, options = {}) {
   const responseLine = options.responseAvailable === false
     ? "Response file: unavailable yet"
     : `Response file: ${options.responsePath ?? job.responsePath ?? `response unavailable for ${job.id}`}`;
   const artifactsPath = options.artifactsPath ?? `artifacts unavailable for ${job.id}`;
   return [
     `Oracle job ${job.id} is ${job.status}.`,
-    "This is a one-time completion wake-up, not a retry instruction. Do not call oracle_auth, oracle_submit, or oracle_cancel automatically from this wake-up.",
+    ORACLE_WAKEUP_SAFETY_SENTENCE,
     `Use /oracle-read ${job.id} to inspect the saved response preview. /oracle-status ${job.id} still shows saved job metadata. Agent callers can use oracle_read({ jobId: "${job.id}" }) once if they need tool output in the current turn.`,
     responseLine,
     `Artifacts: ${artifactsPath}`,
@@ -248,7 +248,26 @@ export function buildOracleWakeupNotificationContent(job, options = {}) {
     promptSendAdvice(job),
     formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job)) ? `Last event: ${formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job))}` : undefined,
     job.error ? `Error: ${formatOracleError(job.error)}` : "After opening the saved result, continue from the oracle output.",
-  ].filter(Boolean).join("\n");
+  ].filter((line) => typeof line === "string");
+}
+
+const ORACLE_WAKEUP_SAFETY_SENTENCE = "This is a one-time completion wake-up, not a retry instruction. Do not call oracle_auth, oracle_submit, or oracle_cancel automatically from this wake-up.";
+
+/** @param {OracleJobSummaryLike} job @param {{ responsePath?: string; responseAvailable?: boolean; artifactsPath?: string }} [options] @returns {string} */
+export function buildOracleWakeupNotificationContent(job, options = {}) {
+  return buildOracleWakeupNotificationLines(job, options).join("\n");
+}
+
+/** @param {Array<{ job: OracleJobSummaryLike; options?: { responsePath?: string; responseAvailable?: boolean; artifactsPath?: string } }>} jobs @returns {string} */
+export function buildOracleWakeupBatchNotificationContent(jobs) {
+  if (jobs.length === 1) return buildOracleWakeupNotificationContent(jobs[0].job, jobs[0].options);
+  return [
+    `Oracle jobs have finished.\n${ORACLE_WAKEUP_SAFETY_SENTENCE}`,
+    ...jobs.map(({ job, options }) => {
+      const lines = buildOracleWakeupNotificationLines(job, options);
+      return [lines[0], ...lines.slice(2)].join("\n");
+    }),
+  ].join("\n\n");
 }
 
 /**

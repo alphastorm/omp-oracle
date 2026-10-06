@@ -83,5 +83,8 @@ export declare function buildOracleWakeupNotificationContent(
   job: OracleJobSummaryLike,
   options?: { responsePath?: string; responseAvailable?: boolean; artifactsPath?: string },
 ): string;
+export declare function buildOracleWakeupBatchNotificationContent(
+  jobs: Array<{ job: OracleJobSummaryLike; options?: { responsePath?: string; responseAvailable?: boolean; artifactsPath?: string } }>,
+): string;
 export declare function formatOracleSubmitResponse(job: OracleJobSummaryLike & { promptPath: string; archivePath: string }, options: OracleSubmitResponseOptions): string;
 export declare function buildOracleStatusText(counts: OracleStatusCounts, readiness?: OracleReadinessStatus): string;
