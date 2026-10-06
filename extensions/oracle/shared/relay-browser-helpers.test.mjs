@@ -48,7 +48,7 @@ for (const disappears of [true, false]) {
     await chmod(binary, 0o700);
     const closing = closeRelayTab({ binary, sessionName: "fixture", endpoint, targetId });
     if (disappears) {
-      await closing;
+      assert.equal(await closing, "closed");
       assert.equal(observedRemoval, true, "cleanup must observe absence, not just accept the close acknowledgement");
     } else {
       await assert.rejects(closing);
@@ -100,6 +100,61 @@ console.log(JSON.stringify({success:true,data:{tabs:[]}}));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const endpoint = `http://127.0.0.1:${server.address().port}`;
-  await closeRelayTab({ binary, sessionName: "fixture", endpoint, targetId: "PAGE-owned-job" });
+  assert.equal(await closeRelayTab({ binary, sessionName: "fixture", endpoint, targetId: "PAGE-owned-job" }), "absent");
   await assert.rejects(import("node:fs/promises").then((fs) => fs.access(invoked)), "a fresh pinned daemon would create a stray tab for a target that is already gone");
+});
+
+test("last-tab refusal releases only the owned pinned target to about:blank", { skip: process.platform === "win32" }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "oracle-relay-release-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const targetId = "PAGE-owned-job";
+  const commands = [];
+  const paths = [];
+  let releaseRequested = false;
+  let releaseInventories = 0;
+  const server = createServer(async (request, response) => {
+    paths.push(request.url);
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/json/version") {
+      response.end(JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1/fixture" }));
+    } else if (request.url === "/command") {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const args = JSON.parse(body);
+      commands.push(args);
+      if (args.at(-2) === "open" && args.at(-1) === "about:blank") releaseRequested = true;
+      response.end("{}");
+    } else if (request.url === "/json/list") {
+      if (releaseRequested) releaseInventories++;
+      response.end(JSON.stringify([
+        { id: targetId, url: releaseInventories >= 2 ? "about:blank" : "https://example.invalid/c/owned" },
+        { id: "PAGE-unowned", url: "https://example.invalid/c/unowned" },
+      ]));
+    } else {
+      response.writeHead(500).end("{}");
+    }
+  });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  const binary = join(root, "driver");
+  await writeFile(binary, `#!${process.execPath}
+(async () => {
+  const args = process.argv.slice(2);
+  await fetch(${JSON.stringify(endpoint + "/command")}, { method: "POST", body: JSON.stringify(args) });
+  if (args.at(-2) === "tab" && args.at(-1) === "close") {
+    console.log(JSON.stringify({ success: false, data: null, error: "Cannot close the last tab" }));
+    process.exitCode = 1;
+  } else {
+    console.log(JSON.stringify({ success: true, data: { tabs: [{ targetId: ${JSON.stringify(targetId)}, active: true }] } }));
+  }
+})();
+`);
+  await chmod(binary, 0o700);
+  assert.equal(await closeRelayTab({ binary, sessionName: "fixture", endpoint, targetId }), "released");
+  assert.ok(releaseInventories >= 2, "release must verify the owned target is actually blank");
+  const prefix = ["--session", "fixture", "--cdp", endpoint, "--pin-tab", "--json"];
+  assert.deepEqual(commands, [[...prefix, "tab", "list"], [...prefix, "tab", "close"], [...prefix, "open", "about:blank"]]);
+  assert.ok(paths.every((path) => !path.startsWith("/json/close")), "never close a relay window through CDP discovery");
 });

@@ -116,6 +116,8 @@ import {
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
   resolveArchiveInputs,
+  shouldAdvanceQueueAfterCancellation,
+  shouldPruneTerminalJob,
   tryClaimNotification,
   updateJob,
   withJobPhase,
@@ -2887,12 +2889,14 @@ async function testQueuedCleanupWarningsRetryArchiveDeletion(config: OracleConfi
     const cancelled = await cancelOracleJob(queuedId);
     assert(Boolean(cancelled.cleanupWarnings?.length), "queued cleanup retry should start with cleanup warnings after the initial archive delete failure");
 
+    await updateJob(queuedId, (job) => ({ ...job, cleanupRetryAt: new Date(Date.now() - 1).toISOString() }));
     const firstRepair = await reconcileStaleOracleJobs();
     assert(firstRepair.some((entry) => entry.id === queuedId), "reconcile should revisit queued cleanup warnings and retry archive deletion");
     const stillBlocked = readJob(queuedId);
     assert(Boolean(stillBlocked?.cleanupWarnings?.length), "reconcile should retain queued cleanup warnings while archive deletion still fails");
 
     await rm(queued.archivePath, { recursive: true, force: true });
+    await updateJob(queuedId, (job) => ({ ...job, cleanupRetryAt: new Date(Date.now() - 1).toISOString() }));
     const secondRepair = await reconcileStaleOracleJobs();
     assert(secondRepair.some((entry) => entry.id === queuedId), "queued cleanup retry should report the follow-up repair after the stranded archive is removed");
     const recovered = readJob(queuedId);
@@ -4051,7 +4055,6 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel tool should only promote queued jobs after a clean cancellation");
   assert(toolsSource.includes("formatOracleSubmitResponse"), "oracle tools should format submit responses through the shared observability helper");
   assert(toolsSource.includes("formatOracleJobSummary"), "oracle tools should format oracle_read output through the shared observability helper");
-  assert(jobsSource.includes("return job.status === \"cancelled\" && !job.cleanupPending && !job.cleanupWarnings?.length;"), "queue advancement after cancellation should require a cancelled job with no pending cleanup or cleanup warnings");
   assert(sharedJobCoordinationSource.includes("if (job.workerPid) return true;"), "durable worker handoff should require a persisted worker pid");
   assert(!sharedJobCoordinationSource.includes('if (job.status === "waiting") return true;'), "worker phase alone should not count as a durable handoff without a persisted pid");
   assert(queueSource.includes("runQueuedJobPromotionPass"), "queued promotion should delegate the shared orchestration pass instead of keeping a divergent loop inline");
@@ -4307,14 +4310,11 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(archiveSource.includes("ARCHIVE_COMMAND_TIMEOUT_MS = 120_000"), "archive creation should enforce a subprocess timeout envelope");
   assert(archiveSource.includes("Oracle archive subprocess timed out after"), "archive creation should surface timeout failures clearly");
   assert(workerSource.includes("applyOracleJobCleanupWarnings"), "worker should persist cleanup warnings when runtime teardown is incomplete through the shared lifecycle helper");
-  assert(workerSource.includes("Stopping queued cleanup promotion after"), "cleanup-driven queued promotion should stop when teardown leaves warnings");
   assert(workerSource.includes("if (existing?.jobId === job.id) return true;"), "cleanup-driven queued promotion should reuse same-job conversation leases during retry");
   assert(workerSource.includes("runQueuedJobPromotionPass"), "cleanup-driven queued promotion should reuse the shared queued-promotion orchestration helper");
   assert(sharedProcessSource.includes("terminateTrackedProcess"), "shared process helpers should centralize tracked-process termination semantics");
   assert(workerSource.includes("cleanupPending: true"), "worker should mark terminal jobs as cleanup-pending before teardown starts");
   assert(workerSource.includes("clearOracleJobCleanupState"), "worker should clear cleanup-pending through the shared lifecycle helper once teardown finishes");
-  assert(workerSource.includes("if (cleanupWarnings.length === 0)"), "worker should only auto-promote queued jobs after a clean runtime teardown");
-  assert(workerSource.includes("Skipping queued promotion because runtime cleanup left"), "worker should log when cleanup warnings block auto-promotion");
   assert(!workerSource.includes("Proceeding after model configuration timeout because strong in-dialog verification already succeeded"), "worker should not proceed if the model configuration sheet never closes");
   assert(sharedObservabilitySource.includes("buildOracleWakeupNotificationContent"), "shared observability helpers should centralize wake-up notification formatting");
   assert(sharedObservabilitySource.includes("Response file: unavailable yet"), "shared observability helpers should avoid implying that failed jobs already have a response file when they do not");
@@ -5062,6 +5062,73 @@ async function testSharedQueuedPromotionHelper(): Promise<void> {
   }
 }
 
+function testCleanupWarningBounds(): void {
+  const at = "2026-01-01T00:00:00.000Z";
+  for (const status of ["complete", "failed", "cancelled"] as const) {
+    const original: OracleLifecycleTrackedJobLike = { status, phase: status, phaseAt: at, createdAt: at, completedAt: at, error: "Original provider failure" };
+    const first = applyOracleJobCleanupWarnings(original, ["Cannot close the last tab"], { at });
+    const repeated = applyOracleJobCleanupWarnings(first, ["Cannot close the last tab"], { at });
+    assert(repeated.error === original.error, "cleanup warnings must never change the provider error, including repeated warnings");
+    assert(repeated.cleanupWarnings?.length === 1, "repeated cleanup warnings must be deduplicated");
+    assert(repeated.cleanupAttemptCount === 2 && repeated.cleanupPending === true, "each warning application must count one failed cleanup attempt");
+    assert(repeated.cleanupRetryAt === "2026-01-01T00:01:00.000Z", "the second cleanup failure must back off for 60 seconds");
+    const many = applyOracleJobCleanupWarnings(repeated, Array.from({ length: 20 }, (_, index) => "warning-" + index + ": " + "x".repeat(700)), { at });
+    assert(many.cleanupWarnings?.length === 8 && many.cleanupWarnings.every((warning) => warning.length <= 500), "cleanup warnings must keep at most eight distinct 500-character entries");
+    assert(many.cleanupWarnings[0].startsWith("warning-12:") && many.cleanupWarnings[7].startsWith("warning-19:"), "the most recent distinct warnings must win");
+    let exhausted = many;
+    for (const delay of [300_000, 900_000]) {
+      assert(Date.parse(exhausted.cleanupRetryAt!) - Date.parse(at) === delay, "cleanup retries must use the bounded delay schedule");
+      exhausted = applyOracleJobCleanupWarnings(exhausted, ["Still blocked"], { at, message: "Cleanup blocked." });
+    }
+    assert(exhausted.cleanupAttemptCount === 5 && exhausted.cleanupPending === false && exhausted.cleanupRetryAt === undefined, "automatic cleanup must stop after five failed attempts");
+    assert(getLatestOracleJobLifecycleEvent(exhausted)?.message.toLowerCase().includes("automatic cleanup gave up"), "the lifecycle event must explain exhaustion even with a caller-supplied message");
+    const cleaned = clearOracleJobCleanupState(exhausted, { at });
+    assert(cleaned.cleanupAttemptCount === undefined && cleaned.cleanupRetryAt === undefined, "successful cleanup must reset retry state");
+  }
+}
+
+async function testTerminalCleanupRetrySchedule(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const makeCancelled = async () => {
+    const id = await createJobForTest(config, process.cwd(), "/tmp/oracle-sanity-cleanup-schedule.jsonl", { initialState: "queued" });
+    await updateJob(id, (job) => transitionOracleJobPhase(job, "cancelled"));
+    return id;
+  };
+  const stoppedId = await makeCancelled();
+  const futureId = await makeCancelled();
+  const legacyId = await makeCancelled();
+  const lastCleanupAt = "2026-01-01T00:00:00.000Z";
+  try {
+    await updateJob(stoppedId, (job) => ({ ...job, cleanupWarnings: ["Historical warning"], cleanupAttemptCount: 5, cleanupPending: false, lastCleanupAt }));
+    await updateJob(futureId, (job) => ({ ...job, cleanupPending: true, cleanupAttemptCount: 1, cleanupRetryAt: new Date(Date.now() + 60_000).toISOString(), lastCleanupAt }));
+    const legacy = readJob(legacyId)!;
+    await rm(legacy.archivePath, { force: true });
+    await mkdir(legacy.archivePath);
+    await updateJob(legacyId, (job) => ({ ...job, cleanupWarnings: ["Legacy warning"], cleanupPending: false, lastCleanupAt }));
+    const stoppedBefore = readJob(stoppedId)!;
+    const futureBefore = readJob(futureId)!;
+    const first = await reconcileStaleOracleJobs();
+    assert(first.length === 1 && first[0].id === legacyId, "only a legacy warnings-only job may receive an immediate cleanup migration");
+    for (const [id, before] of [[stoppedId, stoppedBefore], [futureId, futureBefore]] as const) {
+      const after = readJob(id)!;
+      assert(after.lastCleanupAt === before.lastCleanupAt && JSON.stringify(after.lifecycleEvents) === JSON.stringify(before.lifecycleEvents), "stopped and not-yet-due cleanup must leave timestamps and lifecycle events untouched");
+    }
+    const migrated = readJob(legacyId)!;
+    assert(migrated.cleanupAttemptCount === 1 && migrated.cleanupPending === true && Boolean(migrated.cleanupRetryAt), "legacy warnings-only records must enter the bounded schedule once");
+    assert((await reconcileStaleOracleJobs()).length === 0, "legacy migration and future retries must not repeat before their deadlines");
+    await updateJob(futureId, (job) => ({ ...job, cleanupRetryAt: new Date(Date.now() - 1).toISOString() }));
+    const due = await reconcileStaleOracleJobs();
+    assert(due.length === 1 && due[0].id === futureId, "cleanup must retry exactly once when its deadline becomes due");
+    const recovered = readJob(futureId)!;
+    assert(recovered.lastCleanupAt !== lastCleanupAt && recovered.lifecycleEvents?.length === (futureBefore.lifecycleEvents?.length ?? 0) + 1 && !recovered.cleanupPending, "a due successful cleanup must record one cleanup event and clear pending state");
+    assert((await reconcileStaleOracleJobs()).length === 0, "a successful due cleanup must not run again");
+    assert(shouldAdvanceQueueAfterCancellation(stoppedBefore), "historical cleanup warnings must not block queue advancement");
+    assert(shouldPruneTerminalJob({ ...stoppedBefore, completedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString() }), "historical cleanup warnings must not block retention pruning");
+  } finally {
+    for (const id of [stoppedId, futureId, legacyId]) await cleanupJob(id);
+  }
+}
+
 function testSharedLifecycleHelpers(): void {
   type LifecycleFixture = OracleLifecycleTrackedJobLike & {
     id: string;
@@ -5118,7 +5185,7 @@ function testSharedLifecycleHelpers(): void {
     source: "oracle:test",
     message: "Cleanup left warnings.",
   });
-  assert(withWarnings.cleanupPending === false && withWarnings.cleanupWarnings?.join(",") === "warning-a,warning-b", "shared lifecycle helpers should dedupe cleanup warnings and clear cleanupPending");
+  assert(withWarnings.cleanupPending === true && withWarnings.cleanupWarnings?.join(",") === "warning-a,warning-b", "shared lifecycle helpers should dedupe cleanup warnings and schedule a bounded retry");
 
   const cleaned = clearOracleJobCleanupState(withWarnings, {
     at: "2026-01-01T00:00:30.000Z",
@@ -5162,6 +5229,50 @@ function testSharedLifecycleHelpers(): void {
     notificationSessionFile: "/repo/.pi/session.jsonl",
   });
   assert(notified.notifiedAt === "2026-01-01T00:00:50.000Z" && notified.wakeupAttemptCount === 1 && notified.wakeupLastRequestedAt === "2026-01-01T00:00:35.000Z" && !notified.notifyClaimedBy, "shared lifecycle helpers should clear notification claims while preserving wake-up attempt state for cleanup grace and observability");
+}
+
+async function testWorkerFieldPresentation(config: OracleConfig): Promise<void> {
+  const at = "2026-01-01T00:00:00.000Z";
+  const job = {
+    id: "job-presentation", status: "failed", phase: "failed", createdAt: at, completedAt: at, projectId: "/repo", sessionId: "/repo/session.jsonl",
+    recollectionNeeded: true, promptSendState: "attempted" as const,
+    observedSelection: { at, modelLabel: "Synthetic model", effortLabel: "Extended", deepResearchVerified: true },
+    observedTurn: { at, durationLabel: "Worked for 2m 17s", durationSeconds: 137 },
+    error: "First failure\nRepeated warning\nFirst failure\nRepeated warning",
+  };
+  const summary = formatOracleJobSummary(job);
+  assert(summary.endsWith("error: First failure\nRepeated warning"), "legacy errors must collapse duplicate lines in first-seen order");
+  assert(summary.includes('recollection-needed: the bound turn was not captured; run oracle_read({ jobId: "job-presentation", action: "recollect" }) instead of resubmitting'), "job summaries must explain recollection without asking for resubmission");
+  assert(summary.includes("prompt-send-state: attempted") && summary.includes("The prompt may have been sent before the failure; check the conversation before resubmitting."), "failed jobs must disclose ambiguous prompt acceptance");
+  assert(summary.includes("observed-model: Synthetic model | Extended | " + at) && summary.includes("deep-research-verified: true") && summary.includes("turn-duration: Worked for 2m 17s | 137s"), "job summaries must present observed UI selection and duration");
+  const wakeup = buildOracleWakeupNotificationContent(job);
+  assert(wakeup.endsWith("Error: First failure\nRepeated warning") && wakeup.includes('Recollect with oracle_read({ jobId: "job-presentation", action: "recollect" }); do not resubmit.'), "wake-ups must collapse legacy errors and explain recollection");
+  const huge = { ...job, error: "x".repeat(4000) + "\n" + "y".repeat(4000) };
+  for (const text of [formatOracleJobSummary(huge), buildOracleWakeupNotificationContent(huge)]) {
+    const renderedError = text.slice(text.indexOf("rror: ") + "rror: ".length);
+    const omitted = renderedError.match(/\[(\d+) characters omitted\]$/);
+    assert(renderedError.length <= 2000 && omitted && renderedError.slice(0, renderedError.indexOf("\n[")).length + Number(omitted[1]) === huge.error.length, "displayed errors must be capped at 2,000 characters with an exact omitted-length note");
+  }
+  for (const status of ["failed", "cancelled"]) {
+    const unsent = { ...job, status, promptSendState: "not_sent" as const };
+    for (const text of [formatOracleJobSummary(unsent), buildOracleWakeupNotificationContent(unsent)]) assert(text.includes("No prompt was sent; resubmitting is safe."), "unsent terminal jobs must state safe resubmission explicitly");
+  }
+  assert(!buildOracleWakeupNotificationContent({ ...job, promptSendState: "accepted" }).includes("resubmitting."), "confirmed sends must not imply ambiguous acceptance");
+
+  await resetOracleStateDir();
+  const sessionFile = "/tmp/oracle-sanity-presentation-session.jsonl";
+  const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
+  try {
+    await updateJob(jobId, (current) => ({ ...current, recollectionNeeded: job.recollectionNeeded, promptSendState: job.promptSendState, observedSelection: job.observedSelection, observedTurn: job.observedTurn, cleanupAttemptCount: 2, cleanupRetryAt: at }));
+    const pi = createPiHarness();
+    registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
+    const readTool = pi.tools.get("oracle_read")!;
+    const result = await readTool.execute!("oracle-presentation-test", { jobId }, undefined, () => {}, createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"]));
+    const details = asRecord(asRecord(result.details)?.job);
+    assert(details?.recollectionNeeded === true && details.promptSendState === "attempted" && JSON.stringify(details.observedSelection) === JSON.stringify(job.observedSelection) && JSON.stringify(details.observedTurn) === JSON.stringify(job.observedTurn) && details.cleanupAttemptCount === 2 && details.cleanupRetryAt === at, "oracle_read details must expose the new worker and cleanup retry fields");
+  } finally {
+    await cleanupJob(jobId);
+  }
 }
 
 function testSharedObservabilityHelpers(): void {
@@ -6228,6 +6339,9 @@ async function runPlatformSanity(): Promise<void> {
 
 async function main() {
   const config = await runSanityPreamble();
+  testCleanupWarningBounds();
+  await testTerminalCleanupRetrySchedule(config);
+  await testWorkerFieldPresentation(config);
 
   sanityProgress("auth/config/runtime");
   testAuthCookiePolicy();

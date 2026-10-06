@@ -69,8 +69,8 @@ export function isTerminalOracleJob(job: Pick<OracleJob, "status">): boolean {
   return TERMINAL_ORACLE_JOB_STATUSES.includes(job.status);
 }
 
-export function shouldAdvanceQueueAfterCancellation(job: Pick<OracleJob, "status" | "cleanupWarnings" | "cleanupPending">): boolean {
-  return job.status === "cancelled" && !job.cleanupPending && !job.cleanupWarnings?.length;
+export function shouldAdvanceQueueAfterCancellation(job: Pick<OracleJob, "status" | "cleanupPending">): boolean {
+  return job.status === "cancelled" && !job.cleanupPending;
 }
 
 export function hasRetainedPreSubmitArchive(job: Pick<OracleJob, "submittedAt" | "archiveDeletedAfterUpload" | "archivePath">): boolean {
@@ -188,6 +188,10 @@ export interface OracleJob {
   collectionRequiredMissing?: string[];
   collectionOptionalMissing?: string[];
   recollectionError?: string;
+  recollectionNeeded?: boolean;
+  promptSendState?: "not_sent" | "attempted" | "accepted";
+  observedSelection?: { at: string; modelLabel?: string; effortLabel?: string; deepResearchVerified?: boolean };
+  observedTurn?: { at: string; durationLabel?: string; durationSeconds?: number };
   recollectionPriorWorker?: { runtimeSessionName?: string; workerPid?: number; workerStartedAt?: string; cleanupPending?: boolean; cleanupWarnings?: string[] };
   error?: string;
   /** Stable machine-readable code for worker failures that callers must distinguish. */
@@ -211,6 +215,8 @@ export interface OracleJob {
   cleanupWarnings?: string[];
   lastCleanupAt?: string;
   cleanupPending?: boolean;
+  cleanupAttemptCount?: number;
+  cleanupRetryAt?: string;
   lifecycleEvents?: SharedOracleJobLifecycleEvent[];
 }
 
@@ -414,9 +420,9 @@ export function getStaleOracleJobReason(job: OracleJob, now = Date.now()): strin
   return undefined;
 }
 
-function getTerminalCleanupStaleReason(job: Pick<OracleJob, "status" | "cleanupPending" | "cleanupWarnings" | "lastCleanupAt" | "heartbeatAt" | "completedAt" | "phaseAt" | "createdAt" | "workerPid" | "workerStartedAt">, now = Date.now()): string | undefined {
+function getTerminalCleanupStaleReason(job: Pick<OracleJob, "status" | "cleanupPending" | "lastCleanupAt" | "heartbeatAt" | "completedAt" | "phaseAt" | "createdAt" | "workerPid" | "workerStartedAt">, now = Date.now()): string | undefined {
   if (!isTerminalOracleJob(job)) return undefined;
-  if (!job.cleanupPending && !job.cleanupWarnings?.length) return undefined;
+  if (!job.cleanupPending) return undefined;
 
   const baselineMs =
     parseTimestamp(job.lastCleanupAt) ??
@@ -482,7 +488,7 @@ function getCleanupRetentionMs(job: OracleJob): { complete: number; failed: numb
 
 export function shouldPruneTerminalJob(job: OracleJob, now = Date.now()): boolean {
   if (!isTerminalOracleJobStatus(job.status)) return false;
-  if (job.cleanupPending || job.cleanupWarnings?.length) return false;
+  if (job.cleanupPending) return false;
   if (notificationClaimIsLive(job, now)) return false;
   if (wakeupRetentionGraceIsActive(job, now)) return false;
   const completedMs = parseTimestamp(job.completedAt) ?? parseTimestamp(job.createdAt);
@@ -576,6 +582,13 @@ export async function pruneTerminalOracleJobs(now = Date.now()): Promise<string[
   return removedJobIds;
 }
 
+function terminalCleanupIsDue(job: OracleJob, now: number): boolean {
+  return isTerminalOracleJob(job) && (
+    (job.cleanupPending && (!job.cleanupRetryAt || now >= Date.parse(job.cleanupRetryAt))) ||
+    (!job.cleanupPending && Boolean(job.cleanupWarnings?.length) && job.cleanupAttemptCount === undefined)
+  );
+}
+
 export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
   const repaired: OracleJob[] = [];
   const now = Date.now();
@@ -585,13 +598,13 @@ export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
     const job = readJob(jobDir);
     if (!job) continue;
 
-    if (isTerminalOracleJob(job) && (job.cleanupPending || job.cleanupWarnings?.length)) {
+    if (terminalCleanupIsDue(job, now)) {
       let cleanupTarget: OracleJob | undefined;
       let blockedWarning: string | undefined;
 
       await withJobLock(job.id, { processPid: process.pid, action: "reconcileTerminalCleanupJob" }, async () => {
         const current = readJob(job.id);
-        if (!current || !isTerminalOracleJob(current) || (!current.cleanupPending && !current.cleanupWarnings?.length)) return;
+        if (!current || !terminalCleanupIsDue(current, now)) return;
 
         if (current.workerPid && isWorkerProcessAlive(current.workerPid, current.workerStartedAt)) {
           const staleCleanupReason = getTerminalCleanupStaleReason(current, now);

@@ -19,7 +19,7 @@ export type OracleJobPhase =
 export interface OracleJobLifecycleEvent {
   at: string;
   source: string;
-  kind: "created" | "phase" | "cleanup" | "notification" | "wakeup";
+  kind: "created" | "phase" | "cleanup" | "notification" | "wakeup" | "navigation";
   status: OracleJobStatus;
   phase: OracleJobPhase;
   message: string;
@@ -39,6 +39,8 @@ export interface OracleLifecycleTrackedJobLike {
   lifecycleEvents?: OracleJobLifecycleEvent[];
   cleanupPending?: boolean;
   cleanupWarnings?: string[];
+  cleanupAttemptCount?: number;
+  cleanupRetryAt?: string;
   lastCleanupAt?: string;
   notifyClaimedAt?: string;
   notifyClaimedBy?: string;
@@ -98,6 +100,10 @@ export const ACTIVE_ORACLE_JOB_STATUSES: readonly OracleJobStatus[];
 export const OPEN_ORACLE_JOB_STATUSES: readonly OracleJobStatus[];
 export const TERMINAL_ORACLE_JOB_STATUSES: readonly OracleJobStatus[];
 export const MAX_ORACLE_JOB_LIFECYCLE_EVENTS: number;
+export const MAX_ORACLE_JOB_CLEANUP_WARNINGS: number;
+export const MAX_ORACLE_JOB_CLEANUP_WARNING_LENGTH: number;
+export const MAX_ORACLE_JOB_CLEANUP_ATTEMPTS: number;
+export const ORACLE_JOB_CLEANUP_RETRY_DELAYS_MS: readonly number[];
 
 export declare function getOracleJobStatusForPhase(phase: OracleJobPhase): OracleJobStatus;
 export declare function assertValidOracleJobState<TJob extends OracleLifecycleTrackedJobLike>(job: TJob): TJob;

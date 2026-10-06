@@ -33,6 +33,10 @@ export interface OracleJobSummaryLike {
   collectionRequiredMissing?: string[];
   collectionOptionalMissing?: string[];
   recollectionError?: string;
+  recollectionNeeded?: boolean;
+  promptSendState?: "not_sent" | "attempted" | "accepted";
+  observedSelection?: { at: string; modelLabel?: string; effortLabel?: string; deepResearchVerified?: boolean };
+  observedTurn?: { at: string; durationLabel?: string; durationSeconds?: number };
   lastCleanupAt?: string;
   cleanupWarnings?: string[];
   error?: string;

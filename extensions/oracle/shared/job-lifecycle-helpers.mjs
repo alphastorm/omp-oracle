@@ -13,6 +13,10 @@ export const ACTIVE_ORACLE_JOB_STATUSES = Object.freeze(["preparing", "submitted
 export const OPEN_ORACLE_JOB_STATUSES = Object.freeze(["queued", ...ACTIVE_ORACLE_JOB_STATUSES]);
 export const TERMINAL_ORACLE_JOB_STATUSES = Object.freeze(["complete", "failed", "cancelled"]);
 export const MAX_ORACLE_JOB_LIFECYCLE_EVENTS = 64;
+export const MAX_ORACLE_JOB_CLEANUP_WARNINGS = 8;
+export const MAX_ORACLE_JOB_CLEANUP_WARNING_LENGTH = 500;
+export const MAX_ORACLE_JOB_CLEANUP_ATTEMPTS = 5;
+export const ORACLE_JOB_CLEANUP_RETRY_DELAYS_MS = Object.freeze([15_000, 60_000, 300_000, 900_000]);
 
 /** @type {Record<OracleJobPhase, OracleJobStatus>} */
 const PHASE_STATUS = Object.freeze({
@@ -200,18 +204,27 @@ export function transitionOracleJobPhase(job, phase, options = {}) {
 export function applyOracleJobCleanupWarnings(job, warnings, options = {}) {
   if (warnings.length === 0) return assertValidOracleJobState(job);
   const at = options.at ?? new Date().toISOString();
+  const cleanupAttemptCount = (job.cleanupAttemptCount ?? 0) + 1;
+  const cleanupPending = cleanupAttemptCount < MAX_ORACLE_JOB_CLEANUP_ATTEMPTS;
+  const distinctWarnings = new Set();
+  for (const warning of [...(job.cleanupWarnings || []), ...warnings]) {
+    const bounded = warning.slice(0, MAX_ORACLE_JOB_CLEANUP_WARNING_LENGTH);
+    distinctWarnings.delete(bounded);
+    distinctWarnings.add(bounded);
+  }
   const next = assertValidOracleJobState({
     ...job,
-    cleanupPending: false,
-    cleanupWarnings: Array.from(new Set([...(job.cleanupWarnings || []), ...warnings])),
+    cleanupPending,
+    cleanupWarnings: [...distinctWarnings].slice(-MAX_ORACLE_JOB_CLEANUP_WARNINGS),
+    cleanupAttemptCount,
+    cleanupRetryAt: cleanupPending ? new Date(Date.parse(at) + ORACLE_JOB_CLEANUP_RETRY_DELAYS_MS[cleanupAttemptCount - 1]).toISOString() : undefined,
     lastCleanupAt: at,
-    error: [job.error, ...warnings].filter(Boolean).join("\n"),
   });
   return appendOracleJobLifecycleEvent(next, {
     at,
     source: options.source ?? "oracle:cleanup",
     kind: "cleanup",
-    message: options.message ?? `Cleanup completed with ${warnings.length} warning(s).`,
+    message: [options.message ?? `Cleanup completed with ${warnings.length} warning(s).`, cleanupPending ? undefined : "Automatic cleanup gave up after five failed attempts; /oracle-clean can still retry."].filter(Boolean).join(" "),
   });
 }
 
@@ -227,6 +240,8 @@ export function clearOracleJobCleanupState(job, options = {}) {
     ...job,
     cleanupPending: false,
     cleanupWarnings: undefined,
+    cleanupAttemptCount: undefined,
+    cleanupRetryAt: undefined,
     lastCleanupAt: at,
   });
   return appendOracleJobLifecycleEvent(next, {

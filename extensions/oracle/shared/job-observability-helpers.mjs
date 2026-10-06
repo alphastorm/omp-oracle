@@ -69,6 +69,22 @@ const ACTIVE_SUMMARY_STATUSES = new Set(["preparing", "submitted", "waiting"]);
 const DEFAULT_ORACLE_HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 const DEFAULT_ACTIVE_JOB_POLL_HINT_SECONDS = 15;
 
+/** @param {string} error @returns {string} */
+function formatOracleError(error) {
+  const unique = [...new Set(error.split(/\r?\n/))].join("\n");
+  if (unique.length <= 2000) return unique;
+  const prefix = unique.slice(0, 2000 - `\n[${unique.length} characters omitted]`.length);
+  return `${prefix}\n[${unique.length - prefix.length} characters omitted]`;
+}
+
+/** @param {OracleJobSummaryLike} job @returns {string | undefined} */
+function promptSendAdvice(job) {
+  if (job.status !== "failed" && job.status !== "cancelled") return undefined;
+  if (job.promptSendState === "not_sent") return "No prompt was sent; resubmitting is safe.";
+  if (job.promptSendState === "attempted") return "The prompt may have been sent before the failure; check the conversation before resubmitting.";
+  return undefined;
+}
+
 /**
  * @param {number} elapsedMs
  * @returns {string}
@@ -191,6 +207,12 @@ export function formatOracleJobSummary(job, options = {}) {
     job.collectionRequiredMissing?.length ? `collection-required-missing: ${job.collectionRequiredMissing.join(" | ")}` : undefined,
     job.collectionOptionalMissing?.length ? `collection-optional-missing: ${job.collectionOptionalMissing.join(" | ")}` : undefined,
     job.recollectionError ? `recollection-error: ${job.recollectionError}` : undefined,
+    job.recollectionNeeded ? `recollection-needed: the bound turn was not captured; run oracle_read({ jobId: "${job.id}", action: "recollect" }) instead of resubmitting` : undefined,
+    job.promptSendState ? `prompt-send-state: ${job.promptSendState}` : undefined,
+    promptSendAdvice(job),
+    job.observedSelection ? `observed-model: ${[job.observedSelection.modelLabel, job.observedSelection.effortLabel, job.observedSelection.at].filter(Boolean).join(" | ")}` : undefined,
+    job.observedSelection?.deepResearchVerified === true ? "deep-research-verified: true" : undefined,
+    job.observedTurn ? `turn-duration: ${[job.observedTurn.durationLabel, typeof job.observedTurn.durationSeconds === "number" ? `${job.observedTurn.durationSeconds}s` : undefined].filter(Boolean).join(" | ")}` : undefined,
     options.artifactsPath ? `artifacts: ${options.artifactsPath}` : undefined,
     typeof job.artifactFailureCount === "number" ? `artifact-failures: ${job.artifactFailureCount}` : undefined,
     options.includeWorkerLogPath === false ? undefined : job.workerLogPath ? `worker-log: ${job.workerLogPath}` : undefined,
@@ -198,7 +220,7 @@ export function formatOracleJobSummary(job, options = {}) {
     job.cleanupWarnings?.length ? `cleanup-warnings: ${job.cleanupWarnings.join(" | ")}` : undefined,
     terminalEvent ? `terminal-event: ${terminalEvent}` : undefined,
     latestEvent && !sameEvent ? `${latestEventLabel}: ${latestEvent}` : undefined,
-    job.error ? `error: ${job.error}` : undefined,
+    job.error ? `error: ${formatOracleError(job.error)}` : undefined,
     options.responsePreview ? "\nresponse-preview:" : undefined,
     options.responsePreview,
   ]
@@ -222,8 +244,10 @@ export function buildOracleWakeupNotificationContent(job, options = {}) {
     `Use /oracle-read ${job.id} to inspect the saved response preview. /oracle-status ${job.id} still shows saved job metadata. Agent callers can use oracle_read({ jobId: "${job.id}" }) once if they need tool output in the current turn.`,
     responseLine,
     `Artifacts: ${artifactsPath}`,
+    job.recollectionNeeded ? `Response not collected: the bound turn could not be captured. Recollect with oracle_read({ jobId: "${job.id}", action: "recollect" }); do not resubmit.` : undefined,
+    promptSendAdvice(job),
     formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job)) ? `Last event: ${formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job))}` : undefined,
-    job.error ? `Error: ${job.error}` : "After opening the saved result, continue from the oracle output.",
+    job.error ? `Error: ${formatOracleError(job.error)}` : "After opening the saved result, continue from the oracle output.",
   ].filter(Boolean).join("\n");
 }
 

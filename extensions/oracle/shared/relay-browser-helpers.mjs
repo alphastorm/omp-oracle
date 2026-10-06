@@ -69,33 +69,48 @@ export async function closeRelayTab({ binary, sessionName, endpoint, targetId, b
         try {
           response = JSON.parse(error.stdout);
         } catch { /* Preserve the original subprocess error. */ }
-        if (response?.code === "tab_gone") return response;
+        if (response?.code === "tab_gone" || (args[0] === "tab" && args[1] === "close" && response?.success === false && response.error === "Cannot close the last tab")) return response;
         if (typeof response?.error === "string") throw new Error(response.error);
       }
       throw error;
     }
   };
   // A managed browser that exited or was replaced on the same port took the job's tab with it.
-  if (browserUrl && await readCdpBrowserUrl(endpoint) !== browserUrl) return;
+  const currentBrowserUrl = await readCdpBrowserUrl(endpoint);
+  if (!currentBrowserUrl || (browserUrl && currentBrowserUrl !== browserUrl)) return "absent";
   await assertRelayReady(endpoint);
   // The driver spawns a fresh pinned daemon (and its own tab) for a session whose daemon is gone.
   // Consult the relay inventory first so an already-closed target never costs a stray tab.
-  if (!(await relayTargetListed(endpoint, targetId))) return;
+  if (!(await relayTargetListed(endpoint, targetId))) return "absent";
   const listed = await run("tab", "list");
   if (!listed.success || !Array.isArray(listed.data?.tabs)) {
     throw new Error("Could not inspect the relay job's pinned tab; cleanup refused.");
   }
   const owned = listed.data.tabs.find((tab) => tab.targetId === targetId);
+  /** @type {"closed" | "absent"} */
+  let outcome = "absent";
   if (owned) {
     if (!owned.active) throw new Error("The active relay tab is not owned by this job; cleanup refused.");
     const closed = await run("tab", "close");
+    if (closed.success === false && closed.error === "Cannot close the last tab") {
+      const opened = await run("open", "about:blank");
+      if (!opened.success) throw new Error("The relay driver did not confirm releasing the job-owned tab.");
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const targets = await readRelayTargets(endpoint, deadline - Date.now());
+        if (targets.find((target) => target.id === targetId)?.url === "about:blank") return "released";
+        await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
+      }
+      throw new Error("The job-owned relay tab was not released to about:blank after cleanup.");
+    }
     if (closed.code !== "tab_gone" && (!closed.success || closed.data?.targetId !== targetId)) {
       throw new Error("The relay driver did not confirm closing the job-owned tab.");
     }
+    if (closed.code !== "tab_gone") outcome = "closed";
   }
   // The driver can omit a live target or acknowledge a rejected close. Always
   // verify the relay inventory before discarding the durable owned identity.
-  await assertRelayReady(endpoint);
+  if (await readCdpBrowserUrl(endpoint) !== currentBrowserUrl) return "absent";
   // Native Chrome can acknowledge close before target discovery removes the tab.
   // Wait only after an owned close; never retry the close or select another tab.
   const deadline = Date.now() + 2000;
@@ -105,15 +120,22 @@ export async function closeRelayTab({ binary, sessionName, endpoint, targetId, b
     }
     await sleep(100);
   }
+  return outcome;
 }
 
 /** @param {string} endpoint @param {string} targetId */
 async function relayTargetListed(endpoint, targetId) {
+  return (await readRelayTargets(endpoint)).some((target) => target.id === targetId);
+}
+
+/** @param {string} endpoint @param {number} [timeoutMs] @returns {Promise<Array<{ id: string; url?: string }>>} */
+async function readRelayTargets(endpoint, timeoutMs = 5000) {
   const response = await fetch(new URL("/json/list", endpoint), {
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
     redirect: "error",
   });
   if (!response.ok) throw new Error("Could not verify relay tab cleanup.");
   const targets = await response.json();
-  return !Array.isArray(targets) || targets.some((target) => target.id === targetId);
+  if (!Array.isArray(targets)) throw new Error("Could not verify relay tab cleanup.");
+  return targets;
 }

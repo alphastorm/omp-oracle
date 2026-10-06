@@ -8,4 +8,4 @@ export interface RelayTabCleanupOptions {
   /** Identity of the managed browser that held the tab; a different or absent browser means the tab is gone. */
   browserUrl?: string;
 }
-export declare function closeRelayTab(options: RelayTabCleanupOptions): Promise<void>;
+export declare function closeRelayTab(options: RelayTabCleanupOptions): Promise<"closed" | "released" | "absent">;
