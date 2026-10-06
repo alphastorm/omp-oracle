@@ -2,10 +2,32 @@
 // same function in the owned page or bound report frame; synthetic proofs use it unchanged.
 import { createHash } from "node:crypto";
 
-export function captureScopedResponse({ responseIndex = 0, messageId, report = false } = {}) {
+// The user turns on the page that show `fileName` (this job's own archive) as an attachment: a leaf
+// element whose whole text is the name, or a control named for it, outside every assistant reply,
+// so a reply that merely mentions the name never counts. Closure-free like captureScopedResponse.
+export function archiveTurns(fileName) {
+  const assistantSelector = '[data-message-author-role="assistant"], [data-testid="assistant-message"]';
+  const replies = [...document.querySelectorAll(assistantSelector),
+    ...[...document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')].filter((node) => node.textContent?.trim() === 'ChatGPT said:').map((node) => node.nextElementSibling)]
+    .filter(Boolean);
+  const named = [...document.querySelectorAll('body *')].filter((node) => ((!node.firstElementChild && (node.textContent || '').trim() === fileName)
+    || node.getAttribute('aria-label') === fileName || node.getAttribute('title') === fileName) && !replies.some((reply) => reply.contains(node)));
+  return [...new Set(named.map((node) => node.closest('[data-message-author-role="user"]') || node.closest('[data-turn-key]')).filter(Boolean))];
+}
+
+export function captureScopedResponse({ responseIndex = 0, messageId, report = false, conversationId, anchorFileName } = {}, archiveTurnsOf = undefined) {
   const doc = document;
-  const nodes = [...doc.querySelectorAll('[data-message-author-role="assistant"], [data-testid="assistant-message"]')]
-    .filter((node) => !node.parentElement?.closest('[data-message-author-role="assistant"], [data-testid="assistant-message"]'));
+  // The conversation is read in the same evaluation as the turn, so a navigation can never pair one
+  // conversation's location with another conversation's turn. A report frame is a cross-origin
+  // document; its caller guards the host page instead.
+  if (!report && conversationId !== undefined) {
+    const observed = location.pathname.match(/\/(?:c|chat)\/([A-Za-z0-9-]+)$/i)?.[1];
+    if (observed !== conversationId) {
+      throw new Error(`Bound conversation mismatch: the page shows ${observed ? `conversation ${observed}` : location.pathname}, not ${conversationId}.`);
+    }
+  }
+  const assistantSelector = '[data-message-author-role="assistant"], [data-testid="assistant-message"]';
+  const nodes = [...doc.querySelectorAll(assistantSelector)].filter((node) => !node.parentElement?.closest(assistantSelector));
   const headings = [...doc.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')]
     .filter((node) => node.textContent?.trim() === "ChatGPT said:");
   const headingRoots = headings.map((heading) => heading.nextElementSibling);
@@ -20,10 +42,31 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
     const ids = rootIds(node);
     return ids.size === 1 ? [...ids][0] : undefined;
   };
+  // A turn saved without its message ID is found again through the user turn that carries this
+  // job's own archive: that exchange is the job's, and its first reply must sit at the saved index.
+  const anchoredRoot = () => {
+    if (typeof archiveTurnsOf !== 'function') throw new Error('Anchored capture needs the archive-turn locator.');
+    const turns = archiveTurnsOf(anchorFileName);
+    if (turns.length !== 1) {
+      throw new Error(turns.length ? 'The job archive appears in several user turns; refusing anchored recollection.'
+        : 'No user turn on this page carries the job archive; anchored recollection is impossible.');
+    }
+    const turn = turns[0];
+    const follows = (first, second) => Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const nextUser = [...doc.querySelectorAll('[data-message-author-role="user"]'),
+      ...[...doc.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')].filter((node) => node.textContent?.trim() === 'You said:')]
+      .filter((marker) => !turn.contains(marker) && follows(turn, marker))
+      .reduce((earliest, marker) => (!earliest || follows(marker, earliest) ? marker : earliest), undefined);
+    const reply = responseRoots.find((candidate) => candidate && (turn.contains(candidate) || follows(turn, candidate)) && (!nextUser || follows(candidate, nextUser)));
+    if (!reply) throw new Error('The reply to the job archive turn is not rendered.');
+    const index = responseRoots.indexOf(reply);
+    if (index !== responseIndex) throw new Error(`The reply to the job archive turn is assistant turn ${index}, not the saved turn ${responseIndex}; refusing anchored recollection.`);
+    return reply;
+  };
   const matches = messageId && !report ? responseRoots.filter((node) => rootId(node) === messageId) : [];
   if (messageId && !report && matches.length !== 1) throw new Error("Bound response message ID is absent or ambiguous.");
   const root = report ? doc.querySelector('[data-report-id], [data-testid="research-report"], main, article') || doc.body
-    : messageId ? matches[0] : responseRoots[responseIndex];
+    : messageId ? matches[0] : anchorFileName ? anchoredRoot() : responseRoots[responseIndex];
   if (!root) throw new Error("Bound response root is absent; whole-conversation capture is forbidden.");
   // A positional root that spans several message identities is not one turn: refuse it rather
   // than bind a content hash to an unknown mixture. A root with no identity at all (UI drift)
@@ -31,6 +74,15 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
   if (!report && rootIds(root).size > 1) throw new Error("Bound response root spans several message IDs; refusing an ambiguous turn.");
   const actualId = rootId(root);
   if (messageId && actualId !== messageId) throw new Error("Bound response message ID does not match.");
+  // The turn's reasoning-time label ("Worked for 15m 7s", "Thought for 40s") sits in its exchange's
+  // activity header, a span outside the reply root (observed 2026-10-06); reply text never counts.
+  // The earlier shell, without exchanges, showed it as a control inside the turn.
+  const exchange = report ? undefined : root.closest('[data-turn-key]');
+  const durationPattern = /^(?:Worked|Thought|Reasoned) for (?:(?:\d+\s*(?:h|m|s|hours?|minutes?|seconds?)\s*)+|a few seconds|a second)$/i;
+  const durationLabel = report ? undefined : [...(exchange ? exchange.querySelectorAll('span,div,button,[role="button"]') : root.querySelectorAll('button,[role="button"]'))]
+    .filter((node) => !exchange || (!root.contains(node) && !node.contains(root) && !node.closest('[data-message-author-role="user"]')))
+    .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim())
+    .find((text) => durationPattern.test(text));
   const safeUrl = (value) => {
     try {
       const url = new URL(value, doc.baseURI);
@@ -56,7 +108,9 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
       }
     }
   }
-  const codeBlocks = [...root.querySelectorAll('pre')].filter((pre) => !pre.querySelector('pre')).map((pre, index) => {
+  // A rendered diagram is an SVG inside the code frame: its text is layout, never the diagram source.
+  const isDiagram = (pre) => Boolean(pre.querySelector('svg')) && !pre.querySelector('code');
+  const codeBlocks = [...root.querySelectorAll('pre')].filter((pre) => !pre.querySelector('pre') && !isDiagram(pre)).map((pre, index) => {
     const code = pre.querySelector('code') || pre;
     return { index, language: (code.className || '').match(/language-([\w-]+)/)?.[1] || '', text: code.textContent || '' };
   });
@@ -71,12 +125,32 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
   };
   for (const block of codeBlocks) addLiteralSources(block.text);
   addLiteralSources(root.innerText || root.textContent || '');
+  const citationPills = [];
+  let diagramsWithoutSource = 0;
   const render = (node) => {
     if (node.nodeType === 3) return node.textContent || '';
     if (node.nodeType !== 1) return '';
     const tag = node.tagName.toLowerCase();
     if (['script','style','button','svg','iframe','form'].includes(tag)) return '';
+    // An animated counter (the research widget's citation and search odometers) is an image whose
+    // accessible name is the number; its digit strips are presentation.
+    if (node.getAttribute('role') === 'img' && node.hasAttribute('aria-label')) return node.getAttribute('aria-label') || '';
+    if (report) {
+      // The research widget's status line ("Research completed in …") is chrome, not report body.
+      if (/^Research completed in\b/i.test((node.textContent || '').trim()) && !node.querySelector('h1,h2,h3,h4,h5,h6,p,li,table,pre,blockquote')) return '';
+      // A citation pill shows only its source number; the link lives in the widget's state, so the
+      // number stays a visible marker and the caller reports it as unresolved.
+      if (tag === 'sup' && node.getAttribute('role') === 'button') {
+        const label = (node.textContent || '').trim();
+        if (label) citationPills.push(label);
+        return label ? `[${label}]` : '';
+      }
+    }
     if (tag === 'pre') {
+      if (isDiagram(node)) {
+        diagramsWithoutSource += 1;
+        return '\n\n_[Diagram not captured: the page shows it as an image without its source.]_\n\n';
+      }
       const code = node.querySelector('code') || node;
       const text = code.textContent || '';
       const fence = '`'.repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
@@ -98,6 +172,24 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
     if (tag === 'blockquote') return '\n\n' + body.trim().split('\n').map((line) => '> ' + line).join('\n') + '\n\n';
     return ['p','div','section','article','ul','ol'].includes(tag) ? `\n\n${body}\n\n` : body;
   };
+  // Nested layout blocks each add paragraph breaks; prose keeps at most one blank line between
+  // blocks while fenced code keeps its exact lines.
+  const collapseBlankRuns = (text) => {
+    const lines = [];
+    let fence;
+    for (const line of text.split('\n')) {
+      const marker = line.match(/^(`{3,}|~{3,})/)?.[1];
+      if (fence) {
+        lines.push(line);
+        if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = undefined;
+      } else if (marker) {
+        fence = marker;
+        lines.push(line);
+      } else if (line.trim()) lines.push(line);
+      else if (lines.length && lines[lines.length - 1] !== '') lines.push('');
+    }
+    return lines.join('\n').trim();
+  };
   const controls = [...root.querySelectorAll('a,button,[role="button"],[role="menuitem"]')];
   const candidateFileName = (node) => {
     const context = node.closest('[role="group"],li,p,figure,[data-testid*="file"]')?.textContent || '';
@@ -105,7 +197,12 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
   };
   const candidateStableLabel = (node) => candidateFileName(node) || (node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '').trim() || 'Download';
   const candidates = controls.flatMap((node, index) => {
+    // A control that wraps other controls, or whose text runs past a label's length, is a
+    // container, never a download: the research report wraps its whole document in one clickable
+    // element, whose text is the report itself.
+    if (node.querySelector('a,button,[role="button"],[role="menuitem"]')) return [];
     const label = (node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '').trim();
+    if (label.length > 200) return [];
     const href = node.getAttribute('href') || '';
     const namedFile = node.tagName === 'A' && /\.(?:md|txt|csv|tsv|json|pdf|docx|xlsx|pptx|zip|png|jpe?g)(?:$|[?#])/i.test(href)
       && /\.(?:md|txt|csv|tsv|json|pdf|docx|xlsx|pptx|zip|png|jpe?g)\b/i.test(label);
@@ -131,14 +228,180 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
     node.setAttribute('data-oracle-capture', marker);
     return { selector: `[data-oracle-capture="${marker}"]`, src: node.src };
   });
+  const markdown = collapseBlankRuns(render(clone));
   return { messageId: actualId, title: root.querySelector('h1,h2')?.textContent?.trim(), rawText: root.innerText || root.textContent || '', rawHtml: clone.outerHTML,
-    markdown: render(clone).trim(), codeBlocks, sources, candidates, frames };
+    markdown, codeBlocks, sources, candidates, frames, durationLabel, citationPills, diagramsWithoutSource };
 }
 
 export function captureExpression(options = {}, frameDocument = false) {
-  return frameDocument
-    ? `(() => { const document = frames[0]?.document || globalThis.document; return (${captureScopedResponse.toString()})(${JSON.stringify(options)}); })()`
-    : `(${captureScopedResponse.toString()})(${JSON.stringify(options)})`;
+  const call = `(${captureScopedResponse.toString()})(${JSON.stringify(options)}, ${archiveTurns.toString()})`;
+  return frameDocument ? `(() => { const document = frames[0]?.document || globalThis.document; return ${call}; })()` : call;
+}
+
+// One evaluation reads the page's conversation and its assistant turns (the enumeration
+// captureScopedResponse binds), so a navigation can never pair one conversation's location with
+// another conversation's turns: a page on another conversation reports only where it is.
+// `archiveFileName` also reports how many user turns show this job's archive.
+export function observeConversationTurns({ conversationId, stopSelector, archiveFileName } = {}, archiveTurnsOf = undefined) {
+  const href = String(location.href);
+  const observed = location.pathname.match(/\/(?:c|chat)\/([A-Za-z0-9-]+)$/i)?.[1];
+  if (conversationId !== undefined && observed !== conversationId) return { href, conversationId: observed, onConversation: false, messages: [] };
+  const renderText = (node) => {
+    if (!node) return '';
+    const clone = node.cloneNode(true);
+    const host = document.createElement('div');
+    host.style.position = 'fixed';
+    host.style.left = '-99999px';
+    host.style.top = '0';
+    host.style.whiteSpace = 'pre-wrap';
+    host.style.pointerEvents = 'none';
+    host.appendChild(clone);
+    document.body.appendChild(host);
+    let text = (host.innerText || host.textContent || '').trim();
+    host.remove();
+    const ending = '\nChatGPT can make mistakes. Check important info.';
+    if (text.includes(ending)) text = text.split(ending)[0].trim();
+    return text.split('\n').map((line) => line.trimEnd()).filter((line) => !/^Thought for\b/i.test(line.trim())).join('\n').trim();
+  };
+  const assistantSelector = '[data-message-author-role="assistant"], [data-testid="assistant-message"]';
+  const headingMessages = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')]
+    .filter((node) => (node.textContent || '').trim() === 'ChatGPT said:')
+    .map((heading) => ({ text: renderText(heading.nextElementSibling) }));
+  const nodeMessages = [...document.querySelectorAll(assistantSelector)]
+    .filter((node) => !node.parentElement?.closest(assistantSelector))
+    .map((node) => ({ text: renderText(node) }));
+  return {
+    href,
+    conversationId: observed,
+    onConversation: true,
+    stopPresent: stopSelector ? Boolean(document.querySelector(stopSelector)) : undefined,
+    archiveTurnCount: archiveFileName && typeof archiveTurnsOf === 'function' ? archiveTurnsOf(archiveFileName).length : undefined,
+    messages: headingMessages.some((message) => message.text) ? headingMessages : nodeMessages,
+  };
+}
+
+export function observeConversationExpression(options = {}) {
+  return `(${observeConversationTurns.toString()})(${JSON.stringify(options)}, ${archiveTurns.toString()})`;
+}
+
+// The research widget is an Apps SDK frame: the host hands it the finished report message as its
+// widget state. That message is the report's Markdown source plus the citation references the
+// widget renders as pills, read without any request of our own. Evaluated in the report frame.
+export function readResearchReportState() {
+  let sdk;
+  try { sdk = frames[0]?.openai; } catch { /* cross-origin child */ }
+  const message = (sdk || window.openai)?.widgetState?.report_message;
+  const parts = Array.isArray(message?.content?.parts) ? message.content.parts.filter((part) => typeof part === 'string') : [];
+  if (!parts.length) return undefined;
+  const linksOf = (item) => [item, ...(Array.isArray(item?.supporting_websites) ? item.supporting_websites : [])]
+    .filter((entry) => typeof entry?.url === 'string')
+    .map((entry) => ({ title: typeof entry.title === 'string' ? entry.title : '', url: entry.url }));
+  const references = (Array.isArray(message.metadata?.content_references) ? message.metadata.content_references : [])
+    .filter((reference) => typeof reference?.matched_text === 'string' && reference.matched_text)
+    .map((reference) => ({
+      matchedText: reference.matched_text,
+      type: String(reference.type || ''),
+      sources: (Array.isArray(reference.items) ? reference.items : []).flatMap(linksOf),
+      safeUrls: (Array.isArray(reference.safe_urls) ? reference.safe_urls : []).filter((url) => typeof url === 'string'),
+    }));
+  return { messageId: typeof message.id === 'string' ? message.id : undefined, complete: message.metadata?.is_complete === true, markdown: parts.join('\n\n'), references };
+}
+
+// ChatGPT appends utm_source=chatgpt.com to every outbound source link; a footnote names the source
+// itself, so that one parameter is dropped and every other part of the URL is kept.
+function withoutChatGptReferral(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.get('utm_source') !== 'chatgpt.com') return url;
+    parsed.searchParams.delete('utm_source');
+    return parsed.toString();
+  } catch { return url; }
+}
+
+// Research Markdown marks each citation with a private-use token: U+E200, a kind ("cite"), one or
+// more references each after U+E202, then U+E201. Each token becomes Markdown footnote references,
+// one number per distinct source in order of first citation, defined at the end. A token without a
+// matching reference keeps a numbered footnote that says so and is returned as unresolved, never
+// dropped. Fenced code is left exactly as written.
+export function resolveResearchCitations(markdown, references = []) {
+  const byToken = new Map(references.map((reference) => [reference.matchedText, reference]));
+  const numbers = new Map();
+  const footnotes = [];
+  const unresolved = [];
+  let tokens = 0;
+  const footnoteFor = (key, definition) => {
+    if (!numbers.has(key)) {
+      numbers.set(key, footnotes.length + 1);
+      footnotes.push(definition);
+    }
+    return `[^${numbers.get(key)}]`;
+  };
+  const resolveToken = (token, inner) => {
+    tokens += 1;
+    const [kind = '', ...refs] = inner.split('\ue202');
+    const reference = byToken.get(token);
+    const links = [];
+    for (const link of [...(reference?.sources || []), ...(reference?.sources?.length ? [] : (reference?.safeUrls || []).map((url) => ({ title: '', url })))]) {
+      const url = withoutChatGptReferral(link.url);
+      if (/^https?:\/\//i.test(url) && !links.some((known) => known.url === url)) links.push({ ...link, url });
+    }
+    if (!links.length) {
+      const label = [kind, ...refs].filter(Boolean).join(' ');
+      unresolved.push(label);
+      return footnoteFor(`unresolved:${label}`, { unresolved: label });
+    }
+    return links.map((link) => footnoteFor(link.url, link)).join('');
+  };
+  let fence;
+  const lines = String(markdown).split('\n').map((line) => {
+    const marker = line.match(/^\s*(`{3,}|~{3,})/)?.[1];
+    if (fence) {
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = undefined;
+      return line;
+    }
+    if (marker) {
+      fence = marker;
+      return line;
+    }
+    return line.replace(/\ue200([^\ue200\ue201]*)\ue201/g, resolveToken);
+  });
+  const escapeTitle = (title) => title.replace(/\s+/g, ' ').trim().replace(/[[\]]/g, '\\$&');
+  const definitions = footnotes.map((note, index) => `[^${index + 1}]: ${note.unresolved !== undefined
+    ? `Unresolved citation (${note.unresolved}): the report did not expose its source.`
+    : note.title ? `[${escapeTitle(note.title)}](${note.url})` : `<${note.url}>`}`);
+  const sources = footnotes.map((note, index) => note.unresolved !== undefined
+    ? { id: `citation-${index + 1}`, kind: 'citation', label: note.unresolved, unresolved: true }
+    : { id: `citation-${index + 1}`, kind: 'citation', label: note.title || note.url, url: note.url });
+  return {
+    markdown: definitions.length ? `${lines.join('\n').trimEnd()}\n\n${definitions.join('\n')}\n` : lines.join('\n'),
+    sources,
+    tokens,
+    unresolved,
+  };
+}
+
+// The Deep Research response: the validated native export, else the Markdown of the widget state,
+// with citation tokens resolved against the widget's references. The page-derived Markdown is the
+// last resort; then every rendered citation pill and every diagram without source is a declared gap.
+export function composeResearchResponse({ capture, nativeMarkdown, reportState }) {
+  const source = typeof nativeMarkdown === 'string' ? { text: nativeMarkdown, method: 'native_report_download' }
+    : reportState?.markdown ? { text: reportState.markdown, method: 'report_widget_state' } : undefined;
+  if (!source) {
+    const pills = [...new Set(capture.citationPills || [])];
+    return {
+      markdown: capture.markdown, method: 'scoped_dom', fidelity: 'derived_markdown',
+      sources: [...capture.sources, ...pills.map((label) => ({ id: `citation-pill-${label}`, kind: 'citation', label: `citation ${label}`, unresolved: true }))],
+      requiredMissing: capture.diagramsWithoutSource ? [`diagram_source:${capture.diagramsWithoutSource}`] : [],
+    };
+  }
+  const resolved = resolveResearchCitations(source.text, reportState?.references || []);
+  const cited = new Set(resolved.sources.flatMap((item) => item.url ? [item.url] : []));
+  const sources = [...resolved.sources, ...capture.sources.filter((item) => item.kind === 'artifact' || (item.url && !cited.has(withoutChatGptReferral(item.url))))];
+  return {
+    markdown: resolved.markdown, method: source.method, fidelity: 'native_markdown', sources,
+    requiredMissing: sources.some((item) => item.kind !== 'artifact' && item.url && !resolved.markdown.includes(item.url)) ? ['native_export_source_links'] : [],
+    citations: { tokens: resolved.tokens, sources: resolved.sources.filter((item) => item.url).length, unresolved: resolved.unresolved },
+  };
 }
 
 // Listen before activation. Read only bytes exposed by the UI's actual download, never
@@ -351,6 +614,17 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
 // index-only binding could never be recollected; the turn's normalized text does not change.
 export function turnContentSha256(rawText) {
   return createHash('sha256').update(String(rawText || '').replace(/\s+/g, ' ').trim()).digest('hex');
+}
+
+// Seconds in a reasoning-time label such as "Worked for 15m 7s" or "Thought for 40 seconds";
+// undefined when the label carries no duration.
+export function durationLabelSeconds(label) {
+  const scale = { h: 3600, m: 60, s: 1 };
+  let seconds;
+  for (const [, amount, unit] of String(label || '').matchAll(/(\d+)\s*(h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)\b/gi)) {
+    seconds = (seconds ?? 0) + Number(amount) * scale[unit[0].toLowerCase()];
+  }
+  return seconds;
 }
 
 export function redactTransportSecrets(text) {

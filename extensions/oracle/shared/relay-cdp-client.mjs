@@ -70,6 +70,10 @@ export class RelayCdpClient {
       const info = message.params.targetInfo;
       this.#frames.push({ sessionId: message.params.sessionId, targetId: info.targetId || "", type: info.type || "", url: info.url || "" });
     }
+    // A navigation or reload destroys the frame; its session never answers again.
+    if (message.method === "Target.detachedFromTarget" && message.params?.sessionId) {
+      this.#frames = this.#frames.filter((frame) => frame.sessionId !== message.params.sessionId);
+    }
     if (message.method && this.#listeners.has(message.method)) {
       const event = { method: message.method, sessionId: message.sessionId, params: message.params || {} };
       for (const listener of this.#listeners.get(message.method) || []) listener(event);

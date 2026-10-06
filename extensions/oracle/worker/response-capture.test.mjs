@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { collectNativeDownload, collectionOutcome, redactTransportSecrets, validateArtifactBytes } from './response-capture.mjs';
+import { collectNativeDownload, collectionOutcome, composeResearchResponse, durationLabelSeconds, redactTransportSecrets, resolveResearchCitations, validateArtifactBytes } from './response-capture.mjs';
 import { formatOracleJobSummary } from '../shared/job-observability-helpers.mjs';
 import { chatGptGenerationActive, chatGptStreamingVisible, providerSendAccepted } from './chatgpt-flow-helpers.mjs';
 
@@ -60,7 +60,6 @@ test('read summaries expose generation and collection independently while legacy
   assert.match(summary, /collection-binding: turn 1 message m-exact/);
   assert.match(summary, /collection-required-missing: source-links/);
   assert.match(summary, /collection-optional-missing: artifact:optional/);
-  assert.match(formatOracleJobSummary({ ...base, collectionBinding: { conversationId: 'c', responseIndex: 0 } }), /collection-binding: turn 0 \(index only; recollection needs the observed messageId\)/);
 });
 
 test('actual recollection CLI refuses unbound legacy jobs before any browser or submit operation', () => {
@@ -211,4 +210,60 @@ test('native download collection ignores downloads observed before activation an
     return { activated: true };
   };
   await assert.rejects(collectNativeDownload({ cdp, pageSessionId: 'P', frameSessionId: 'F', activate: bigActivate, timeoutMs: 2_000 }), /exceeds capture limit/);
+});
+
+// Token and reference shapes observed in a finished report's widget state on 2026-10-06: the
+// Markdown carries U+E200 cite (U+E202 ref)+ U+E201 tokens, and each content reference repeats the
+// token in matched_text with the sources the widget renders as a numbered pill.
+const cite = (...refs) => `\ue200cite\ue202${refs.join('\ue202')}\ue201`;
+const reportReferences = [
+  { matchedText: cite('turn0view0'), type: 'grouped_webpages', sources: [{ title: 'Alpha [annual] report', url: 'https://alpha.example/report' }], safeUrls: [] },
+  { matchedText: cite('turn0view0', 'turn1search2'), type: 'grouped_webpages', sources: [{ title: 'Alpha [annual] report', url: 'https://alpha.example/report?utm_source=chatgpt.com' }, { title: 'Beta', url: 'https://beta.example/b?page=2&utm_source=chatgpt.com' }], safeUrls: [] },
+  { matchedText: cite('turn2view1'), type: 'grouped_webpages', sources: [], safeUrls: ['https://gamma.example/g'] },
+];
+
+test('research citation tokens become numbered footnotes; an unknown token stays a visible gap', () => {
+  const fence = '```mermaid\ngraph TD\n  A --> B\n```';
+  const markdown = `# Findings\n\nFirst claim.${cite('turn0view0')}\n\nSecond claim.${cite('turn0view0', 'turn1search2')}\n\n${fence}\n\nThird claim.${cite('turn2view1')} Fourth.${cite('turn9view9')}`;
+  const resolved = resolveResearchCitations(markdown, reportReferences);
+  assert.equal(resolved.tokens, 4);
+  assert.match(resolved.markdown, /First claim\.\[\^1\]\n/);
+  assert.match(resolved.markdown, /Second claim\.\[\^1\]\[\^2\]\n/, 'a repeated source keeps its first number, with or without ChatGPT\'s referral parameter');
+  assert.match(resolved.markdown, /Third claim\.\[\^3\] Fourth\.\[\^4\]/);
+  assert(resolved.markdown.includes(`\n${fence}\n`), 'diagram source survives exactly');
+  assert(resolved.markdown.includes('[^1]: [Alpha \\[annual\\] report](https://alpha.example/report)'));
+  assert(resolved.markdown.includes('[^2]: [Beta](https://beta.example/b?page=2)'), 'only the referral parameter is dropped');
+  assert(resolved.markdown.includes('[^3]: <https://gamma.example/g>'), 'a reference without titled sources falls back to its safe URLs');
+  assert(resolved.markdown.includes('[^4]: Unresolved citation (cite turn9view9): the report did not expose its source.'));
+  assert.deepEqual(resolved.unresolved, ['cite turn9view9']);
+  assert.equal(/[\ue200-\ue202]/.test(resolved.markdown), false, 'no private-use token survives');
+  // Code is never rewritten, even when it contains token characters.
+  const literal = `\`\`\`text\n${cite('turn0view0')}\n\`\`\``;
+  assert.equal(resolveResearchCitations(literal, reportReferences).markdown, literal);
+});
+
+test('a research response prefers the native export, then the widget state, and declares DOM-only gaps', () => {
+  const capture = { markdown: 'Rendered claim [1].\n\n_[Diagram not captured: the page shows it as an image without its source.]_', citationPills: ['1', '1'], diagramsWithoutSource: 1,
+    sources: [{ id: 'source-1', kind: 'citation', label: 'Alpha', url: 'https://alpha.example/report' }] };
+  const reportState = { complete: true, markdown: `Widget claim.${cite('turn0view0')}`, references: reportReferences };
+  const native = composeResearchResponse({ capture, reportState, nativeMarkdown: `# Native\n\nNative claim.${cite('turn0view0')}` });
+  assert.equal(native.method, 'native_report_download');
+  assert.match(native.markdown, /Native claim\.\[\^1\]/);
+  assert.deepEqual(native.requiredMissing, []);
+  assert.deepEqual(native.citations, { tokens: 1, sources: 1, unresolved: [] });
+  const widget = composeResearchResponse({ capture, reportState });
+  assert.equal(widget.method, 'report_widget_state');
+  assert.equal(widget.fidelity, 'native_markdown');
+  assert.match(widget.markdown, /Widget claim\.\[\^1\]/);
+  const dom = composeResearchResponse({ capture });
+  assert.equal(dom.method, 'scoped_dom');
+  assert.deepEqual(dom.requiredMissing, ['diagram_source:1']);
+  assert.deepEqual(dom.sources.filter((source) => source.unresolved).map((source) => source.label), ['citation 1'], 'each rendered pill is one unresolved source');
+});
+
+test('reasoning-time labels convert to seconds only when they carry a duration', () => {
+  assert.equal(durationLabelSeconds('Worked for 15m 7s'), 907);
+  assert.equal(durationLabelSeconds('Thought for 40 seconds'), 40);
+  assert.equal(durationLabelSeconds('Worked for 1h 2m'), 3720);
+  assert.equal(durationLabelSeconds('Thought for a few seconds'), undefined);
 });

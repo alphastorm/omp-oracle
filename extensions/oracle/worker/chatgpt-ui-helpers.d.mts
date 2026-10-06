@@ -16,6 +16,7 @@ export declare const CHATGPT_COMPOSER_EDITOR_SELECTOR: string;
 export declare const CHATGPT_STOP_CONTROL_SELECTOR: string;
 export declare const CHATGPT_ATTACH_FILES_INPUT_SELECTOR: string;
 export declare const CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR: string;
+export declare const CHATGPT_MODEL_PICKER_SELECTOR: string;
 
 export declare function buildAllowedChatGptOrigins(chatUrl: string, authUrl?: string): string[];
 export declare function stripChatGptResponseChrome(value: string | undefined): string;
@@ -40,6 +41,8 @@ export declare function parseDeepResearchWidgetText(text: string | undefined): {
 export declare function isChatGptComposerEntry(entry: import("./artifact-heuristics.d.mts").SnapshotEntry): boolean;
 export declare function isChatGptStopEntry(entry: import("./artifact-heuristics.d.mts").SnapshotEntry): boolean;
 export declare function snapshotHasUsableComposerControls(snapshot: string): boolean;
+export declare function findDialogCloseEntry(snapshot: string): import("./artifact-heuristics.d.mts").SnapshotEntry | undefined;
+export declare function waitForStationaryControl(selector: string, options?: { stableSamples?: number; intervalMs?: number; timeoutMs?: number }): Promise<boolean>;
 export declare function snapshotHasModelOpener(snapshot: string): boolean;
 export declare function matchesModelConfigurationOpener(entry: import("./artifact-heuristics.d.mts").SnapshotEntry): boolean;
 export declare function snapshotHasSelectedLatestModel(snapshot: string): boolean;

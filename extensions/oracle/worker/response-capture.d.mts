@@ -44,6 +44,48 @@ export interface OracleScopedCapture {
   sources: OracleCapturedSource[];
   candidates: OracleArtifactCandidate[];
   frames: Array<{ selector: string; src: string }>;
+  /** The turn's reasoning-time control, e.g. "Worked for 15m 7s"; absent when the page shows none. */
+  durationLabel?: string;
+  /** Report mode: the source numbers of citation pills rendered as visible markers. */
+  citationPills: string[];
+  /** Rendered diagrams whose source the page did not expose. */
+  diagramsWithoutSource: number;
+}
+
+export interface OracleCaptureOptions extends Pick<OracleCollectionBinding, "responseIndex" | "messageId" | "report" | "conversationId"> {
+  /** Find the turn through the user turn showing this job's archive file name (recollection without a message ID). */
+  anchorFileName?: string;
+}
+
+export interface OracleConversationObservation {
+  href: string;
+  conversationId?: string;
+  /** False when the page shows another conversation than the expected one; then no turns are read. */
+  onConversation: boolean;
+  stopPresent?: boolean;
+  archiveTurnCount?: number;
+  messages: Array<{ text: string }>;
+}
+
+export interface OracleResearchReference {
+  matchedText: string;
+  type: string;
+  sources: Array<{ title: string; url: string }>;
+  safeUrls: string[];
+}
+
+export interface OracleResearchReportState {
+  messageId?: string;
+  complete: boolean;
+  markdown: string;
+  references: OracleResearchReference[];
+}
+
+export interface OracleResolvedCitations {
+  markdown: string;
+  sources: OracleCapturedSource[];
+  tokens: number;
+  unresolved: string[];
 }
 
 export interface OracleDownloadedBytes {
@@ -84,8 +126,26 @@ export interface OracleCollectionOutcome {
   collectionOptionalMissing: string[];
 }
 
-export declare function captureScopedResponse(options?: Pick<OracleCollectionBinding, "responseIndex" | "messageId" | "report">): OracleScopedCapture;
-export declare function captureExpression(options?: Pick<OracleCollectionBinding, "responseIndex" | "messageId" | "report">, frameDocument?: boolean): string;
+/** Browser-side: the user-turn elements showing the file name (DOM nodes, typed loosely because the worker has no DOM lib). */
+export declare function archiveTurns(fileName: string): unknown[];
+export declare function captureScopedResponse(options?: OracleCaptureOptions, archiveTurnsOf?: typeof archiveTurns): OracleScopedCapture;
+export declare function captureExpression(options?: OracleCaptureOptions, frameDocument?: boolean): string;
+export declare function observeConversationTurns(options?: { conversationId?: string; stopSelector?: string; archiveFileName?: string }, archiveTurnsOf?: typeof archiveTurns): OracleConversationObservation;
+export declare function observeConversationExpression(options?: { conversationId?: string; stopSelector?: string; archiveFileName?: string }): string;
+export declare function readResearchReportState(): OracleResearchReportState | undefined;
+export declare function resolveResearchCitations(markdown: string, references?: OracleResearchReference[]): OracleResolvedCitations;
+export declare function composeResearchResponse(input: {
+  capture: Pick<OracleScopedCapture, "markdown" | "sources" | "citationPills" | "diagramsWithoutSource">;
+  nativeMarkdown?: string;
+  reportState?: OracleResearchReportState;
+}): {
+  markdown: string;
+  method: "native_report_download" | "report_widget_state" | "scoped_dom";
+  fidelity: OracleCaptureFidelity;
+  sources: OracleCapturedSource[];
+  requiredMissing: string[];
+  citations?: { tokens: number; sources: number; unresolved: string[] };
+};
 export declare function captureDownload(selector: string): Promise<OracleDownloadedBytes>;
 export declare function activateDownloadControl(selector: string, report?: boolean): Promise<{ activated: true; menuOption?: string }>;
 export declare function armDownloadRegistry(): number;
@@ -102,6 +162,7 @@ export declare function collectNativeDownload(input: {
 }): Promise<OracleNativeDownload>;
 export declare function redactTransportSecrets(text: unknown): string;
 export declare function turnContentSha256(rawText: unknown): string;
+export declare function durationLabelSeconds(label: unknown): number | undefined;
 export declare function validateArtifactBytes(bytes: Buffer, options?: { fileName?: string; contentType?: string; expectedSize?: number }): { size: number; sha256: string; detectedType: string };
 export declare function collectionOutcome(input: {
   hasResponse: boolean;

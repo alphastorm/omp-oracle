@@ -46,6 +46,11 @@ export const CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR = '[app-mention-name="deep-r
 // picker and its menu "Thinking effort". Both host the Power slider.
 const MODEL_PICKER_LABEL = "Select ChatGPT model";
 const POWER_MENU_LABELS = new Set([MODEL_PICKER_LABEL, "Thinking effort"]);
+// The current composer's model picker; its visible text names the selected model ("Pro").
+export const CHATGPT_MODEL_PICKER_SELECTOR = `button[aria-label="${MODEL_PICKER_LABEL}"]`;
+// A product announcement (observed 2026-10-03: "Your Pro plan now includes connected finances")
+// opens as a modal over the composer; its only dismissal control carries this name.
+const DIALOG_CLOSE_LABEL = "Close dialog";
 
 /** @type {Record<OracleUiModelFamily, string>} */
 const MODEL_FAMILY_PREFIX = {
@@ -750,6 +755,51 @@ export function snapshotHasUsableComposerControls(snapshot) {
   const hasComposer = entries.some((entry) => isChatGptComposerEntry(entry) && !entry.disabled);
   const hasAddFiles = entries.some((entry) => entry.kind === "button" && entry.label === CHATGPT_ADD_FILES_LABEL && !entry.disabled);
   return hasComposer && hasAddFiles;
+}
+
+/**
+ * The dismissal control of a modal that blocks the composer. A modal makes the rest of the page
+ * inert, so the interactive snapshot shows only the modal: no composer, and a "Close dialog"
+ * button. Only that button is ever offered; actions such as "Get started" never are.
+ * @param {string} snapshot
+ * @returns {SnapshotEntry | undefined}
+ */
+export function findDialogCloseEntry(snapshot) {
+  /** @type {SnapshotEntry[]} */
+  const entries = parseSnapshotEntries(snapshot);
+  if (entries.some(isChatGptComposerEntry)) return undefined;
+  return entries.find((entry) => entry.kind === "button" && !entry.disabled && entry.label === DIALOG_CLOSE_LABEL);
+}
+
+/**
+ * Browser-side and closure-free (evaluated in the page through toString): true once the control
+ * matching `selector` is visible, enabled, hit-testable at its center, and has not moved for
+ * `stableSamples` consecutive samples; false at the deadline. Timer sampling, never
+ * requestAnimationFrame: Chrome gives a tab that is not the visible tab of its window no animation
+ * frames, and concurrent jobs share one window, so a frame-driven wait never ends in a background
+ * job's tab.
+ * @param {string} selector
+ * @param {{ stableSamples?: number; intervalMs?: number; timeoutMs?: number }} [options]
+ * @returns {Promise<boolean>}
+ */
+export async function waitForStationaryControl(selector, { stableSamples = 3, intervalMs = 100, timeoutMs = 5000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  /** @type {{ x: number; y: number; width: number; height: number } | undefined} */
+  let previous;
+  let stable = 0;
+  for (;;) {
+    const control = /** @type {any} */ (globalThis).document.querySelector(selector);
+    const rect = control?.getBoundingClientRect();
+    const hit = rect && rect.width > 0 && rect.height > 0
+      ? /** @type {any} */ (globalThis).document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+      : null;
+    const ready = Boolean(hit) && !control.disabled && control.contains(hit);
+    stable = ready && previous && rect.x === previous.x && rect.y === previous.y && rect.width === previous.width && rect.height === previous.height ? stable + 1 : 0;
+    previous = ready ? rect : undefined;
+    if (stable >= stableSamples) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
 }
 
 /**

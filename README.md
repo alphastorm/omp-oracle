@@ -262,19 +262,23 @@ User-facing commands:
 Agent-facing tools:
 
 - `oracle_preflight` — readiness check for the persisted session and local prerequisites; runs
-  before any expensive context gathering.
+  before any expensive context gathering and reports global capacity (active and queued jobs
+  against their limits).
 - `oracle_auth` — the `/oracle-auth` flow for agents. Agent callers can use `oracle_auth({})` once
   before retrying a stale-auth submission.
 - `oracle_submit` — builds the archive and dispatches or queues the job. `chatGptConversationId`
   is optional and only for explicitly continuing an existing ChatGPT browser conversation
   id/URL; omit it for the default fresh thread.
 - `oracle_read` — Agent callers can use `oracle_read({ jobId })` to read saved output in-turn.
-  Failed jobs that callers must tell apart carry a stable `errorCode` next to `error`.
+  Failed jobs that callers must tell apart carry a stable `errorCode` next to `error`, and
+  `prompt-send-state` says whether the prompt may have been sent before the failure.
   `generationStatus` and `collectionStatus` are separate: a completed turn can still be
   `partial` with named required/optional gaps, and `response.capture.json` records the exact
   turn binding, fidelity, source URLs, code blocks, and artifact inspection. Missing optional
-  files never erase the answer. `oracle_read({ jobId, action: "recollect" })` retries collection
-  of an already completed, exactly bound turn without submitting a prompt; jobs completed before
+  files never erase the answer, and a turn that could not be captured saves no response rather
+  than text from another page (`recollection-needed`). `oracle_read({ jobId, action: "recollect" })`
+  retries collection of an already completed turn without submitting a prompt: by its message
+  ID, its content hash, or the user turn that carries the job's archive; jobs completed before
   binding existed need the observed `responseIndex` and `messageId` together, and the latest turn
   is never inferred. Recollection opens a fresh disposable browser session and keeps the earlier
   usable output if it fails.
@@ -379,7 +383,8 @@ registry on both the tab and the frame before activating the menu, accepts only 
 began in its own tab or the bound report frame, and validates the bytes against Chrome's declared
 size and the report title. The browser's download destination is never changed, so Chrome also
 keeps its own copy in your configured download directory. When the native file cannot be
-collected the job still completes with the derived Markdown and an optional
+collected, the report is saved from the Markdown the widget itself holds, so diagram source and
+citations survive (each citation becomes a footnote with its source), with an optional
 `native_markdown_export` gap; use `oracle_read({ jobId, action: "recollect" })` rather than
 resubmitting research.
 Runs take minutes (the completion timeout is 90 minutes by default) and hold the tab the whole time.
@@ -413,6 +418,9 @@ Known limits are part of the claim:
 - **Deep Research needs a shared Chrome transport** (relay or managed browser) and holds the
   job's tab for the whole research run; see [Deep Research](#deep-research). It is excluded from
   the release preset proof because each run costs a Deep Research task on the account.
+- **Jobs share the Chrome window with anything else driving it.** Another browser tool connected
+  to the same Chrome can navigate a running job's tab; the job detects that and reopens its own
+  conversation, at the cost of time, so inspect conversations elsewhere while jobs run.
 
 The [compatibility matrix](docs/COMPATIBILITY.md) defines the supported boundary; the
 [release ledger](docs/RELEASE.md#evidence-ledger) holds the evidence.

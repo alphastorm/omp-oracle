@@ -12,8 +12,10 @@ import { tmpdir } from 'node:os';
 import ts from 'typescript';
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
 import { sharedBrowserEndpoint, usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
-import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
-import { CHATGPT_COMPOSER_EDITOR_SELECTOR, isChatGptComposerEntry } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
+import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings } from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
+import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, composeResearchResponse, durationLabelSeconds, observeConversationExpression, readResearchReportState, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
+import { CHATGPT_COMPOSER_EDITOR_SELECTOR, CHATGPT_STOP_CONTROL_SELECTOR, classifyDeepResearchTurn, deriveAssistantCompletionSignature, isChatGptComposerEntry, waitForStationaryControl } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
+import { chatGptGenerationActive, conversationIdFromUrl, isConversationPathUrl, nextStaleStopState } from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'oracle-capture-proof-'));
 const chrome = process.env.CHROME_BIN || ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium', '/usr/bin/google-chrome'].find(existsSync);
@@ -21,6 +23,15 @@ assert(chrome, 'Supply CHROME_BIN; this proof never attaches to an existing brow
 const processHandle = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', `--user-data-dir=${root}/chrome`, 'about:blank'], { stdio: 'ignore' });
 let cdp;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Synthetic pages served locally: conversations live under /c/<id> like ChatGPT's, so the worker's
+// in-page conversation guard reads a real location. Tests replace a page by path.
+const pages = new Map();
+const fixture = createServer((request, response) => {
+  response.setHeader('content-type', 'text/html; charset=utf-8');
+  response.end(pages.get(new URL(request.url, 'http://fixture').pathname) ?? '<!doctype html><body></body>');
+});
+await new Promise((resolve) => fixture.listen(0, '::', resolve));
+const origin = `http://127.0.0.1:${fixture.address().port}`;
 try {
   let port;
   for (let i = 0; i < 100; i += 1) {
@@ -35,6 +46,15 @@ try {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
     return result.result?.value;
   };
+  const navigate = async (url) => {
+    await cdp.send('Page.navigate', { url }, session);
+    for (let i = 0; i < 200; i += 1) {
+      try { if (await evaluate(`location.href === ${JSON.stringify(url)} && document.readyState === 'complete'`)) return; } catch { /* navigation in flight */ }
+      await sleep(20);
+    }
+    throw new Error(`Navigation did not finish: ${url}`);
+  };
+  await navigate(`${origin}/c/synthetic`);
   const exact = '# Transport canary\n\n**Keep paragraphs separate.**\n\n[Source](https://example.invalid/a?case=synthetic&v=1#evidence)\n\n| Item | Value |\n| --- | --- |\n| Amount | $1,250.50 |\n\n**not** recognized revenue.\n';
   const html = `<h6>ChatGPT said:</h6><div><article data-message-author-role="assistant" data-message-id="old"><p>OLD_TURN</p><a download="old.txt">Download old.txt</a></article></div>
 <h6>ChatGPT said:</h6><div><article data-message-author-role="assistant" data-message-id="new"><pre><code class="language-markdown"></code></pre><button aria-label="Download">Download</button></article></div><div contenteditable="true">DO_NOT_SEND</div>`;
@@ -79,19 +99,32 @@ try {
   // and clicks use the real isolated page; only the saved conversation URL is synthetic.
   const source = readFileSync(new URL('../extensions/oracle/worker/run-job.mjs', import.meta.url), 'utf8');
   const tree = ts.createSourceFile('run-job.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  // `sleep` is imported by the worker from the shared time helpers, so it is injected, not extracted.
-  const names = new Set(['captureBoundTurn', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection']);
-  const declarations = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
-  assert.equal(declarations.length, names.size);
-  const jobDir = join(root, 'job');
-  await mkdir(jobDir);
-  const job = { id: 'synthetic', responsePath: join(jobDir, 'response.md'), conversationId: 'synthetic', selection: { provider: 'chatgpt' }, config: { artifacts: { capture: true } } };
-  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','redactTransportSecrets','turnContentSha256','validateArtifactBytes','jobDir','evalPage','currentUrl','conversationIdFromUrl','sleep','usesSharedBrowser'];
+  const extract = (wanted) => {
+    const found = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && wanted.includes(node.name?.text));
+    assert.equal(found.length, wanted.length, `extracted ${wanted.join(', ')}`);
+    return found.map((node) => node.getText(tree)).join('\n');
+  };
+  const evalPage = async (_job, expression) => {
+    let result = await evaluate(expression);
+    while (typeof result === 'string') { try { result = JSON.parse(result); } catch { break; } }
+    return result;
+  };
+  // The worker opens only its own conversation URL; fixture URLs load in the owned page, and any
+  // other URL (a saved chatgpt.com address) is recorded without leaving the synthetic origin.
+  const opens = [];
+  const openUrl = async (url) => { opens.push(url); if (url.startsWith(origin)) await navigate(url); };
+  // `sleep` is imported by the worker from the shared time helpers, so it is injected, not extracted;
+  // bounded capture retries need no wall-clock delay against a static synthetic page.
+  const workerSource = extract(['captureBoundTurn', 'acquireBoundTurn', 'returnToOwnConversation', 'noteOwnConversation', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection']);
+  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','composeResearchResponse','durationLabelSeconds','readResearchReportState','redactTransportSecrets','turnContentSha256','validateArtifactBytes','appendOracleJobLifecycleEvent','applyOracleJobCleanupWarnings','jobDir','evalPage','openUrl','conversationIdFromUrl','sleep','usesSharedBrowser'];
   // The browser adapter retains dead session identities and enforces the Unix socket limit.
   // Collection itself still executes production functions against real Chromium above.
-  const factory = new Function(...dependencyNames, `let currentJob; let shuttingDown=false;
+  const factory = new Function(...dependencyNames, `let currentJob; let shuttingDown=false; let conversationLeftEpisode=false;
     const retiredSessions=new Set();
     const jobId='synthetic', ORACLE_STATE_DIR='synthetic';
+    function isGrokJob() { return false; }
+    let managedBrowserChangedError;
+    async function assertManagedBrowserUnchanged() {}
     async function mutateJob(fn) { currentJob=fn(currentJob); return currentJob; }
     async function readJob() { return currentJob; }
     async function withLock(...args) { return args.at(-1)(); }
@@ -110,19 +143,20 @@ try {
       if(retiredSessions.has(job.runtimeSessionName)) throw Error('tab_gone: bound tab is gone');
       if(Buffer.byteLength('/tmp/agent-browser-501/'+job.runtimeSessionName+'.sock')>103) throw Error('Socket path too long');
     }
-    async function agentBrowser(_job, command) { if(command!=='open') throw Error('No send permitted'); }
+    async function agentBrowser(_job, command, url) { if(command!=='open') throw Error('No send permitted'); await openUrl(url); }
     async function cleanupRuntime(job) { retiredSessions.add(job.runtimeSessionName); const warnings = nextCleanupWarnings; nextCleanupWarnings = []; return warnings; }
-    ${declarations.map((node) => node.getText(tree)).join('\n')}
+    ${workerSource}
     return {
       admissions,
-      collect:async(job,binding)=>{currentJob=job;await collectBoundResult(job,binding);return currentJob;},
+      collect:async(job,binding,fallbackText)=>{currentJob=job;await collectBoundResult(job,binding,fallbackText);return currentJob;},
       recollect:async(job, warnings=[])=>{currentJob=job;retiredSessions.add(job.runtimeSessionName);nextCleanupWarnings=warnings;await runRecollection();return currentJob;}
     };`);
-  const worker = factory(createHash,existsSync,readFile,writeFile,rename,chmod,mkdir,join,basename,captureExpression,captureDownload,collectionOutcome,redactTransportSecrets,turnContentSha256,validateArtifactBytes,jobDir,async (_job, expression) => {
-    let result = await evaluate(expression);
-    while (typeof result === 'string') { try { result = JSON.parse(result); } catch { break; } }
-    return result;
-  },async () => 'https://chatgpt.com/c/synthetic',() => 'synthetic',sleep,usesSharedBrowser);
+  const makeWorker = (dir) => factory(createHash,existsSync,readFile,writeFile,rename,chmod,mkdir,join,basename,captureExpression,captureDownload,collectionOutcome,composeResearchResponse,durationLabelSeconds,readResearchReportState,
+    redactTransportSecrets,turnContentSha256,validateArtifactBytes,appendOracleJobLifecycleEvent,applyOracleJobCleanupWarnings,dir,evalPage,openUrl,conversationIdFromUrl,() => sleep(1),usesSharedBrowser);
+  const jobDir = join(root, 'job');
+  await mkdir(jobDir);
+  const job = { id: 'synthetic', phase: 'downloading_artifacts', status: 'waiting', submittedAt: new Date().toISOString(), responsePath: join(jobDir, 'response.md'), conversationId: 'synthetic', selection: { provider: 'chatgpt' }, config: { artifacts: { capture: true } } };
+  const worker = makeWorker(jobDir);
   const binding = { conversationId: 'synthetic', responseIndex: 1, messageId: 'new' };
   const first = await worker.collect(job, binding);
   assert.equal(first.generationStatus, 'completed');
@@ -140,7 +174,7 @@ try {
   assert.equal(await evaluate('document.querySelector("[contenteditable]").textContent'), 'DO_NOT_SEND');
   // A failed recollection retains earlier usable bytes and declares missing bound content.
   const staleCleanupAt = new Date(Date.now() - 45 * 60 * 1000).toISOString();
-  const completed = { ...second, status: 'complete', runtimeSessionName: 'oracle-a0b3cbba-e718-43cc-aec2-1dbde5831d5e', cleanupPending: false, lastCleanupAt: staleCleanupAt,
+  const completed = { ...second, status: 'complete', phase: 'complete', completedAt: new Date().toISOString(), runtimeSessionName: 'oracle-a0b3cbba-e718-43cc-aec2-1dbde5831d5e', cleanupPending: false, lastCleanupAt: staleCleanupAt,
     chatUrl: 'https://chatgpt.com/c/synthetic', config: { ...second.config, browser: { chatGptRelayEndpoint: 'http://127.0.0.1:9224' } } };
   const reopened = await worker.recollect(completed);
   assert.equal(reopened.collectionStatus, 'complete', reopened.recollectionError);
@@ -241,61 +275,74 @@ try {
   // A sandboxed cross-origin report frame delegates its export to the host page (Chrome forbids
   // downloads from sandboxed frames). The pre-armed native download collector must recover the
   // exact bytes Chrome saved, bound to the tab's main frame, while the frame realm sees nothing.
-  const exportedReport = '# Research report\n\n[Primary](https://example.invalid/primary?x=1#evidence)\n';
-  const fixture = createServer((request, response) => {
-    response.setHeader('content-type', 'text/html');
-    if (request.url === '/host.html') {
-      response.end(`<!doctype html><h6>ChatGPT said:</h6><div><article data-message-author-role="assistant" data-message-id="research"><p>Launching research</p><iframe sandbox="allow-scripts" src="http://localhost:${fixture.address().port}/report.html"></iframe></article></div><script>
+  // The report document mirrors the research widget observed on 2026-10-06: inside `main`, a
+  // toolbar holds Export, a status line with animated counters heads the report, one clickable
+  // element wraps the whole report body, citations render as numbered pills, diagrams as SVG, and
+  // the widget state holds the Markdown source and its references.
+  const citeToken = '\ue200cite\ue202turn0view0\ue201';
+  const exportedReport = `# Research report\n\nClaim with a source.${citeToken}\n\n\`\`\`mermaid\ngraph TD\n  A --> B\n\`\`\`\n`;
+  const reportMessage = { id: 'report-message', content: { parts: [exportedReport] }, metadata: { is_complete: true, content_references: [
+    { matched_text: citeToken, type: 'grouped_webpages', items: [{ title: 'Primary', url: 'https://example.invalid/primary?x=1#evidence', supporting_websites: [] }], safe_urls: [] }] } };
+  pages.set('/host.html', `<!doctype html><h6>ChatGPT said:</h6><div><article data-message-author-role="assistant" data-message-id="research"><p>Launching research</p><iframe sandbox="allow-scripts" src="http://localhost:${fixture.address().port}/report.html"></iframe></article></div><script>
 window.exportsPerformed = 0;
 window.addEventListener('message', (event) => { if (event.data?.type !== 'export') return; window.exportsPerformed += 1;
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([${JSON.stringify(exportedReport)}], { type: 'text/markdown' })); a.download = 'deep-research-report.md';
   document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(a.href); });</script>`);
-      return;
-    }
-    response.end(`<!doctype html><main data-report-id="synthetic-report"><h1>Research report</h1><p><a href="https://example.invalid/primary?x=1#evidence">Primary</a></p><button aria-label="Export">Export</button></main><script>
+  pages.set('/report.html', `<!doctype html><main><div><button aria-label="Export">Export</button></div><div class="w-full p-px"><div>Research completed in 12m · <span role="img" aria-label="27"><span>0</span><span>1</span><span>2</span></span> citations · <span role="img" aria-label="80"><span>0</span><span>8</span></span> searches</div>
+<div role="button" tabindex="0"><div><h1>Research report</h1><p>Claim with a source<sup role="button" data-citation-index="1">1</sup>. Export to Markdown keeps <a href="https://example.invalid/primary?x=1#evidence">Primary</a>.</p>
+<pre><div><svg viewBox="0 0 10 10"><text>A</text><text>B</text></svg></div></pre></div></div></div></main><script>
+window.openai = { widgetState: { report_message: ${JSON.stringify(reportMessage)} } };
 document.querySelector('button').onclick = () => setTimeout(() => { const option = document.createElement('div'); option.setAttribute('role', 'menuitem'); option.textContent = 'Export to Markdown';
   document.body.append(option); option.onclick = () => { option.remove(); parent.postMessage({ type: 'export', format: 'markdown' }, '*'); }; }, 250);</script>`);
-  });
-  await new Promise((resolve) => fixture.listen(0, '::', resolve));
-  try {
-    // Harness-only: this owned headless Chromium may be told where to save, so the native file is comparable.
-    await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: join(root, 'downloads') }, session);
-    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${fixture.address().port}/host.html` }, session);
-    let frame;
-    for (let i = 0; i < 50 && !frame; i += 1) {
-      await sleep(100);
-      for (const candidate of cdp.frameSessions()) {
-        if (String(await cdp.evaluate(candidate.sessionId, 'location.href')).includes('/report.html')) frame = candidate;
-      }
+  // Harness-only: this owned headless Chromium may be told where to save, so the native file is comparable.
+  await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: join(root, 'downloads') }, session);
+  await cdp.send('Page.navigate', { url: `${origin}/host.html` }, session);
+  let frame;
+  for (let i = 0; i < 50 && !frame; i += 1) {
+    await sleep(100);
+    for (const candidate of cdp.frameSessions()) {
+      if (String(await cdp.evaluate(candidate.sessionId, 'location.href')).includes('/report.html')) frame = candidate;
     }
-    assert(frame, 'The report frame must surface as an out-of-process child session');
-    const frameEvaluate = async (expression) => {
-      const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, frame.sessionId, 30_000);
-      if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-      return result.result?.value;
-    };
-    const report = await frameEvaluate(captureExpression({ report: true }, true));
-    assert.equal(report.candidates[0].label, 'Export');
-    const downloaded = await collectNativeDownload({
-      cdp, pageSessionId: session, frameSessionId: frame.sessionId,
-      activate: () => frameEvaluate(`(async () => { const document = frames[0]?.document || globalThis.document; return await (${activateDownloadControl.toString()})(${JSON.stringify(report.candidates[0].selector)}, true); })()`),
-    });
-    const { frameTree } = await cdp.send('Page.getFrameTree', {}, session);
-    assert.equal(downloaded.native.frameId, frameTree.frame.id, 'The host page performed the export for the sandboxed report frame');
-    assert.notEqual(downloaded.native.frameId, frame.targetId);
-    assert.equal(downloaded.native.activation.menuOption, 'Export to Markdown');
-    assert.equal(downloaded.native.source, 'blob');
-    assert.equal(downloaded.fileName, 'deep-research-report.md');
-    const native = Buffer.from(downloaded.bytesBase64, 'base64');
-    assert.equal(validateArtifactBytes(native, { fileName: 'report.md', expectedSize: downloaded.expectedSize }).detectedType, 'text/plain');
-    const saved = await readdir(join(root, 'downloads'));
-    assert.deepEqual(saved, ['deep-research-report.md']);
-    assert(native.equals(await readFile(join(root, 'downloads', saved[0]))), 'Collected bytes must be the bytes Chrome actually saved');
-    assert.equal(await evaluate('window.exportsPerformed'), 1, 'Exactly one activation per collection');
-    assert.equal(await evaluate('typeof URL.createObjectURL === "function" && !window.__oracleDownloadRegistry'), true, 'Registry hooks are restored');
-  } finally {
-    fixture.close();
   }
+  assert(frame, 'The report frame must surface as an out-of-process child session');
+  const frameEvaluate = async (expression) => {
+    const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, frame.sessionId, 30_000);
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+    return result.result?.value;
+  };
+  const report = await frameEvaluate(captureExpression({ report: true }, true));
+  assert.deepEqual(report.candidates.map((candidate) => candidate.label), ['Export'], 'The clickable element wrapping the report is never a download candidate');
+  assert(!report.markdown.includes('Research completed in'), 'The widget status line and its counters are not report body');
+  assert.match(report.markdown, /Claim with a source\[1\]\./, 'A citation pill stays a visible numbered marker');
+  assert.deepEqual(report.citationPills, ['1']);
+  assert.equal(report.diagramsWithoutSource, 1);
+  assert.deepEqual(report.codeBlocks, [], 'Diagram layout text is never captured as code');
+  assert.match(report.markdown, /_\[Diagram not captured: the page shows it as an image without its source\.\]_/);
+  const reportState = await frameEvaluate(`(${readResearchReportState.toString()})()`);
+  assert.equal(reportState.markdown, exportedReport, 'The widget state holds the report Markdown source');
+  assert.deepEqual(reportState.references[0].sources, [{ title: 'Primary', url: 'https://example.invalid/primary?x=1#evidence' }]);
+  const downloaded = await collectNativeDownload({
+    cdp, pageSessionId: session, frameSessionId: frame.sessionId,
+    activate: () => frameEvaluate(`(async () => { const document = frames[0]?.document || globalThis.document; return await (${activateDownloadControl.toString()})(${JSON.stringify(report.candidates[0].selector)}, true); })()`),
+  });
+  const { frameTree } = await cdp.send('Page.getFrameTree', {}, session);
+  assert.equal(downloaded.native.frameId, frameTree.frame.id, 'The host page performed the export for the sandboxed report frame');
+  assert.notEqual(downloaded.native.frameId, frame.targetId);
+  assert.equal(downloaded.native.activation.menuOption, 'Export to Markdown');
+  assert.equal(downloaded.native.source, 'blob');
+  assert.equal(downloaded.fileName, 'deep-research-report.md');
+  const native = Buffer.from(downloaded.bytesBase64, 'base64');
+  assert.equal(validateArtifactBytes(native, { fileName: 'report.md', expectedSize: downloaded.expectedSize }).detectedType, 'text/plain');
+  const saved = await readdir(join(root, 'downloads'));
+  assert.deepEqual(saved, ['deep-research-report.md']);
+  assert(native.equals(await readFile(join(root, 'downloads', saved[0]))), 'Collected bytes must be the bytes Chrome actually saved');
+  assert.equal(await evaluate('window.exportsPerformed'), 1, 'Exactly one activation per collection');
+  assert.equal(await evaluate('typeof URL.createObjectURL === "function" && !window.__oracleDownloadRegistry'), true, 'Registry hooks are restored');
+  const research = composeResearchResponse({ capture: report, reportState, nativeMarkdown: native.toString('utf8') });
+  assert.equal(research.method, 'native_report_download');
+  assert(research.markdown.includes('Claim with a source.[^1]') && research.markdown.includes('[^1]: [Primary](https://example.invalid/primary?x=1#evidence)'), research.markdown);
+  assert(research.markdown.includes('```mermaid\ngraph TD\n  A --> B\n```'), 'The diagram source survives');
+  assert.deepEqual(research.requiredMissing, []);
   // The shell exposes a fallback textbox before the real editor hydrates.
   // Run the actual prompt writer against that predecessor state in owned Chromium, for the earlier
   // `#prompt-textarea` editor and for the current labeled contenteditable textbox without an id.
@@ -356,9 +403,133 @@ document.querySelector('button').onclick = () => setTimeout(() => { const option
       await evaluate('Date.now=window.realDateNow;');
     }
   }
-  console.log(JSON.stringify({ status: 'passed', syntheticOnly: true, exactCode: true, richDom: true, genericDownload: true, frameExport: true, hostDelegatedNativeExport: true, idempotentCollection: true, partialPreserved: true, composerHydration: true, restoredDraftReplacement: true, oldTurnClicks: 0, sends: 0 }));
+
+  // Another client can navigate the job's tab while the job waits (an agent's own CDP connection
+  // adopting the visible tab, observed 2026-10-04). Synthetic conversations: the job's own, whose
+  // second exchange carries the job archive and is still generating, and a foreign one whose turn
+  // at the same index has finished.
+  {
+    const ownUrl = `${origin}/c/own`;
+    const exchange = (key, prompt, id, text, header = '') => `<div data-turn-key="${key}"><div><h5>You said:</h5><div data-message-author-role="user">${prompt}</div></div>
+<div>${header}<h6>ChatGPT said:</h6><div data-chatgpt-selection-message-id="${id}"><p>${text}</p></div></div></div>`;
+    // The reasoning-time label renders as a span in the exchange's activity header (observed 2026-10-06).
+    const ownPage = (text, generating, earlierPrompt = 'Earlier prompt') => `<!doctype html><main>${exchange('o0', earlierPrompt, 'own-0', 'Earlier answer.')}
+${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, '<div class="activity-header"><span><span>Worked for 15m 7s</span></span></div>')}</main>${generating ? '<button data-testid="stop-button">Stop</button>' : ''}`;
+    pages.set('/c/own', ownPage('OWN partial', true));
+    pages.set('/c/foreign', `<!doctype html><main>${exchange('f0', 'Other prompt', 'foreign-0', 'Foreign earlier.')}${exchange('f1', 'Other follow-up', 'foreign-1', 'FOREIGN FINISHED ANSWER')}</main>`);
+    const completionSource = extract(['waitForChatCompletion', 'reconcileStreamedTurn', 'observeTurns', 'observedPagePath', 'returnToOwnConversation', 'noteOwnConversation', 'toJsonScript']);
+    const waitForCompletion = new Function('evalPage', 'openUrl', 'sleep', 'observeConversationExpression', 'CHATGPT_STOP_CONTROL_SELECTOR', 'chatGptGenerationActive',
+      'deriveAssistantCompletionSignature', 'nextStaleStopState', 'isConversationPathUrl', 'classifyDeepResearchTurn', 'appendOracleJobLifecycleEvent', `let currentJob; let conversationLeftEpisode = false;
+      const RELOAD_RECONCILE_TIMEOUT_MS = 5000, RELOAD_RECONCILE_POLL_MS = 50, STALE_STOP_CONTROL_MS = 120000;
+      function isGrokJob() { return false; }
+      async function heartbeat() {}
+      async function log() {}
+      async function snapshotText() { return ''; }
+      async function pageText() { return ''; }
+      function throwIfProviderTransientError() {}
+      function detectResponseFailureText() { return ''; }
+      async function collectArtifactCandidates() { return []; }
+      async function mutateJob(fn) { currentJob = fn(currentJob); return currentJob; }
+      async function agentBrowser(_job, command, url) { if (command !== 'open') throw Error('No send permitted'); await openUrl(url); }
+      ${completionSource}
+      return async (job, baseline) => { currentJob = job; const result = await waitForChatCompletion(job, baseline); return { result, job: currentJob }; };`)(
+      evalPage, openUrl, sleep, observeConversationExpression, CHATGPT_STOP_CONTROL_SELECTOR, chatGptGenerationActive, deriveAssistantCompletionSignature,
+      nextStaleStopState, isConversationPathUrl, classifyDeepResearchTurn, appendOracleJobLifecycleEvent);
+    const onOwn = async () => { try { return await evaluate('location.pathname') === '/c/own'; } catch { return false; } };
+    await navigate(`${origin}/c/foreign`);
+    const navJob = { id: 'nav', phase: 'awaiting_response', status: 'waiting', submittedAt: new Date().toISOString(), conversationId: 'own', chatUrl: ownUrl,
+      selection: { provider: 'chatgpt' }, config: { worker: { pollMs: 50, completionTimeoutMs: 30_000 } } };
+    let settled = false;
+    const waiting = waitForCompletion(navJob, 1).finally(() => { settled = true; });
+    for (let i = 0; i < 200 && !(await onOwn()); i += 1) await sleep(25);
+    assert(await onOwn(), 'The job reopens its own conversation');
+    await sleep(500);
+    assert.equal(settled, false, 'A finished turn in another conversation never completes the job');
+    pages.set('/c/own', ownPage('OWN FINAL ANSWER', false));
+    await evaluate(`document.querySelector('[data-chatgpt-selection-message-id="own-1"]').innerHTML = '<p>OWN FINAL ANSWER</p>'; document.querySelector('[data-testid="stop-button"]').remove();`);
+    const { result, job: waited } = await waiting;
+    assert.deepEqual(result, { responseIndex: 1, responseText: 'OWN FINAL ANSWER' }, 'Completion and text come from the job conversation only');
+    assert.equal(waited.lifecycleEvents.filter((event) => event.kind === 'navigation').length, 1, 'One breadcrumb per departure');
+
+    // A capture that cannot reach the bound turn saves nothing, least of all text streamed from
+    // another conversation, and records that recollection (never resubmission) recovers it.
+    const navDir = join(root, 'nav-job');
+    await mkdir(navDir);
+    const collectJob = { ...navJob, phase: 'downloading_artifacts', responsePath: join(navDir, 'response.md'), config: { artifacts: { capture: true } } };
+    await navigate(`${origin}/c/foreign`);
+    const missed = await makeWorker(navDir).collect(collectJob, { conversationId: 'own', responseIndex: 4 }, 'FOREIGN FINISHED ANSWER');
+    assert.equal(existsSync(collectJob.responsePath), false, 'No response is written from an unbound read');
+    assert.equal(missed.recollectionNeeded, true);
+    assert.equal(missed.collectionStatus, 'failed');
+    assert(missed.collectionRequiredMissing.includes('bound_response_capture'));
+    // From another conversation's page, collection reopens the job's own and captures its turn.
+    await navigate(`${origin}/c/foreign`);
+    const recovered = await makeWorker(navDir).collect(collectJob, { conversationId: 'own', responseIndex: 1 }, 'FOREIGN FINISHED ANSWER');
+    assert.equal(await readFile(collectJob.responsePath, 'utf8'), 'OWN FINAL ANSWER');
+    assert.equal(recovered.recollectionNeeded, undefined);
+    assert.equal(recovered.collectionBinding.messageId, 'own-1');
+    assert.deepEqual([recovered.observedTurn.durationLabel, recovered.observedTurn.durationSeconds], ['Worked for 15m 7s', 907]);
+    assert.equal(recovered.lifecycleEvents.filter((event) => event.kind === 'navigation').length, 1);
+
+    // A positional binding saved by a failed capture is recollected through the user turn that
+    // carries the job's own archive; the reply must still sit at the saved index.
+    const anchoredDir = join(root, 'anchored-job');
+    await mkdir(anchoredDir);
+    const anchoredJob = { id: 'anchored', status: 'complete', phase: 'complete', completedAt: new Date().toISOString(), conversationId: 'own', chatUrl: ownUrl,
+      archivePath: '/synthetic/nav/context-nav.tar.zst', collectionBinding: { conversationId: 'own', responseIndex: 1 }, responsePath: join(anchoredDir, 'response.md'),
+      runtimeSessionName: 'oracle-b1c2d3e4-0000-4000-8000-000000000001', cleanupPending: false, selection: { provider: 'chatgpt' },
+      config: { artifacts: { capture: true }, browser: { chatGptRelayEndpoint: 'http://127.0.0.1:9224' } } };
+    await navigate(`${origin}/c/foreign`);
+    const anchored = await makeWorker(anchoredDir).recollect(anchoredJob);
+    assert.equal(anchored.collectionStatus, 'complete', anchored.recollectionError);
+    assert.equal(await readFile(anchoredJob.responsePath, 'utf8'), 'OWN FINAL ANSWER');
+    assert.equal(anchored.collectionBinding.messageId, 'own-1', 'The archive anchor yields the exact turn identity');
+    assert.match(anchored.collectionBinding.turnSha256, /^[a-f0-9]{64}$/);
+    assert.equal('anchorFileName' in anchored.collectionBinding, false);
+    const refusedDir = join(root, 'refused-job');
+    await mkdir(refusedDir);
+    const refusedJob = { ...anchoredJob, collectionBinding: { conversationId: 'own', responseIndex: 0 }, responsePath: join(refusedDir, 'response.md') };
+    const refused = await makeWorker(refusedDir).recollect(refusedJob);
+    assert.match(refused.recollectionError, /assistant turn 1, not the saved turn 0; refusing anchored recollection/);
+    assert.equal(existsSync(refusedJob.responsePath), false);
+    pages.set('/c/own', ownPage('OWN FINAL ANSWER', false, 'Earlier prompt <span>context-nav.tar.zst</span>'));
+    const doubled = await makeWorker(refusedDir).recollect({ ...refusedJob, collectionBinding: { conversationId: 'own', responseIndex: 1 } });
+    assert.match(doubled.recollectionError, /appears in several user turns/);
+    assert.equal(existsSync(refusedJob.responsePath), false);
+
+    // The composer control wait is evaluated through toString in pages that get no animation frames.
+    await evaluate(`document.body.innerHTML = '<button id="plus" style="position:fixed;left:10px;top:10px;width:40px;height:40px">+</button>'; window.requestAnimationFrame = () => 0;`);
+    assert.equal(await evaluate(`(${waitForStationaryControl.toString()})('#plus', { timeoutMs: 3000 })`), true, 'The control wait ends without animation frames');
+
+    // The send state says whether a failure may have followed a prompt the provider received.
+    const sendSource = extract(['clickSend']);
+    const sendStates = [];
+    const runSend = (activation, accepted) => new Function('activation', 'accepted', 'sendStates', `
+      let current = {};
+      async function mutateJob(fn) { current = fn(current); sendStates.push(current.promptSendState); return current; }
+      async function waitForSendReady() {}
+      async function sendAcceptanceState() { return {}; }
+      async function activateSendButton() { return activation; }
+      async function waitForSendAccepted() { return accepted; }
+      async function captureDiagnostics() {}
+      async function log() {}
+      function sendLabelsForJob() { return ['Send prompt']; }
+      function isGrokJob() { return false; }
+      ${sendSource}
+      return clickSend({}, 0);`)(activation, accepted, sendStates);
+    await runSend({ ok: true }, true);
+    assert.deepEqual(sendStates.splice(0), ['attempted', 'accepted']);
+    await assert.rejects(runSend({ ok: false, reason: 'disabled' }, true), /Could not activate/);
+    assert.deepEqual(sendStates.splice(0), ['attempted', 'not_sent'], 'A click that never happened sent nothing');
+    await assert.rejects(runSend({ ok: true }, false), /did not leave the composer/);
+    assert.deepEqual(sendStates.splice(0), ['attempted'], 'An unconfirmed send may have reached the provider');
+  }
+  console.log(JSON.stringify({ status: 'passed', syntheticOnly: true, exactCode: true, richDom: true, genericDownload: true, frameExport: true, hostDelegatedNativeExport: true,
+    researchWidgetState: true, researchCitations: true, idempotentCollection: true, partialPreserved: true, conversationGuard: true, anchoredRecollection: true,
+    composerHydration: true, restoredDraftReplacement: true, frameFreeControlWait: true, promptSendState: true, oldTurnClicks: 0, sends: 0 }));
 } finally {
   cdp?.close();
+  fixture.close();
   processHandle.kill('SIGTERM');
   await new Promise((resolve) => { if (processHandle.exitCode !== null) resolve(); else processHandle.once('exit', resolve); });
   await rm(root, { recursive: true, force: true });

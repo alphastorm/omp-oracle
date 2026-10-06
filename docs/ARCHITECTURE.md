@@ -100,14 +100,16 @@ The extension now follows the current `pi` session lifecycle model:
   - lightweight agent-facing readiness check for persisted-session and local oracle prerequisites
   - accepts optional `provider` and `followUpJobId` so readiness checks use the same auth seed/provider that submission will use
   - intended to run before expensive `/oracle` context gathering
+  - reports global capacity, ready or blocked (`Capacity: 1/2 active, 0/2 queued (global).`), from live runtime leases and queued jobs without acquiring or sweeping anything
 - `oracle_auth`
   - agent-facing auth refresh tool that mirrors `/oracle-auth` for stale-auth recovery before a retry
 - `oracle_submit`
   - low-level agent-facing dispatch tool
   - creates archive and launches a detached worker
   - supports optional `followUpJobId` to continue the same provider thread by persisted URL
+  - archive inputs resolve against the project root; a missing input (`archive_input_missing`) names that root
 - `oracle_read`
-  - reads job status and outputs
+  - reads job status and outputs; `action: "recollect"` recollects a completed job's saved turn without sending
 - `oracle_cancel`
   - cancels a queued or active job
 
@@ -204,27 +206,47 @@ Per job:
    - login required
    - challenge/verification page
    - transient outage after one retry
-6. configure ChatGPT model family/effort or Grok Heavy
+6. configure ChatGPT model family/effort or Grok Heavy; a product announcement shown as a modal
+   over the composer is dismissed through its `Close dialog` control (never an action such as
+   `Get started`). For a composer-tool preset (Deep Research) model configuration is skipped and,
+   still in `configuring_model`, the prompt is filled and the tool enabled from the composer's
+   `Add files and more` menu and verified by its pill. The menu control is awaited until it is
+   stationary and uncovered by sampling on timers: the job's tab is usually not the visible tab,
+   and Chrome gives hidden tabs no animation frames. What the composer then shows (the model
+   picker's text, the effort slider's stop, the verified tool) is recorded as `observedSelection`
 7. upload archive
 8. wait for upload confirmation scoped to the active composer
-9. fill prompt
-10. send
-11. wait for a stable conversation URL and persist `chatUrl` / `conversationId`
-12. wait for completion anchored to the current turn only; for a composer-tool preset (Deep
-    Research) the tool is enabled after the prompt is filled and before the upload and verified by
-    its pill, model configuration is skipped, CDP frame capture is armed on the pinned relay tab
-    before send (`Target.setAutoAttach` is not retroactive), and once the assistant turn shows the
-    research widget (inside the reply in the earlier shell; in the redesigned one, in a sibling
-    block of the reply's own exchange, `data-turn-key`) the report is polled from the attached
-    iframe session (`frames[0].document.body.innerText`) until `Research completed in` appears; a
-    reply instead of a research start, a missing tool, or an unreadable widget fail with a stable
+9. fill prompt (after the upload for model presets; Deep Research filled it in step 6)
+10. send: `promptSendState` is `not_sent` from worker start, `attempted` just before the click,
+    and `accepted` once the provider shows the message left the composer, so a failure tells
+    whether resubmitting can duplicate a prompt
+11. wait for a stable conversation URL and persist `chatUrl` / `conversationId`; the URL is
+    adopted only from a page whose user turn shows this job's archive (`context-<id>.tar.zst`),
+    read in the same evaluation as the location, so a tab moved elsewhere right after send never
+    hands the job another conversation (after 60 s without that evidence the stable URL is adopted
+    unverified and the log says so)
+12. wait for completion anchored to the current turn only. Every poll reads the page's
+    conversation, the assistant turns, and the stop control in one evaluation; a page showing
+    another conversation contributes nothing, records one `navigation` lifecycle event per
+    departure, reopens the job's own conversation, and restarts the stability count within the
+    same deadline. For Deep Research, CDP frame capture is armed on the pinned tab before send
+    (`Target.setAutoAttach` is not retroactive), and once the assistant turn shows the research
+    widget (inside the reply in the earlier shell; in the redesigned one, in a sibling block of the
+    reply's own exchange, `data-turn-key`) the report is polled from the attached iframe session
+    (`frames[0].document.body.innerText`) until `Research completed in` appears; the host page's
+    conversation is checked on every poll and the frame is found again after a departure. A reply
+    instead of a research start, a missing tool, or an unreadable widget fail with a stable
     `errorCode`
 13. bind the completed assistant turn (`conversationId` + `responseIndex`, then the exact message
     id, `data-message-id` or the redesigned shell's `data-chatgpt-selection-message-id`, and a
     content hash) and record `generationStatus: completed`
 14. collect the bound turn only (never the whole conversation): scoped DOM evidence, exact code
     payloads, derived Markdown, stable source URLs, and any response-local artifacts, writing
-    `response.capture.json` plus `collectionStatus` with required/optional gaps
+    `response.capture.json` plus `collectionStatus` with required/optional gaps. A ChatGPT turn
+    that cannot be captured saves no response at all (the streamed text is never a fallback) and
+    sets `recollectionNeeded`; the turn's reasoning-time label (`Worked for 15m 7s`, a span in the
+    exchange's activity header) is recorded as `observedTurn`, and for Deep Research the report's
+    `Research completed in 6m` instead
 15. close the isolated browser session and delete the runtime profile in `finally`
 
 ## Existing-Chrome relay transport
@@ -238,9 +260,10 @@ does not own that browser process or verify a configured email identity.
 The fork adds an opt-in ChatGPT transport that drives the user's already signed-in Chrome through a CDP relay instead of cloning cookies into an isolated profile. It is enabled only by the agent-level `browser.chatGptRelayEndpoint` option (for example `http://127.0.0.1:9224`); project config cannot set it, and it applies to ChatGPT only. Grok keeps the isolated-profile route. Without the option, behavior is unchanged.
 
 - The relay must expose CDP target discovery (`Target.getTargets`), creation, attachment, and closure. Older OMP relay builds without `Target.getTargets` cannot serve `agent-browser`; use `agent-browser` 0.35.0 or newer with pinned-tab support.
-- Each job creates a fresh tab, persists its opaque target identity in job state, and pins every browser command to that tab. Cleanup checks ownership, closes the pinned tab, verifies its removal, and disconnects the job driver. Relay mode never deletes a profile directory.
+- Each job creates a fresh tab, persists its opaque target identity in job state, and pins every browser command to that tab. Cleanup checks ownership, closes the pinned tab, verifies its removal, and disconnects the job driver. Chrome refuses to close a window's last tab (`Cannot close the last tab`); the job's tab is then released to `about:blank` instead, which the managed-browser keeper counts as idle. Relay mode never deletes a profile directory.
 - The job-owned tab is never activated (focus stealing is a hard requirement, see above), so whenever it sits behind another tab, in a minimized window, or in a window occluded by other windows, Chrome reports it `hidden` and gives it no rendering opportunities: `requestAnimationFrame` never fires and timers throttle to one per second. ChatGPT appends streamed tokens from the render loop, so the streamed turn freezes mid-stream while the network-driven stop control still clears. The worker therefore treats the streamed read as a lower bound and reconciles it against a reload of the persisted conversation, which renders the committed turn correctly even while hidden. Measured against a throwaway Chrome: `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` keep an occluded window's active tab `visible` (rAF 120/s), but a background tab or a minimized window stays `hidden` with rAF at 0 (timers 5/s instead of 1/s). The flags are worth setting on a dedicated diligence Chrome that lives behind other windows; they cannot replace the reconciliation.
 - The converse also happens: the stop control can outlive a finished stream (observed for 31 minutes over a fully rendered turn whose generation request had returned 200 at t+14 s). Once the bound turn's text has been non-empty and unchanged for two minutes under a persistent stop control, the worker reloads the conversation and re-reads generation state (`nextStaleStopState`); empty text never ages, so thinking phases are untouched, and Deep Research is exempt because it holds its control by design and reads the report from the widget frame.
+- Another CDP client can navigate the job's tab: an agent's own browser connection adopts the visible tab of the window, which can be the job's (observed 2026-10-04, when three jobs each saved another conversation's answer as their own). The worker therefore never pairs one page read with another page's location: turns, the stop control, captures, and the stable URL are read in the same evaluation as the page's conversation, and a page on another conversation is reopened on the job's own.
 - Follow-ups open a new job-owned tab on the existing conversation URL. A missing or mismatched target fails closed rather than selecting another tab.
 - Relay preflight checks transport reachability, not login. The worker verifies login before uploading. Login and human-verification challenges are finished in Chrome by the user; `oracle_auth` refuses cookie import in relay mode.
 - The submit/read/follow-up APIs and the durable job files are unchanged between transports.
@@ -381,6 +404,7 @@ Cleanup warnings are treated as diagnostics, not silent no-ops:
 - command-side cleanup warnings are surfaced to the user
 - cancellation/stale-job recovery persists cleanup warnings into `job.json`
 - terminal cleanup recovery will terminate stale live cleanup workers before retrying teardown so blocked capacity does not wedge indefinitely
+- retries are bounded: each failed teardown counts one attempt (`cleanupAttemptCount`) and schedules the next at 15 s, 1 min, 5 min, then 15 min (`cleanupRetryAt`); after five attempts `cleanupPending` clears and only `/oracle-clean` retries. Reconciliation runs only for a due pending job (and once for a job recorded before attempts were counted), warnings are deduplicated and capped at eight of 500 characters, and they never rewrite the job's `error`. Warnings alone no longer hold back pruning or queue advancement. Before this, a refused last-tab close was retried on every poll of every live session: one job's cleanup ran for 25.5 hours (2026-10-02 to 03) and its `error` held 38,669 copies of the warning
 
 ## Job layout under the configured jobs dir
 
@@ -435,6 +459,10 @@ Important fields include:
 - `collectionBinding` (`{ conversationId, responseIndex, messageId?, turnSha256?, frameId? }`)
 - `responseCapturePath`
 - `recollectionError` (last `oracle_read` recollection failure, cleared on success)
+- `recollectionNeeded` (`true` when the turn completed but no response could be captured; recollect, never resubmit)
+- `promptSendState` (`not_sent | attempted | accepted`; `attempted` means a failure may have followed a prompt the provider received)
+- `observedSelection` (`{ at, modelLabel?, effortLabel?, deepResearchVerified? }`, what the composer showed after configuration; a composer-tool job records only the verified tool, since the picker does not choose its model)
+- `observedTurn` (`{ at, durationLabel?, durationSeconds? }`, the turn's reasoning-time label such as `Worked for 15m 7s`, or `Research completed in 6m` for Deep Research)
 - `artifactPaths`
 - `artifactsManifestPath`
 - `archivePath`
@@ -549,19 +577,26 @@ assistant finished the turn; `collectionStatus` records how much of that turn th
 
 Gaps are explicit strings. Required gaps mean the answer itself is degraded (`response`,
 `rich_response_fidelity`, `unresolved_source_links`, `bound_response_capture`,
-`redacted_transport_links`, `native_export_source_links`); optional gaps mean a secondary file is
-missing (`native_markdown_export`, `artifact:<candidate>`, `artifact_inspection:<state>`). Legacy
-jobs without these fields stay readable; absence is unknown, not failure.
+`redacted_transport_links`, `native_export_source_links`, `diagram_source:<count>`); optional gaps
+mean a secondary file is missing (`native_markdown_export`, `research_widget_state`,
+`artifact:<candidate>`, `artifact_inspection:<state>`). Legacy jobs without these fields stay
+readable; absence is unknown, not failure.
 
 ### Exact binding
 
-Collection binds to one assistant turn: `conversationId` (checked against the live URL),
-`responseIndex` (the position observed at completion), and once captured the exact
-`data-message-id` plus a `turnSha256` of the turn's normalized text (class attributes churn
-between renders, so the sanitized HTML is not hashed). Actual ChatGPT headings wrap a descendant
-`data-message-id`, so the binding resolves through the heading wrapper; message identity wins over
-a stale positional index, and a missing or ambiguous identity fails closed instead of capturing
-the last answer or the whole conversation.
+Collection binds to one assistant turn: `conversationId`, `responseIndex` (the position observed
+at completion), and once captured the exact `data-message-id` plus a `turnSha256` of the turn's
+normalized text (class attributes churn between renders, so the sanitized HTML is not hashed). The
+conversation is checked inside the capture's own evaluation, against the page that evaluation
+reads, so a navigation between a location check and a DOM read can never pair one conversation's
+binding with another conversation's turn; a capture that finds another conversation reopens the
+job's own and retries, boundedly. Actual ChatGPT headings wrap a descendant `data-message-id`, so
+the binding resolves through the heading wrapper; message identity wins over a stale positional
+index, and a missing or ambiguous identity fails closed instead of capturing the last answer or
+the whole conversation. For ChatGPT nothing else is ever saved as the response: when the bound
+capture fails, `response.md` is not written (an earlier collection's file is kept),
+`collectionStatus` is `failed`, and `recollectionNeeded` tells the reader to recollect rather than
+resubmit.
 
 ### Capture
 
@@ -570,17 +605,34 @@ worker evaluates in the owned page or the bound report frame and that the synthe
 runs unchanged. From the bound root it produces raw text, sanitized HTML, derived Markdown, leaf
 `pre` code blocks (nested presentation wrappers are not double-counted; language classes may be
 absent), stable source URLs (signed transport URLs are dropped; literal URLs in text and code are
-inventoried), structural artifact candidates, and child frames. A single `markdown` code block is
-saved as the exact response (`exact_code`); Deep Research prefers the native export
-(`native_markdown`); otherwise the derived Markdown is saved (`derived_markdown`). Exact payload
-files and the surrounding derived response are distinct fidelity claims.
+inventoried), structural artifact candidates, child frames, and the turn's reasoning-time label. A
+single `markdown` code block is saved as the exact response (`exact_code`); otherwise the derived
+Markdown is saved (`derived_markdown`). Exact payload files and the surrounding derived response
+are distinct fidelity claims.
+
+A Deep Research report is saved from its Markdown source (`native_markdown`): the validated native
+export (`native_report_download`), else the report message the widget holds as its Apps SDK state
+(`frames[0].openai.widgetState.report_message`, `report_widget_state`), which the host page hands
+the widget and which needs no request of our own. Both carry diagram source (Mermaid fences) and
+citation tokens: `U+E200 cite U+E202 <ref> (U+E202 <ref>)* U+E201`. Each token becomes Markdown
+footnote references, one number per distinct source in order of first citation, defined at the end
+from the widget's `content_references` (titled sources, else safe URLs); a token without a
+reference keeps a numbered footnote saying so and is reported as `unresolved_source_links`; fenced
+code is never rewritten. Only when neither source is available is the rendered report converted:
+its status line and counters are dropped, each citation pill stays a visible `[n]` and counts as
+an unresolved source, and each diagram rendered without source becomes a placeholder counted in
+`diagram_source:<count>`. `response.capture.json` records the token, source, and unresolved counts
+under `citations`.
 
 ### Artifacts
 
 Candidates come only from the bound turn (or bound report frame): controls with `download`
-attributes, file-like hrefs, or export labels. Each candidate is recorded as `discovered`,
-`downloaded`, `validated`, or `failed` in `artifacts.json`; validated bytes are checked against
-their declared size and format (PDF/ZIP/PNG/UTF-8 text) before they land under
+attributes, file-like hrefs, or export labels. A control that wraps other controls, or whose text
+runs past 200 characters, is a container and never a candidate: the research widget wraps its
+whole report in one clickable element, whose text matched the export labels and, flagged as the
+native Markdown export, displaced the real `Export` button. Each candidate is recorded as
+`discovered`, `downloaded`, `validated`, or `failed` in `artifacts.json`; validated bytes are
+checked against their declared size and format (PDF/ZIP/PNG/UTF-8 text) before they land under
 `artifacts/<sha256>-<name>`. Identical bytes are stored once, and a candidate whose validated file
 already exists is not downloaded again.
 
@@ -610,7 +662,11 @@ behavior. Visible labels are display metadata, never authoritative filenames.
 
 `oracle_read({ jobId, action: "recollect" })` retries collection of an already completed job
 without sending anything: the worker's separate `--recollect` entrypoint never reaches configure,
-upload, composer, or send. Jobs completed before binding existed require the observed
+upload, composer, or send. A saved binding that is positional only (a capture failed before it
+learned the turn's identity) is recollected through the user turn that shows the job's own
+archive, `context-<id>.tar.zst`: that exchange is the job's, its first reply must sit at the saved
+index, and an archive shown in no user turn or in several is refused; the capture then records the
+turn's message ID and hash. Jobs completed before binding existed require the observed
 `responseIndex` and `messageId` together; the latest turn is never inferred, an explicit pair may
 add the identity of a saved positional turn but never move it, and an explicit binding can never
 replace a saved exact one. Recollection opens a fresh `oracle-<uuid>` driver session (the original
@@ -672,6 +728,7 @@ The extension still uses the same general `pi`-native background completion patt
 - each poll also re-runs the submit prerequisite check behind the session footer (`oracle: ready`, `auth needed`, `browser unavailable`, `config error`), classified by the same error codes agents receive; a browser or config blocker raises one warning per distinct cause, and the footer follows the blocker clearing or returning without a new session
 - completed job durability lives in oracle job state plus saved response/artifact files, not in synthetic session-history assistant messages
 - when a matching job reaches `complete`, `failed`, or `cancelled`, the poller issues one best-effort wake-up to whichever matching session is currently live, then records `notifiedAt` so later scans do not duplicate the completion message
+- a wake-up is delivered only while that session is idle with nothing queued (the host's live `isIdle()` and `hasPendingMessages()`, re-checked before every claim and before sending); a busy session defers it to a later scan instead of queueing a follow-up that would arrive after the agent had moved on. Jobs that finish together are delivered as one message, and a job its origin session already read through `oracle_read` is settled before any wake-up is sent. Hosts without these probes keep the previous delivery
 - those wake-ups direct the receiver to `/oracle-read [job-id]` as the primary completion-consumption path, while still surfacing saved response/artifact paths as secondary context; `/oracle-status` remains useful for metadata and job-id discovery, and agent callers can still use `oracle_read` when they need tool output in-turn
 - wake-up content explicitly tells agents not to treat completion as an automatic `oracle_auth`, `oracle_submit`, or `oracle_cancel` retry instruction
 - manual `oracle_read`, `/oracle-read`, or `/oracle-status` inspection after a wake-up persists provenance about which path/session settled the wake-up

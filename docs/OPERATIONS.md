@@ -254,11 +254,17 @@ browser safe-storage item.
   directory once the upload succeeds. Full layout:
   [Architecture → Job layout](ARCHITECTURE.md#job-layout-under-the-configured-jobs-dir).
 - Jobs queue automatically when runtime capacity is full.
-- Completion delivery into the host session is one best-effort wake-up. A missed wake-up loses
-  nothing: `/oracle-read [job-id]` and `oracle_read({ jobId })` read the saved output later.
+- Completion delivery into the host session is one best-effort wake-up, sent while the session is
+  idle; jobs that finish together arrive as one message, and a job the session already read with
+  `oracle_read` gets none. A missed wake-up loses nothing: `/oracle-read [job-id]` and
+  `oracle_read({ jobId })` read the saved output later.
+- `oracle_preflight` reports global capacity (`Capacity: 1/2 active, 0/2 queued (global).`), so a
+  caller can tell a queued submit from an immediate one before building an archive.
 - `/oracle-clean <job-id|all>` removes terminal job temp files. It briefly refuses cleanup right
   after a wake-up was sent so the follow-up turn can still read the saved paths, and returns the
   next eligible cleanup time.
+- A teardown that leaves a warning is retried automatically at most five times (15 s, 1 min,
+  5 min, 15 min apart); the job then keeps its warnings and `/oracle-clean` retries on request.
 - Terminal job directories are pruned by age: `cleanup.completeJobRetentionMs` (default 14
   days; `complete` and `cancelled` jobs) and `cleanup.failedJobRetentionMs` (default 30 days).
 
@@ -362,24 +368,43 @@ Open the conversation URL for the report in any of these cases.
   the pill did not appear after selecting it. Check the account has Deep Research and that the
   ChatGPT page is a normal chat, then retry.
 
-### A completed job reads `collection-status: partial`
+### A completed job reads `collection-status: partial` or `failed`
 
 Generation finished but the worker holds less than the whole turn. `oracle_read` and
 `/oracle-read` list the gaps: required gaps (`bound_response_capture`,
 `rich_response_fidelity`, …) mean the saved answer is degraded; optional gaps
 (`native_markdown_export`, `artifact:<candidate>`) mean a secondary file is missing while
 `response.md` is intact. `response.capture.json` carries the exact turn binding, fidelity, and
-source URLs.
+source URLs. `recollection-needed` means the turn could not be captured at all and no response
+was saved; the job never substitutes text from another page.
 
 Do not resubmit. Run `oracle_read({ jobId, action: "recollect" })`: the worker opens a fresh
-disposable session, reacquires the exact bound turn, and repeats collection only; it never
-configures, uploads, or sends. Jobs completed before turn binding existed need the observed
-`responseIndex` and `messageId` together (`data-message-id` of the assistant turn). A failed
-recollection records `recollectionError` and keeps the earlier usable output.
+disposable session, reacquires the bound turn, and repeats collection only; it never configures,
+uploads, or sends. A binding saved without the turn's message ID is found again through the user
+turn that shows the job's archive (`context-<id>.tar.zst`). Jobs completed before turn binding
+existed need the observed `responseIndex` and `messageId` together (`data-message-id` of the
+assistant turn). A failed recollection records `recollectionError` and keeps the earlier usable
+output.
 
 For Deep Research, recollection re-activates Export → Export to Markdown; the browser saves its
 own copy in Chrome's configured download directory each time (the worker never changes that
 destination), and the validated bytes land under `artifacts/<sha256>-deep-research-report.md`.
+When the export fails, the report is still saved from the Markdown the research widget holds, with
+its citations as footnotes.
+
+### A failed job: may the prompt have been sent?
+
+`prompt-send-state` in `oracle_read` answers it: `not_sent` (nothing reached ChatGPT; resubmitting
+is safe), `attempted` (the send was clicked but never confirmed; check the conversation before
+resubmitting), or `accepted` (the prompt was sent).
+
+### Do not drive the managed Chrome while jobs run
+
+An agent's browser tool connected to the managed Chrome (`browser.open({ app: { cdp_url } })`)
+adopts the window's visible tab, which can be a running job's tab, and navigates it. The worker now
+detects that and reopens its own conversation (one `navigation` lifecycle event per departure),
+but the job loses time and Deep Research must find its report frame again. Inspect conversations in
+another Chrome, or wait until `/oracle-status` lists no active job.
 
 ### The prompt arrived with unrelated text in front of it (relay mode)
 

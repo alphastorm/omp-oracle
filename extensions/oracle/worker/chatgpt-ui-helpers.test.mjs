@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
-import { classifyDeepResearchTurn, effortSelectionVisible, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotHasUsableComposerControls, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel } from "./chatgpt-ui-helpers.mjs";
+import { classifyDeepResearchTurn, effortSelectionVisible, findDialogCloseEntry, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotHasUsableComposerControls, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel, waitForStationaryControl } from "./chatgpt-ui-helpers.mjs";
 
 // Composer fragment of the authenticated redesigned shell, captured 2026-09-29 by a failed job.
 const CURRENT_SHELL_COMPOSER = [
@@ -223,4 +223,37 @@ test("the finished widget text yields the report without the animated counter, k
   }
   assert.deepEqual(parseDeepResearchWidgetText(""), { completed: false, report: "" });
   assert.deepEqual(parseDeepResearchWidgetText("Researching…\nReading sources"), { completed: false, report: "" });
+});
+
+// Snapshot of job 0eebc96a's failure on 2026-10-03: a product announcement opened as a modal over
+// the composer, so the page offered only the modal and model configuration timed out behind it.
+test("a modal that hides the composer is dismissed only through its Close dialog control", () => {
+  const announcement = [
+    '- heading "Your Pro plan now includes connected finances" [level=2, ref=e1]',
+    '- button "Get started" [ref=e2]',
+    '- button "Close dialog" [ref=e3]',
+  ].join("\n");
+  assert.equal(findDialogCloseEntry(announcement)?.ref, "@e3");
+  assert.equal(findDialogCloseEntry(announcement.replace('button "Close dialog"', 'button "Learn more"')), undefined, "an action button is never a dismissal");
+  assert.equal(findDialogCloseEntry(`${CURRENT_SHELL_COMPOSER}\n- button "Close dialog" [ref=e3]`), undefined, "a reachable composer means no modal blocks it");
+  assert.equal(findDialogCloseEntry(announcement.replace("[ref=e3]", "[disabled, ref=e3]")), undefined);
+});
+
+// Chrome gives a tab that is not the visible tab of its window no animation frames, and concurrent
+// jobs share one window. A frame-driven wait never ended in such a tab (job ffb106b3, 2026-10-05).
+test("the stationary-control wait ends without animation frames and refuses a covered control", async () => {
+  const rect = { x: 10, y: 20, width: 30, height: 30 };
+  const control = { disabled: false, getBoundingClientRect: () => rect, contains: (node) => node === control };
+  const cover = {};
+  let hit = control;
+  const document = { querySelector: () => control, elementFromPoint: () => hit };
+  const saved = { document: globalThis.document, requestAnimationFrame: globalThis.requestAnimationFrame };
+  Object.assign(globalThis, { document, requestAnimationFrame: () => 0 });
+  try {
+    assert.equal(await waitForStationaryControl("button", { intervalMs: 5, timeoutMs: 1000 }), true);
+    hit = cover;
+    assert.equal(await waitForStationaryControl("button", { intervalMs: 5, timeoutMs: 100 }), false, "a control under another element is not ready");
+  } finally {
+    Object.assign(globalThis, saved);
+  }
 });

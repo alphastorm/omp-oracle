@@ -17,7 +17,7 @@ import {
   jobBlocksAdmission,
   runQueuedJobPromotionPass,
 } from "../shared/job-coordination-helpers.mjs";
-import { applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
+import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir, getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
@@ -25,7 +25,20 @@ import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { acquireManagedBrowser, managedBrowserReplaced, releaseManagedBrowser, sharedBrowserEndpoint, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
 import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
-import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from "./response-capture.mjs";
+import {
+  activateDownloadControl,
+  captureExpression,
+  captureDownload,
+  collectNativeDownload,
+  collectionOutcome,
+  composeResearchResponse,
+  durationLabelSeconds,
+  observeConversationExpression,
+  readResearchReportState,
+  redactTransportSecrets,
+  turnContentSha256,
+  validateArtifactBytes,
+} from "./response-capture.mjs";
 import {
   buildAllowedChatGptOrigins,
   CHATGPT_ADD_FILES_LABEL,
@@ -34,7 +47,9 @@ import {
   CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR,
   CHATGPT_SEND_LABELS,
   CHATGPT_STOP_CONTROL_SELECTOR,
+  CHATGPT_MODEL_PICKER_SELECTOR,
   deriveAssistantCompletionSignature,
+  findDialogCloseEntry,
   isChatGptComposerEntry,
   matchesCompactIntelligenceControlLabel,
   matchesModelConfigurationOpener,
@@ -61,6 +76,7 @@ import {
   snapshotWeaklyMatchesRequestedModel,
   autoSwitchToThinkingSelectionVisible,
   stripChatGptResponseChrome,
+  waitForStationaryControl,
 } from "./chatgpt-ui-helpers.mjs";
 import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
@@ -585,10 +601,11 @@ async function closeBrowser(job) {
     const endpoint = sharedBrowserEndpoint(job);
     if (endpoint && job.relayTargetId) {
       try {
-        await closeRelayTab({
+        const outcome = await closeRelayTab({
           binary: AGENT_BROWSER_BIN, sessionName: job.runtimeSessionName,
           endpoint, targetId: job.relayTargetId, browserUrl: job.managedBrowser?.browserUrl,
         });
+        if (outcome === "released") await log("The job tab was its window's last tab; released it to about:blank instead of closing it");
         currentJob = await mutateJob((latest) => ({ ...latest, relayTargetId: undefined }));
       } catch (error) {
         tabCleanupError = error;
@@ -810,6 +827,42 @@ async function loginProbe(job) {
 async function currentUrl(job) {
   const { stdout } = await agentBrowser(job, "get", "url");
   return stdout;
+}
+
+// The page's conversation and its assistant turns, read in one evaluation. With `conversationId`,
+// a page showing another conversation yields only its location (onConversation false), never turns.
+/** @param {any} job @param {{ conversationId?: string; archiveFileName?: string }} [options] */
+async function observeTurns(job, { conversationId, archiveFileName } = {}) {
+  const observation = await evalPage(job, toJsonScript(`return ${observeConversationExpression({ conversationId, stopSelector: CHATGPT_STOP_CONTROL_SELECTOR, archiveFileName })};`));
+  if (!observation || typeof observation !== "object" || typeof observation.onConversation !== "boolean") throw new Error("The conversation observation returned no result.");
+  return { ...observation, messages: Array.isArray(observation.messages) ? observation.messages.map((message) => ({ text: typeof message?.text === "string" ? message.text : "" })) : [] };
+}
+
+function observedPagePath(href) {
+  try { return new URL(href).pathname; } catch { return "an unreadable page"; }
+}
+
+// Another client can navigate the job's shared tab (an agent's own CDP connection adopting the
+// visible tab), or a person can click another chat in the window. One lifecycle breadcrumb per such
+// episode; every recovery reopens only the job's own conversation, within the caller's deadline.
+let conversationLeftEpisode = false;
+async function returnToOwnConversation(job, observed) {
+  if (!conversationLeftEpisode) {
+    conversationLeftEpisode = true;
+    const at = new Date().toISOString();
+    await mutateJob((latest) => appendOracleJobLifecycleEvent(latest, { at, source: "oracle:worker", kind: "navigation",
+      message: `The job's tab left its conversation ${job.conversationId} for ${observed}; reopening the job's conversation.` })).catch(() => undefined);
+  }
+  await log(`The job's tab shows ${observed} instead of conversation ${job.conversationId}; reopening ${job.chatUrl}`);
+  await agentBrowser(job, "open", job.chatUrl).catch(async (error) => {
+    await log(`Reopening the job's conversation failed; retrying on the next poll: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
+
+async function noteOwnConversation() {
+  if (!conversationLeftEpisode) return;
+  conversationLeftEpisode = false;
+  await log("The job's tab is back on its own conversation");
 }
 
 async function snapshotText(job) {
@@ -1465,10 +1518,18 @@ async function sendAcceptanceState(job, baselineAssistantCount) {
 async function clickSend(job, baselineAssistantCount) {
   await waitForSendReady(job);
   const beforeSend = await sendAcceptanceState(job, baselineAssistantCount);
+  // Recorded before the click: from here on, a failure may follow a prompt the provider received.
+  await mutateJob((latest) => ({ ...latest, promptSendState: "attempted" }));
   const activation = await activateSendButton(job);
-  if (!activation?.ok) throw new Error(`Could not activate ${sendLabelsForJob(job)[0]}: ${activation?.reason || "DOM activation failed"}`);
+  if (!activation?.ok) {
+    await mutateJob((latest) => ({ ...latest, promptSendState: "not_sent" }));
+    throw new Error(`Could not activate ${sendLabelsForJob(job)[0]}: ${activation?.reason || "DOM activation failed"}`);
+  }
   await log(`Activated ${sendLabelsForJob(job)[0]}; waiting for provider acceptance evidence`);
-  if (await waitForSendAccepted(job, beforeSend, { timeoutMs: 20_000 })) return;
+  if (await waitForSendAccepted(job, beforeSend, { timeoutMs: 20_000 })) {
+    await mutateJob((latest) => ({ ...latest, promptSendState: "accepted" }));
+    return;
+  }
 
   await captureDiagnostics(job, "send-not-accepted");
   throw new Error(`${isGrokJob(job) ? "Grok" : "ChatGPT"} message did not leave the composer after activating ${sendLabelsForJob(job)[0]}`);
@@ -1486,7 +1547,19 @@ async function waitForSendAccepted(job, beforeSend, options = {}) {
   return false;
 }
 
+// A product announcement can open as a modal over the composer once the page has loaded. Only its
+// "Close dialog" control is ever used, never an action such as "Get started".
+async function dismissBlockingDialog(job, snapshot) {
+  const close = findDialogCloseEntry(snapshot);
+  if (!close) return false;
+  await log("Dismissing a dialog that covers the composer");
+  await clickRef(job, close.ref).catch(() => undefined);
+  await agentBrowser(job, "wait", "500");
+  return true;
+}
+
 async function dismissProFeedbackModal(job, snapshot) {
+  if (await dismissBlockingDialog(job, snapshot)) return true;
   const entries = parseSnapshotEntries(snapshot);
   const hasProFeedback = entries.some((entry) => entry.kind === "heading" && entry.label === "Pro feedback" && !entry.disabled);
   if (!hasProFeedback) return false;
@@ -1655,6 +1728,9 @@ async function focusPowerSlider(job) {
   return Boolean(result && typeof result === "object" && result.focused === true);
 }
 
+// The effort the slider reported when configuration finished, e.g. "Pro (5 of 5)".
+let observedEffortLabel;
+
 // Drive the current slider-based thinking-effort picker: only the current stop is rendered, so
 // step with real arrow keys and trust the slider's own description after every step.
 async function configurePowerSlider(job) {
@@ -1674,6 +1750,7 @@ async function configurePowerSlider(job) {
       if (!state) {
         if (powerSliderClosedIntoSelection(await snapshotText(job), job.selection)) {
           await log(`Thinking-effort picker closed on ${target}; the composer already reads it`);
+          observedEffortLabel = target;
           return;
         }
         throw new Error("Lost the ChatGPT thinking-effort slider while stepping");
@@ -1682,11 +1759,38 @@ async function configurePowerSlider(job) {
     }
   }
   if (state.label !== target) throw new Error(`Could not set the thinking-effort slider to ${target}; it reads ${state.label}`);
-  await log(`Thinking-effort slider set to ${state.label} (${state.index} of ${state.count})`);
+  observedEffortLabel = `${state.label} (${state.index} of ${state.count})`;
+  await log(`Thinking-effort slider set to ${observedEffortLabel}`);
+}
+
+// What the composer shows once configuration finished: the model picker's text, the slider's
+// effort, and whether the Deep Research pill was verified. Never inferred from the request.
+/** @param {any} job @param {{ deepResearchVerified?: boolean }} [options] */
+async function observeSelection(job, { deepResearchVerified } = {}) {
+  if (isGrokJob(job)) return undefined;
+  // A composer tool runs its own model, so the picker's text says nothing about the job.
+  if (job.selection.tool) return { at: new Date().toISOString(), ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
+  // The picker nests a caption and the selection ("Thinking effort", "Instant"); its text nodes are
+  // joined with spaces, skipping screen-reader-only text.
+  const picker = await evalPage(job, toJsonScript(`
+    const node = document.querySelector(${JSON.stringify(CHATGPT_MODEL_PICKER_SELECTOR)});
+    const parts = [];
+    if (node) {
+      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+      for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+        if (!text.parentElement?.closest('.sr-only') && text.textContent.trim()) parts.push(text.textContent.trim());
+      }
+    }
+    return { label: parts.join(' ').replace(/\\s+/g, ' ').trim() };
+  `)).catch(() => undefined);
+  const modelLabel = typeof picker?.label === "string" && picker.label ? picker.label.slice(0, 80) : undefined;
+  return { at: new Date().toISOString(), ...(modelLabel ? { modelLabel } : {}), ...(observedEffortLabel ? { effortLabel: observedEffortLabel } : {}),
+    ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
 }
 
 async function configureModel(job) {
   if (isGrokJob(job)) return configureGrokModel(job);
+  await dismissBlockingDialog(job, await snapshotText(job));
   if (job.selection.tool) {
     await log(`Model configuration skipped: composer tool ${job.selection.tool} selects its own model`);
     return;
@@ -1847,17 +1951,18 @@ async function deepResearchToolSelected(job, snapshot) {
 }
 
 // Deep Research is enabled after the prompt is in the composer: filling the textbox replaces its
-// content, and the tool is a pill that lives inside the textbox.
+// content, and the tool is a pill that lives inside the textbox. Returns once the pill is verified.
 async function enableDeepResearch(job) {
   const before = await snapshotText(job);
   if (await deepResearchToolSelected(job, before)) {
     await log("Deep Research tool already enabled in the composer");
-    return;
+    return true;
   }
   const opener = findEntry(before, (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.addFiles && !candidate.disabled);
   if (!opener) throw new OracleWorkerError("deep_research_toggle_not_found", `Could not find the "${CHATGPT_LABELS.addFiles}" menu to enable Deep Research`);
-  // Filling expands/animates the composer. Wait for a stationary, uncovered
-  // control and keep the tool pill out of the prompt text (not inside a path).
+  // Filling expands/animates the composer. Wait for a stationary, uncovered control and keep the
+  // tool pill out of the prompt text (not inside a path). The wait samples on timers: a job's tab
+  // is usually not the visible tab, and Chrome gives hidden tabs no animation frames.
   const settled = await evalPage(job, toAsyncJsonScript(`
     const editor = [...document.querySelectorAll(${JSON.stringify(CHATGPT_COMPOSER_EDITOR_SELECTOR)})]
       .find((candidate) => candidate.isContentEditable && candidate.getClientRects().length);
@@ -1869,23 +1974,7 @@ async function enableDeepResearch(job) {
     const selection = window.getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
-    return await new Promise(resolve => {
-      let previous, stableFrames = 0, frame = 0;
-      const finish = ready => { clearTimeout(timer); cancelAnimationFrame(frame); resolve(ready); };
-      const timer = setTimeout(() => finish(false), 5000);
-      const check = () => {
-        const button = document.querySelector(${JSON.stringify(`button[aria-label="${CHATGPT_LABELS.addFiles}"]`)});
-        const rect = button?.getBoundingClientRect();
-        const hit = rect && document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-        const ready = rect?.width > 0 && rect.height > 0 && !button.disabled && button.contains(hit);
-        if (ready && previous && rect.x === previous.x && rect.y === previous.y && rect.width === previous.width && rect.height === previous.height) stableFrames++;
-        else stableFrames = 0;
-        previous = rect;
-        if (stableFrames >= 3) finish(true);
-        else frame = requestAnimationFrame(check);
-      };
-      frame = requestAnimationFrame(check);
-    });
+    return await (${waitForStationaryControl.toString()})(${JSON.stringify(`button[aria-label="${CHATGPT_LABELS.addFiles}"]`)}, { timeoutMs: 10000 });
   `));
   if (!settled) throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research menu control did not become stationary and uncovered");
   await clickRef(job, opener.ref);
@@ -1911,6 +2000,7 @@ async function enableDeepResearch(job) {
     throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research did not appear in the composer after selecting it");
   }
   await log("Deep Research tool enabled and verified in the composer");
+  return true;
 }
 
 async function configureGrokModel(job) {
@@ -1994,49 +2084,11 @@ async function uploadArchive(job) {
   await mutateJob((current) => ({ ...current, archiveDeletedAfterUpload: true }));
 }
 
+// Unguarded turn count and texts, for the moments before the job's conversation exists (send
+// readiness and acceptance). Polling after send uses observeTurns with the job's conversation.
 async function assistantMessages(job) {
   if (isGrokJob(job)) return grokAssistantMessages(job);
-  const result = await evalPage(
-    job,
-    toJsonScript(`
-      const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
-        .filter((el) => (el.textContent || '').trim() === 'ChatGPT said:');
-      const renderText = (node) => {
-        if (!node) return '';
-        const clone = node.cloneNode(true);
-        const host = document.createElement('div');
-        host.style.position = 'fixed';
-        host.style.left = '-99999px';
-        host.style.top = '0';
-        host.style.whiteSpace = 'pre-wrap';
-        host.style.pointerEvents = 'none';
-        host.appendChild(clone);
-        document.body.appendChild(host);
-        let text = (host.innerText || host.textContent || '').trim();
-        host.remove();
-        const endings = ['\\nChatGPT can make mistakes. Check important info.'];
-        for (const ending of endings) {
-          if (text.includes(ending)) text = text.split(ending)[0].trim();
-        }
-        text = text
-          .split('\\n')
-          .map((line) => line.trimEnd())
-          .filter((line) => !/^Thought for\\b/i.test(line.trim()))
-          .join('\\n')
-          .trim();
-        return text;
-      };
-      const headingMessages = headings.map((heading) => ({ text: renderText(heading.nextElementSibling) }));
-      const messageNodes = Array.from(document.querySelectorAll('[data-testid="assistant-message"], [data-message-author-role="assistant"]'));
-      const nodeMessages = messageNodes.map((node) => ({ text: renderText(node) }));
-      return {
-        messages: headingMessages.some((message) => message.text) ? headingMessages : nodeMessages,
-      };
-    `),
-  );
-
-  if (!Array.isArray(result?.messages)) return [];
-  return result.messages.map((message) => ({ text: typeof message?.text === "string" ? message.text : "" }));
+  return (await observeTurns(job)).messages;
 }
 
 async function grokAssistantMessages(job) {
@@ -2077,36 +2129,34 @@ async function grokAssistantMessages(job) {
   return result.messages.map((message) => ({ text: typeof message?.text === "string" ? message.text : "" }));
 }
 
+// A send's conversation is adopted only from a page that shows this job's own archive in a user
+// turn, read in the same evaluation as the page's location: a tab that another client navigated
+// right after send never hands the job a foreign conversation. Should the archive never show (page
+// drift), the stable URL is adopted unverified after the deadline, and the log says so.
 async function waitForStableChatUrl(job, previousChatUrl) {
   const timeoutAt = Date.now() + 60_000;
+  const archiveFileName = isGrokJob(job) ? undefined : basename(job.archivePath);
   /** @type {import("./chatgpt-flow-helpers.d.mts").OracleStableValueState | undefined} */
   let stableState;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
-    const candidateUrl = resolveStableConversationUrlCandidate(await currentUrl(job), previousChatUrl);
-    if (candidateUrl) {
+    const observation = archiveFileName ? await observeTurns(job, { archiveFileName }).catch(() => undefined) : undefined;
+    const url = archiveFileName ? observation?.href || "" : await currentUrl(job);
+    const candidateUrl = resolveStableConversationUrlCandidate(url, previousChatUrl);
+    if (candidateUrl && (!archiveFileName || observation?.archiveTurnCount === 1)) {
       stableState = nextStableValueState(stableState, candidateUrl);
       if (stableState.stableCount >= 2) return candidateUrl;
+    } else {
+      stableState = undefined;
     }
 
     await sleep(1000);
   }
 
-  return previousChatUrl || stripUrlQueryAndHash(await currentUrl(job));
-}
-
-// ChatGPT's composer swaps Send for a stop control while a turn is generating, and keeps it until
-// after the turn's text is final. That control (a stop test id in the earlier shell, the submit
-// button labeled Stop in the current one) is the authoritative generation signal; an unreadable
-// probe returns undefined so the accessibility labels decide instead of failing open.
-const CHATGPT_STOP_CONTROL_SCRIPT = toJsonScript(`
-  return { present: Boolean(document.querySelector(${JSON.stringify(CHATGPT_STOP_CONTROL_SELECTOR)})) };
-`);
-
-async function chatGptStopControlPresent(job) {
-  const result = await evalPage(job, CHATGPT_STOP_CONTROL_SCRIPT).catch(() => undefined);
-  return result && typeof result === "object" && typeof result.present === "boolean" ? result.present : undefined;
+  const fallback = previousChatUrl || stripUrlQueryAndHash(await currentUrl(job));
+  if (archiveFileName) await log(`No user turn showed ${archiveFileName} within 60 s; adopting ${fallback || "(no URL)"} without verifying that it is this job's conversation`);
+  return fallback;
 }
 
 // Chrome does not give a hidden tab rendering opportunities, and ChatGPT appends streamed tokens
@@ -2125,6 +2175,7 @@ const STALE_STOP_CONTROL_MS = 120_000;
 async function reconcileStreamedTurn(job, responseIndex, streamedText) {
   const conversationUrl = job.chatUrl;
   if (!conversationUrl || !isConversationPathUrl(conversationUrl)) return streamedText;
+  const conversationId = isGrokJob(job) ? undefined : job.conversationId;
   let best = streamedText;
   try {
     await agentBrowser(job, "open", conversationUrl);
@@ -2134,7 +2185,19 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText) {
     while (Date.now() < deadline) {
       await heartbeat();
       await sleep(RELOAD_RECONCILE_POLL_MS);
-      const reloaded = (await assistantMessages(job).catch(() => []))[responseIndex]?.text || "";
+      let reloaded = "";
+      if (conversationId) {
+        const observation = await observeTurns(job, { conversationId }).catch(() => undefined);
+        if (observation && !observation.onConversation) {
+          await returnToOwnConversation(job, observedPagePath(observation.href));
+          previous = "";
+          stableReads = 0;
+          continue;
+        }
+        reloaded = observation?.messages[responseIndex]?.text || "";
+      } else {
+        reloaded = (await assistantMessages(job).catch(() => []))[responseIndex]?.text || "";
+      }
       if (reloaded.length > best.length) best = reloaded;
       // A reload renders the committed turn in one pass, but hydration takes a moment; require
       // two identical non-empty reads so a half-hydrated page is never mistaken for the turn.
@@ -2151,25 +2214,57 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText) {
   return best;
 }
 
+// ChatGPT's composer swaps Send for a stop control while a turn is generating, and keeps it until
+// after the turn's text is final. That control (a stop test id in the earlier shell, the submit
+// button labeled Stop in the current one) is the authoritative generation signal; observeTurns reads
+// it in the same evaluation as the turns, and the accessibility labels remain a fallback.
 async function waitForChatCompletion(job, baselineAssistantCount) {
   const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
+  const conversationId = isGrokJob(job) ? undefined : job.conversationId;
   let lastCompletionSignature = "";
   let stableCount = 0;
   let retriedAfterFailure = false;
+  let failedObservations = 0;
   /** @type {import("./chatgpt-flow-helpers.d.mts").OracleStaleStopState | undefined} */
   let staleStop;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
+    // A page showing another conversation never contributes text, generation state, or Retry: the
+    // job reopens its own conversation and starts the stability count over, within its deadline.
+    let observation;
+    if (!isGrokJob(job)) {
+      try {
+        observation = await observeTurns(job, { conversationId });
+        failedObservations = 0;
+      } catch (error) {
+        // A navigation in flight (another client's, or the reopen below) can destroy the page's
+        // context mid-read; only repeated failures are the job's error.
+        failedObservations += 1;
+        if (failedObservations >= 3) throw error;
+        lastCompletionSignature = "";
+        stableCount = 0;
+        await sleep(job.config.worker.pollMs);
+        continue;
+      }
+    }
+    if (observation && !observation.onConversation) {
+      await returnToOwnConversation(job, observedPagePath(observation.href));
+      lastCompletionSignature = "";
+      stableCount = 0;
+      staleStop = undefined;
+      await sleep(job.config.worker.pollMs);
+      continue;
+    }
+    await noteOwnConversation();
     const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
-    const domStopButton = isGrokJob(job) ? undefined : await chatGptStopControlPresent(job);
     const hasStopStreaming = isGrokJob(job)
       ? snapshot.includes(GROK_LABELS.stop)
-      : chatGptGenerationActive({ snapshot, domStopButton });
+      : chatGptGenerationActive({ snapshot, domStopButton: observation?.stopPresent });
     const hasRetryButton = snapshot.includes('button "Retry"');
     throwIfProviderTransientError(job, snapshot, "waiting for response completion");
     const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
-    const messages = await assistantMessages(job);
+    const messages = observation ? observation.messages : await assistantMessages(job);
     const targetMessage = messages[baselineAssistantCount];
     const targetText = targetMessage?.text || "";
     // The bound turn must exist before it can be finished. Generation state is the authority for
@@ -2177,6 +2272,9 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const hasTargetCopyResponse = Boolean(targetMessage);
 
     if (!hasStopStreaming && hasRetryButton && responseFailureText) {
+      // The snapshot is a separate read: act on a failure only while the page still shows this
+      // job's conversation, and never click Retry on another conversation's turn.
+      if (conversationId && (await observeTurns(job, { conversationId }).catch(() => undefined))?.onConversation !== true) continue;
       if (!retriedAfterFailure) {
         const retryEntry = findEntry(
           snapshot,
@@ -2286,41 +2384,56 @@ async function waitForDeepResearchReport(job, timeoutAt, binding) {
   const cdp = deepResearchCdp;
   const conversation = job.chatUrl || (await currentUrl(job).catch(() => "")) || "(unknown)";
   if (!cdp) throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but frame capture was not armed; open the conversation for the report.`);
-  const frameDeadline = Math.min(timeoutAt, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS);
+  const conversationId = binding.conversationId || job.conversationId;
+  let frameDeadline = Math.min(timeoutAt, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS);
   let frame;
-  while (!frame && Date.now() < frameDeadline) {
-    frame = await boundResearchFrame(job, binding).catch(() => undefined);
-    if (!frame) await sleep(1000);
-  }
-  if (!frame) {
-    throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but its widget frame never surfaced through the relay; open the conversation for the finished report.`);
-  }
-  await log(`Deep Research widget frame attached (${frame.sessionId}); waiting for the report`);
   let lastLogAt = 0;
   while (Date.now() < timeoutAt) {
     await heartbeat();
+    // The report frame lives in the job's tab. A tab that left its conversation loses the frame:
+    // the host page is checked first, and the frame is found again once the conversation reopens.
+    if (conversationId) {
+      const observation = await observeTurns(job, { conversationId }).catch(() => undefined);
+      if (observation && !observation.onConversation) {
+        await returnToOwnConversation(job, observedPagePath(observation.href));
+        frame = undefined;
+        frameDeadline = Math.min(timeoutAt, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS);
+        await sleep(job.config.worker.pollMs);
+        continue;
+      }
+      if (observation) await noteOwnConversation();
+    }
+    if (!frame) {
+      frame = await boundResearchFrame(job, { ...binding, conversationId }).catch(() => undefined);
+      if (!frame) {
+        if (Date.now() >= frameDeadline) {
+          throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but its widget frame never surfaced through the relay; open the conversation for the finished report.`);
+        }
+        await sleep(1000);
+        continue;
+      }
+      await log(`Deep Research widget frame attached (${frame.sessionId}); waiting for the report`);
+    }
     const text = await cdp.evaluate(frame.sessionId, DEEP_RESEARCH_REPORT_EXPRESSION);
-    const parsed = parseDeepResearchWidgetText(typeof text === "string" ? text : "");
+    if (typeof text !== "string") {
+      // A detached frame answers nothing; find the bound frame again instead of polling a dead session.
+      frame = undefined;
+      frameDeadline = Math.min(timeoutAt, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS);
+      continue;
+    }
+    const parsed = parseDeepResearchWidgetText(text);
     if (parsed.completed && parsed.report) {
       await log(`Deep Research report read from the widget frame (${parsed.report.length} chars)`);
       return parsed.report;
     }
     if (Date.now() - lastLogAt >= 60_000) {
       lastLogAt = Date.now();
-      await log(`Deep Research in progress (${typeof text === "string" ? text.length : 0} chars in widget)`);
+      await log(`Deep Research in progress (${text.length} chars in widget)`);
     }
     await sleep(job.config.worker.pollMs);
   }
   throw new OracleWorkerError("deep_research_report_unreadable", `Deep Research started in ${conversation}, but the report did not appear before the completion timeout; open the conversation for the finished report.`);
 }
-
-
-
-
-
-
-
-
 
 /**
  * Structural artifact candidates of one assistant turn, read from the DOM. Used only while the
@@ -2330,7 +2443,7 @@ async function waitForDeepResearchReport(job, timeoutAt, binding) {
  * @returns {Promise<import("./response-capture.d.mts").OracleArtifactCandidate[]>}
  */
 async function collectArtifactCandidates(job, responseIndex) {
-  const captured = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex })};`));
+  const captured = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex, conversationId: job.conversationId })};`));
   if (!captured?.candidates) throw new Error("Bound artifact inspection failed.");
   return captured.candidates;
 }
@@ -2343,29 +2456,45 @@ async function withHeartbeatWhile(task) {
   finally { active = false; clearInterval(timer); }
 }
 
-
-
-
-
-
-
-
-
+// The conversation is checked inside the capture's own evaluation (captureScopedResponse), so the
+// location that authorizes a capture is always the page the capture read.
 async function captureBoundTurn(job, binding) {
-  const observed = conversationIdFromUrl(await currentUrl(job));
-  if (!binding.conversationId || observed !== binding.conversationId) throw new Error("Collection conversation binding does not match the current page.");
+  if (!binding.conversationId) throw new Error("Collection needs the job's conversation binding.");
   const captured = await evalPage(job, toJsonScript(`return ${captureExpression(binding)};`));
   if (!captured || typeof captured.rawHtml !== "string") throw new Error("Bound response capture failed.");
   const turnSha256 = turnContentSha256(captured.rawText);
   if (!binding.messageId && binding.turnSha256 && binding.turnSha256 !== turnSha256) throw new Error("Bound response content changed; refusing index-only recollection.");
-  return { captured, binding: { ...binding, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
+  const { anchorFileName: _anchor, ...durable } = binding;
+  return { captured, binding: { ...durable, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
+}
+
+// Capture the bound turn of the job's own conversation. A page showing another conversation is
+// reopened on the job's conversation; any failure is retried while a reopened page hydrates. Bounded,
+// and never another conversation's turn.
+async function acquireBoundTurn(job, binding, attempts = 20) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await heartbeat();
+    try {
+      const turn = await captureBoundTurn(job, binding);
+      await noteOwnConversation();
+      return turn;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const foreign = message.match(/Bound conversation mismatch: the page shows (.+?), not /)?.[1];
+      if (foreign) await returnToOwnConversation(job, foreign);
+      await sleep(attempt < 4 ? 500 : 1000);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("The bound assistant turn could not be captured.");
 }
 
 // `binding` is the current turn binding, including a message ID learned moments ago by
 // captureBoundTurn; a persisted snapshot could be positional-only and select the wrong frame.
 async function boundResearchFrame(job, binding) {
   if (!deepResearchCdp || !deepResearchPageSession) throw new Error("Research frame capture is not armed.");
-  const turn = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex: binding.responseIndex, messageId: binding.messageId })};`));
+  const turn = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex: binding.responseIndex, messageId: binding.messageId, conversationId: binding.conversationId })};`));
   if (!turn?.frames?.length) throw new Error("No research iframe exists in the bound assistant turn.");
   const documentNode = await deepResearchCdp.send("DOM.getDocument", {}, deepResearchPageSession);
   const frameIds = [];
@@ -2416,26 +2545,33 @@ async function preserveCaptureFile(path, content) {
   return { path, sha256: digest, size: bytes.length };
 }
 
+// ChatGPT collection saves only what a bound capture read: a failed capture writes no response, and
+// the job records that recollection (never resubmission) recovers it. Grok has no bound capture, so
+// its streamed text remains its response.
 async function collectBoundResult(job, binding, fallbackText = "") {
   const requiredMissing = [];
   const optionalMissing = [];
   let capture;
   let frame;
+  let reportState;
+  let citations;
+  let turnDurationLabel;
   /** @type {import("./response-capture.d.mts").OracleArtifactInspectionState} */
   let inspection = "not_performed";
   /** @type {import("./response-capture.d.mts").OracleCaptureFidelity} */
   let fidelity = "text_only";
-  let method = "text_fallback";
-  let response = fallbackText;
+  let method = isGrokJob(job) ? "text_fallback" : "none";
+  let response = isGrokJob(job) ? fallbackText : "";
   let oldManifest = [];
   try { oldManifest = JSON.parse(await readFile(join(jobDir, "artifacts.json"), "utf8")); } catch {}
   const artifacts = Array.isArray(oldManifest) ? [...oldManifest] : [];
   const artifactsDir = join(jobDir, "artifacts");
   await ensurePrivateDir(artifactsDir);
   try {
-    const turn = await captureBoundTurn(job, binding);
+    const turn = await acquireBoundTurn(job, binding);
     binding = turn.binding;
     capture = turn.captured;
+    turnDurationLabel = capture.durationLabel;
     // Bind before collection: a later download failure can be retried without sending.
     await mutateJob((latest) => ({ ...latest, collectionBinding: binding }));
     if (job.selection.tool === "deep_research") {
@@ -2443,6 +2579,12 @@ async function collectBoundResult(job, binding, fallbackText = "") {
       const report = /** @type {import("./response-capture.d.mts").OracleScopedCapture | undefined} */ (await deepResearchCdp.evaluate(frame.sessionId, captureExpression({ report: true }, true)));
       const completionText = await deepResearchCdp.evaluate(frame.sessionId, DEEP_RESEARCH_REPORT_EXPRESSION);
       if (!report?.rawHtml || !parseDeepResearchWidgetText(typeof completionText === "string" ? completionText : "").completed) throw new Error("Bound research frame is not a completed report.");
+      // The reply that starts research reads "Worked for 5s"; the research itself is timed by the
+      // widget's status line ("Research completed in 7m · …").
+      const researchDuration = String(completionText).match(/Research completed in ([^·\n]+)/)?.[1]?.trim();
+      if (researchDuration) turnDurationLabel = `Research completed in ${researchDuration}`;
+      reportState = /** @type {import("./response-capture.d.mts").OracleResearchReportState | undefined} */ (await deepResearchCdp.evaluate(frame.sessionId, `(${readResearchReportState.toString()})()`));
+      if (!reportState?.markdown) optionalMissing.push("research_widget_state");
       capture = report;
       binding = { ...binding, frameId: frame.targetId };
     }
@@ -2456,7 +2598,6 @@ async function collectBoundResult(job, binding, fallbackText = "") {
       fidelity = "exact_code";
       method = "code_text_content";
     }
-    if (capture.sources.some((source) => source.kind !== "artifact" && source.unresolved)) requiredMissing.push("unresolved_source_links");
     for (const block of capture.codeBlocks) {
       const content = redactTransportSecrets(block.text);
       block.file = await preserveCaptureFile(join(jobDir, "response.block-" + block.index + ".txt"), content);
@@ -2527,12 +2668,16 @@ async function collectBoundResult(job, binding, fallbackText = "") {
     }
     if (frame) {
       const native = artifacts.find((item) => item.nativeMarkdown && item.state === "validated");
-      if (native) {
-        response = await readFile(native.copiedPath, "utf8"); fidelity = "native_markdown"; method = "native_report_download";
-        if (capture.sources.some((source) => source.kind !== "artifact" && source.url && !response.includes(source.url))) requiredMissing.push("native_export_source_links");
-      }
-      else optionalMissing.push("native_markdown_export");
+      if (!native) optionalMissing.push("native_markdown_export");
+      const research = composeResearchResponse({ capture, reportState, nativeMarkdown: native ? await readFile(native.copiedPath, "utf8") : undefined });
+      response = research.markdown;
+      fidelity = research.fidelity;
+      method = research.method;
+      citations = research.citations;
+      capture.sources = research.sources;
+      requiredMissing.push(...research.requiredMissing);
     }
+    if (capture.sources.some((item) => item.kind !== "artifact" && item.unresolved)) requiredMissing.push("unresolved_source_links");
   } catch (error) {
     inspection = "failed";
     // Keep whatever binding is durably persisted right now: a message ID learned by this pass and
@@ -2552,13 +2697,17 @@ async function collectBoundResult(job, binding, fallbackText = "") {
   }
   const outcome = collectionOutcome({ hasResponse: Boolean(responseFile?.size), fidelity, inspection, artifacts, requiredMissing, optionalMissing });
   const metadata = { schemaVersion: 1, jobId: job.id, binding, collectedAt: new Date().toISOString(), method, fidelity, response: responseFile,
-    rawEvidence: capture?.rawEvidence, codeBlocks: capture?.codeBlocks || [], sources: capture?.sources || [],
+    rawEvidence: capture?.rawEvidence, codeBlocks: capture?.codeBlocks || [], sources: capture?.sources || [], ...(citations ? { citations } : {}),
     artifactInspection: { state: inspection, candidateCount: capture?.candidates?.length || 0, result: inspection === "inspected" ? capture?.candidates?.length ? "candidates_found" : "none_found" : "unconfirmed" }, ...outcome };
   const responseCapturePath = join(jobDir, "response.capture.json");
   await preserveCaptureFile(responseCapturePath, redactTransportSecrets(JSON.stringify(metadata, null, 2)) + "\n");
   await flushArtifactsState(artifacts);
+  const at = new Date().toISOString();
   await mutateJob((latest) => ({ ...latest, generationStatus: "completed", collectionBinding: binding, responseCapturePath,
     ...(responseFile ? { responsePath: responseFile.path } : {}), ...outcome,
+    // A completed turn without any saved response is recovered by recollection, never by resubmitting.
+    recollectionNeeded: responseFile?.size ? undefined : true,
+    ...(turnDurationLabel ? { observedTurn: { at, durationLabel: turnDurationLabel, durationSeconds: durationLabelSeconds(turnDurationLabel) } } : {}),
     artifactFailureCount: artifacts.filter((item) => item.state === undefined ? item.error || item.unconfirmed : item.state !== "validated").length + (inspection === "failed" ? 1 : 0) }));
   return artifacts;
 }
@@ -2592,7 +2741,8 @@ async function run() {
       message: currentJob.config.browser.chatGptRelayEndpoint
         ? "Preparing a job-owned relay tab without copying a browser profile."
         : currentJob.config.browser.chatGptManagedProfileDir ? "Preparing a job-owned tab in the managed ChatGPT browser." : "Cloning the auth seed profile into the isolated runtime.",
-      patch: { heartbeatAt: new Date().toISOString() },
+      // Nothing reaches the provider before clickSend records "attempted".
+      patch: { heartbeatAt: new Date().toISOString(), promptSendState: "not_sent" },
     }));
     await closeBrowser(currentJob);
 
@@ -2617,32 +2767,34 @@ async function run() {
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     await waitForOracleReady(currentJob);
+    const deepResearch = currentJob.selection.tool === "deep_research";
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "configuring_model", {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: `Configuring the requested ${isGrokJob(currentJob) ? "Grok" : "ChatGPT"} model selection.`,
+      message: deepResearch ? "Enabling Deep Research in the composer." : `Configuring the requested ${isGrokJob(currentJob) ? "Grok" : "ChatGPT"} model selection.`,
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     await configureModel(currentJob);
+    let deepResearchVerified = false;
+    if (deepResearch) {
+      // The attachment card covers the tools menu button once a file is attached, so the tool
+      // is enabled before the upload; the pill survives the upload, and fill would remove it.
+      await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
+      deepResearchVerified = await enableDeepResearch(currentJob);
+    }
+    const observedSelection = await observeSelection(currentJob, { deepResearchVerified });
+    if (observedSelection) currentJob = await mutateJob((job) => ({ ...job, observedSelection }));
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "uploading_archive", {
       at: new Date().toISOString(),
       source: "oracle:worker",
       message: "Uploading the oracle context archive.",
       patch: { heartbeatAt: new Date().toISOString() },
     }));
-    if (currentJob.selection.tool === "deep_research") {
-      // The attachment card covers the tools menu button once a file is attached, so the tool
-      // is enabled before the upload; the pill survives the upload, and fill would remove it.
-      await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
-      await enableDeepResearch(currentJob);
-      await uploadArchive(currentJob);
-    } else {
-      await uploadArchive(currentJob);
-      await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
-    }
+    await uploadArchive(currentJob);
+    if (!deepResearch) await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
     const baselineAssistantCount = (await assistantMessages(currentJob)).length;
     await log(`Assistant response count before send: ${baselineAssistantCount}`);
-    if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);
+    if (deepResearch) await armDeepResearchFrameCapture(currentJob);
     await clickSend(currentJob, baselineAssistantCount);
     await log(`Send accepted; waiting ${POST_SEND_SETTLE_MS}ms after send to avoid streaming interruption`);
     await sleep(POST_SEND_SETTLE_MS);
@@ -2698,9 +2850,11 @@ async function run() {
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, finalPhase, {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: artifactFailureCount > 0
-        ? `Job completed with ${artifactFailureCount} artifact issue(s).`
-        : "Job completed successfully.",
+      message: currentJob.recollectionNeeded
+        ? "The response finished, but its bound turn could not be captured; recollect it instead of resubmitting."
+        : artifactFailureCount > 0
+          ? `Job completed with ${artifactFailureCount} artifact issue(s).`
+          : "Job completed successfully.",
       patch: {
         responsePath: currentJob.responsePath,
         responseFormat: "text/plain",
@@ -2771,15 +2925,22 @@ async function runRecollection() {
     const explicit = process.argv[4] ? JSON.parse(process.argv[4]) : undefined;
     let binding = currentJob.collectionBinding;
     if (!binding?.messageId && !binding?.turnSha256) {
-      if (!Number.isInteger(explicit?.responseIndex) || explicit.responseIndex < 0 || !explicit.messageId) throw new Error("Legacy recollection requires an explicit responseIndex and messageId.");
-      // A saved positional index is still a fact about this job: an explicit pair may add the
-      // message identity for that turn, never move the binding to another turn.
-      if (Number.isInteger(binding?.responseIndex) && explicit.responseIndex !== binding.responseIndex) throw new Error("Recollection cannot move the saved turn index; supply the messageId of that turn.");
-      binding = { conversationId: currentJob.conversationId, responseIndex: explicit.responseIndex, messageId: explicit.messageId };
+      if (!explicit && Number.isInteger(binding?.responseIndex) && currentJob.archivePath) {
+        // A positional binding saved by a capture that failed: the user turn carrying this job's own
+        // archive identifies the exchange, and its reply must still sit at the saved index.
+        binding = { conversationId: currentJob.conversationId, responseIndex: binding.responseIndex, anchorFileName: basename(currentJob.archivePath) };
+      } else {
+        if (!Number.isInteger(explicit?.responseIndex) || explicit.responseIndex < 0 || !explicit.messageId) throw new Error("Legacy recollection requires an explicit responseIndex and messageId.");
+        // A saved positional index is still a fact about this job: an explicit pair may add the
+        // message identity for that turn, never move the binding to another turn.
+        if (Number.isInteger(binding?.responseIndex) && explicit.responseIndex !== binding.responseIndex) throw new Error("Recollection cannot move the saved turn index; supply the messageId of that turn.");
+        binding = { conversationId: currentJob.conversationId, responseIndex: explicit.responseIndex, messageId: explicit.messageId };
+      }
     } else if (explicit && (explicit.responseIndex !== binding.responseIndex || explicit.messageId !== binding.messageId)) throw new Error("Recollection cannot replace an existing turn binding.");
     if (!binding.conversationId || conversationIdFromUrl(currentJob.chatUrl) !== binding.conversationId) throw new Error("Recollection requires the job's exact saved conversation URL.");
     const priorWorker = { runtimeSessionName: currentJob.runtimeSessionName, workerPid: currentJob.workerPid, workerStartedAt: currentJob.workerStartedAt,
-      cleanupPending: currentJob.cleanupPending, cleanupWarnings: currentJob.cleanupWarnings };
+      cleanupPending: currentJob.cleanupPending, cleanupWarnings: currentJob.cleanupWarnings,
+      cleanupAttemptCount: currentJob.cleanupAttemptCount, cleanupRetryAt: currentJob.cleanupRetryAt };
     let acquired = false;
     await withLock(ORACLE_STATE_DIR, "admission", "global", { processPid: process.pid, jobId }, async () => {
       currentJob = await readJob();
@@ -2806,7 +2967,11 @@ async function runRecollection() {
         const prior = job.recollectionPriorWorker || priorWorker;
         const lastCleanupAt = new Date().toISOString();
         if (warnings.length > 0) {
-          return { ...job, cleanupPending: true, cleanupWarnings: [...new Set([...(prior.cleanupWarnings || []), ...(job.cleanupWarnings || []), ...warnings])], lastCleanupAt };
+          // Bounded and scheduled like any worker cleanup: deduplicated warnings, a retry time, and
+          // an attempt count that ends automatic retries.
+          const warned = { ...job, cleanupWarnings: [...new Set([...(prior.cleanupWarnings || []), ...(job.cleanupWarnings || [])])] };
+          return applyOracleJobCleanupWarnings(warned, warnings, { at: lastCleanupAt, source: "oracle:recollect",
+            message: `Recollection cleanup completed with ${warnings.length} warning(s).` });
         }
         const { recollectionPriorWorker, ...rest } = job;
         return { ...rest, ...prior, cleanupPending: prior.cleanupPending === true,
@@ -2832,12 +2997,9 @@ async function runRecollection() {
       await launchBrowser(currentJob, "about:blank");
       if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);
       await agentBrowser(currentJob, "open", currentJob.chatUrl);
-      let ready = false;
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        await heartbeat();
-        try { await captureBoundTurn(currentJob, binding); ready = true; break; } catch { await sleep(500); }
-      }
-      if (!ready) throw new Error("The exact bound assistant turn could not be reacquired.");
+      // Reacquire before collecting: an anchored binding becomes an exact one (message ID and turn
+      // hash) here, and a page that shows another conversation is reopened on the job's own.
+      binding = (await acquireBoundTurn(currentJob, binding)).binding;
       if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
       await collectBoundResult(currentJob, binding);
       await mutateJob((job) => ({ ...job, recollectionError: undefined }));

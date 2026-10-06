@@ -202,7 +202,8 @@ export function formatOracleJobSummary(job, options = {}) {
     responseFormatLine,
     job.generationStatus ? `generation-status: ${job.generationStatus}` : undefined,
     job.collectionStatus ? `collection-status: ${job.collectionStatus}` : undefined,
-    job.collectionBinding ? `collection-binding: turn ${job.collectionBinding.responseIndex}${job.collectionBinding.messageId ? ` message ${job.collectionBinding.messageId}` : " (index only; recollection needs the observed messageId)"}${job.collectionBinding.frameId ? ` report-frame ${job.collectionBinding.frameId}` : ""}` : undefined,
+    job.collectionBinding ? `collection-binding: turn ${job.collectionBinding.responseIndex}${job.collectionBinding.messageId ? ` message ${job.collectionBinding.messageId}`
+      : job.collectionBinding.turnSha256 ? " (index and content hash)" : " (index only; recollection finds the turn through the job's archive)"}${job.collectionBinding.frameId ? ` report-frame ${job.collectionBinding.frameId}` : ""}` : undefined,
     job.responseCapturePath ? `response-capture: ${job.responseCapturePath}` : undefined,
     job.collectionRequiredMissing?.length ? `collection-required-missing: ${job.collectionRequiredMissing.join(" | ")}` : undefined,
     job.collectionOptionalMissing?.length ? `collection-optional-missing: ${job.collectionOptionalMissing.join(" | ")}` : undefined,

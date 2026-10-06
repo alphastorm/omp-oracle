@@ -127,9 +127,9 @@ const ORACLE_AUTH_PARAMS = Type.Object({
 
 const ORACLE_READ_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
-  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect an already completed, exactly bound response without sending a prompt. Default: read saved files only." })),
-  responseIndex: Type.Optional(Type.Integer({ minimum: 0, description: "For legacy jobs only: explicit zero-based assistant turn index, paired with messageId." })),
-  messageId: Type.Optional(Type.String({ minLength: 1, description: "For legacy jobs only: exact observed data-message-id of the completed assistant turn." })),
+  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect the saved turn of an already completed job without sending a prompt: by its message ID, its content hash, or the user turn that carries the job's archive. Default: read saved files only." })),
+  responseIndex: Type.Optional(Type.Integer({ minimum: 0, description: "For legacy jobs without a saved turn binding only: explicit zero-based assistant turn index, paired with messageId." })),
+  messageId: Type.Optional(Type.String({ minLength: 1, description: "For legacy jobs without a saved turn binding only: exact observed data-message-id of the completed assistant turn." })),
 }, { additionalProperties: false });
 
 const ORACLE_CANCEL_PARAMS = Type.Object({
