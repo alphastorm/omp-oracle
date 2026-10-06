@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.4.3 - 2026-10-06
 
 ### Fixed
 - a job could save another conversation's answer as its own. Another CDP client navigated the job's tab: an agent's browser tool connected to the managed Chrome adopts the window's visible tab, which can be a running job's. The completion poll read whichever conversation the tab showed, declared completion on a finished turn there, and when the bound capture of the job's own, still-generating turn then failed, the streamed text was saved as a `text_fallback` response (three jobs on 2026-10-04, each holding another case's text; one declared completion 8 minutes before its own turn finished). Every read now checks the page's conversation in the same evaluation as the turns, the stop control, the capture, and the post-send URL (which is adopted only from a page whose user turn shows the job's archive); a page on another conversation is reopened on the job's own, recorded once per departure as a `navigation` lifecycle event, and the completion count starts over within the same deadline. A ChatGPT capture failure no longer saves any unbound text: `response.md` is not written, `collectionStatus` is `failed`, and `recollectionNeeded` (shown in `oracle_read` and the wake-up) directs recollection instead of resubmission. A binding saved without the turn's message ID, as these failures left, is now recollected through the user turn that carries the job's archive (`context-<id>.tar.zst`); recollection previously refused it unless the operator read the message ID out of the DOM by hand
