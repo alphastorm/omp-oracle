@@ -118,6 +118,60 @@ under their own heading and were recorded against the upstream package identity.
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.3 (2026-10-06, `fb26f35`)
+
+- Scope: the defect report of 2026-10-06 against 0.4.2. A job whose tab another CDP client moved
+  saved that conversation's answer as its own, a failed capture saved unbound text, and
+  positional bindings could not be recollected without a hand-read message ID; Deep Research
+  lost its native export to the report container, its citations and diagram source, and its setup
+  to a frame-driven wait; an announcement modal blocked model configuration (all `d1fbc43`).
+  Refused last-tab closes were retried by every live poller indefinitely (`bd533da`); wake-ups
+  queued behind busy sessions arrived hours late, one turn each (`13bac0d`); preflight now
+  reports capacity and a missing archive input names the project root (`9d14e44`).
+- Red before, green after: the capture proof's new scenarios ran against `daf16d5`'s worker and
+  reproduced each failure there (completion declared from a finished foreign conversation and its
+  text returned; a failed capture saving the foreign text; positional recollection refused; the
+  report container flagged as the native export ahead of `Export`, with the status line and
+  diagram layout text in the body; the frame-driven wait returning false without animation
+  frames; no send state), then passed on the fix. The extension regressions (last-tab refusal,
+  `error` preservation, busy-session suppression, origin-session settlement, batched delivery,
+  capacity, archive root) each failed before their fix.
+- Live from source before release, through isolated print-mode sessions on the diligence
+  account's managed browser: `instant` `c60e5ebd` (32 s; the post-send URL adopted through the
+  job's archive turn, no fallback); an anchored recollection of that job with its binding cut to
+  the turn index, which regained the same message ID and hash; `thinking_light` `63373773`, whose
+  tab a second CDP client moved to another conversation 20 s after send: detected 1.5 s later, one
+  `navigation` event, the job's conversation reopened, and its own 40-item answer collected
+  `complete`; `deep_research` `048faf05` (8 min; the tool enabled during `configuring_model`;
+  native export 7,106 bytes; 18 citation tokens resolved into 22 footnotes, none unresolved;
+  Mermaid source kept) and two recollections of it (`Research completed in 6m`; referral
+  parameters dropped); and a same-thread follow-up `4492f190` (`responseIndex` 1, 32 s). Read-only
+  against the conversation of incident job `6f367962`, the shipped capture bound turn 1 both
+  positionally and through the archive anchor to the message ID the incident evidence records,
+  with `Worked for 15m 7s`.
+- Live eight-preset ChatGPT proof accepted on `fb26f35` in one runner invocation through the
+  operator's managed browser: `pro_standard` `c12ae289` 58 s, `pro_extended` `d118eee7` 49 s,
+  `thinking_light` `9ae9130f` 33 s, `thinking_standard` `a50b411b` 38 s, `thinking_extended`
+  `c9e93bc2` 43 s, `thinking_heavy` `123a2f91` 39 s, `instant` `03f06fea` 39 s,
+  `instant_auto_switch` `407789fa` 38 s; all eight completed with both markers, and each recorded
+  the slider stop it observed in `observedSelection`.
+- Crabbox lanes on `fb26f35`: macOS `platform-build` PASS (43.7 s) and `real-extension` PASS
+  (5.8 s), Ubuntu `platform-build` PASS (34.6 s) and `real-extension` PASS (4.4 s), after
+  rebuilding the pruned `omp-oracle-platform-smoke:node24` image; `npm run release:check` passed
+  as one composition on the same clean tree.
+- Published `omp-oracle@0.4.3` from `fb26f35` under the founder's authorization, after
+  `npm login --auth-type=web` (the stored token answered `E401`); both browser approvals completed
+  within their windows. Registry `gitHead` `fb26f3547b7cbbbb2e181dfd20eb510a021ad0e1`, shasum
+  `b15916f69f41a2cbfe00d337261c3c0761fd63c9`, 86 files, `latest` (visible within about a minute).
+  Tag `v0.4.3` and the [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.3)
+  name the same commit. Installed with `omp plugin uninstall omp-oracle` and
+  `omp plugin install omp-oracle@0.4.3` (dotfiles-private `716a9b9`).
+- Installed package on the operator's real configuration (a fresh print-mode session loading the
+  installed entry point): `pro_standard` job `44bb5bb2` recorded `packageVersion 0.4.3` and the
+  installed path, completed in 42 s, and returned the account's saved tier from `Instant` to `Pro`.
+  Sessions started before the install keep 0.4.2's extension code (its pollers and wake-up
+  delivery) until restarted; jobs they start run the installed 0.4.3 worker.
+
 #### 0.4.2 (2026-09-30, `18c0538`)
 
 - Scope: the redesigned ChatGPT web app (`e4f4b07`). An account on the redesign failed every job
