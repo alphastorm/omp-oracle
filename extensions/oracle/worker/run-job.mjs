@@ -1747,34 +1747,55 @@ async function focusPowerSlider(job) {
 }
 
 // Drive the current slider-based thinking-effort picker: only the current stop is rendered, so
-// step with real arrow keys and trust the slider's own description after every step.
+// step with real arrow keys and trust the slider's own description after every step. ChatGPT can
+// close the picker after a step: on 2026-09-21 onto the target, which the earlier shell's pill
+// named; on 2026-10-18 one step off Pro onto High, behind a pill named only "Select ChatGPT model".
+// A closed picker is therefore reopened and stepping resumes from the stop the slider reports.
+const POWER_SLIDER_REOPEN_LIMIT = 2;
+
 async function configurePowerSlider(job) {
   const target = powerSliderTargetLabel(job.selection);
   let state = await readPowerSliderState(job);
   if (!state) throw new Error("Could not read the ChatGPT thinking-effort slider");
   await log(`Thinking-effort slider reads ${state.label} (${state.index} of ${state.count}); target ${target}`);
   await recordObservedSelection({ effortLabel: `${state.label} (${state.index} of ${state.count})` });
-  if (state.label !== target) {
-    if (!(await focusPowerSlider(job))) throw new Error("Could not focus the ChatGPT thinking-effort slider");
-    for (let step = 0; step < state.count && state.label !== target; step += 1) {
-      const key = powerSliderStepKey(state.label, target);
-      if (!key) throw new Error(`Unknown thinking-effort slider position: ${state.label}`);
-      const before = state.index;
-      await agentBrowser(job, "press", key);
-      await agentBrowser(job, "wait", "250");
-      state = await readPowerSliderState(job);
-      if (!state) {
-        if (powerSliderClosedIntoSelection(await snapshotText(job), job.selection)) {
-          await log(`Thinking-effort picker closed on ${target}; the composer already reads it`);
-          await recordObservedSelection({ effortLabel: target });
-          return;
-        }
-        throw new Error("Lost the ChatGPT thinking-effort slider while stepping");
-      }
-      if (state.index === before) throw new Error(`Thinking-effort slider did not move toward ${target} from ${state.label}`);
+  let focused = false;
+  let reopens = 0;
+  let steps = 0; // since the picker last opened
+  while (state.label !== target) {
+    if (steps >= state.count) throw new Error(`Could not set the thinking-effort slider to ${target}; it reads ${state.label}`);
+    if (!focused) {
+      if (!(await focusPowerSlider(job))) throw new Error("Could not focus the ChatGPT thinking-effort slider");
+      focused = true;
     }
+    const key = powerSliderStepKey(state.label, target);
+    if (!key) throw new Error(`Unknown thinking-effort slider position: ${state.label}`);
+    const before = state.index;
+    await agentBrowser(job, "press", key);
+    await agentBrowser(job, "wait", "250");
+    steps += 1;
+    const next = await readPowerSliderState(job);
+    if (next) {
+      if (next.index === before) throw new Error(`Thinking-effort slider did not move toward ${target} from ${next.label}`);
+      state = next;
+      continue;
+    }
+    if (powerSliderClosedIntoSelection(await snapshotText(job), job.selection)) {
+      await log(`Thinking-effort picker closed on ${target}; the composer already reads it`);
+      await recordObservedSelection({ effortLabel: target });
+      return;
+    }
+    if (reopens >= POWER_SLIDER_REOPEN_LIMIT || !snapshotHasPowerSliderMenu(await openModelConfiguration(job))) {
+      throw new Error("Lost the ChatGPT thinking-effort slider while stepping");
+    }
+    reopens += 1;
+    state = await readPowerSliderState(job);
+    if (!state) throw new Error("Lost the ChatGPT thinking-effort slider while stepping");
+    await log(`Thinking-effort picker closed while stepping; reopened on ${state.label} (${state.index} of ${state.count})`);
+    await recordObservedSelection({ effortLabel: `${state.label} (${state.index} of ${state.count})` });
+    focused = false;
+    steps = 0;
   }
-  if (state.label !== target) throw new Error(`Could not set the thinking-effort slider to ${target}; it reads ${state.label}`);
   const observedEffortLabel = `${state.label} (${state.index} of ${state.count})`;
   await log(`Thinking-effort slider set to ${observedEffortLabel}`);
   await recordObservedSelection({ effortLabel: observedEffortLabel });

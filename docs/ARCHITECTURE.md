@@ -183,7 +183,8 @@ For each `submitted` job (`extensions/oracle/worker/run-job.mjs`):
 3. **Classify page state.** Fail fast on `login_required`, `challenge_blocking`, or `transient_outage_error` (after one reload
    retry).
 4. **Configure model or tool.** Dismiss any modal product announcement over the composer through its `Close dialog` control.
-   For ChatGPT model presets, select the model family and thinking effort; for Grok, select Heavy. For a composer-tool preset
+   For ChatGPT model presets, select the model family and step the thinking-effort slider, reopening the picker if ChatGPT
+   closes it mid-step; for Grok, select Heavy. For a composer-tool preset
    (Deep Research), skip the model picker, fill the prompt while still in `configuring_model`, open `Add files and more`
    (polling on timers until the control is stationary and uncovered because hidden tabs receive no animation frames), enable
    the tool, and verify its composer pill. Record what the composer shows in `observedSelection`.

@@ -7,7 +7,7 @@ import test from "node:test";
 import ts from "typescript";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { mergeObservedSelection, parsePowerSliderDescription, powerSliderTargetLabel } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
+import { mergeObservedSelection, parsePowerSliderDescription, POWER_SLIDER_TIER_LABELS, powerSliderClosedIntoSelection, powerSliderStepKey, powerSliderTargetLabel, snapshotHasPowerSliderMenu } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { withLock } from "../extensions/oracle/worker/state-locks.mjs";
 
 // Unlike the sanity harness, command dispatch and session lifecycle here are native Pi.
@@ -100,7 +100,7 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       assert.equal(fetch.mock.callCount(), 0, "cross-project inspection must remain offline");
     });
 
-    await t.test("worker observations survive configuration failure and round-trip through native read/status", async () => {
+    await t.test("worker slider observations survive failure, reopen a closed picker, and round-trip through native read/status", async () => {
       // Like the capture proof, execute the production worker declarations without its main loop.
       // Browser replies are fixtures; mutation, locking, atomic files, and the loaded extension are real.
       const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
@@ -114,21 +114,38 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       const jobPath = join(jobsDir, `oracle-${jobId}`, "job.json");
       const initial = JSON.parse(await readFile(jobPath, "utf8"));
       let slider = "Medium, 2 of 5.";
+      let pickerOpen = true;
+      let focusable = false;
       let markerResolves = true;
+      // The open picker (2026-09-30) and the composer left behind by the 2026-10-18 failure.
+      const openPicker = '- button "Select ChatGPT model" [expanded=true, ref=e118]\n- menuitem "Select model" [ref=e5]\n- menuitem "Power" [ref=e3]';
+      const closedComposer = '- textbox "Ask ChatGPT" [ref=e136]: \n- button "Select ChatGPT model" [expanded=false, ref=e139]\n- button "Dictate" [ref=e140]';
       const browserCalls = [];
       const logs = [];
       const bindings = {
         jobId, jobPath, ORACLE_STATE_DIR: join(root, "state"), process,
         readFile, writeFile, chmod, rename, withLock, mergeObservedSelection,
-        powerSliderTargetLabel, parsePowerSliderDescription,
+        powerSliderTargetLabel, parsePowerSliderDescription, powerSliderStepKey, powerSliderClosedIntoSelection, snapshotHasPowerSliderMenu,
+        POWER_SLIDER_REOPEN_LIMIT: 2,
         POWER_SLIDER_ELEMENT: 'document.querySelector("[role=menuitem]")',
         CHATGPT_MODEL_PICKER_SELECTOR: 'button[aria-label="Select ChatGPT model"]',
         isGrokJob: () => false,
         log: async (message) => logs.push(message),
+        snapshotText: async () => (pickerOpen ? openPicker : closedComposer),
+        openModelConfiguration: async () => { pickerOpen = true; return openPicker; },
+        agentBrowser: async (_job, command, key) => {
+          if (command !== "press" || !pickerOpen) return;
+          const stop = POWER_SLIDER_TIER_LABELS.indexOf(slider.split(",")[0]);
+          // Live 2026-10-18: one ArrowLeft off Pro closed the picker with the composer on High.
+          const leavingPro = stop === 4 && key === "ArrowLeft";
+          const next = leavingPro ? 2 : stop + (key === "ArrowLeft" ? -1 : 1);
+          pickerOpen = !leavingPro;
+          slider = `${POWER_SLIDER_TIER_LABELS[next]}, ${next + 1} of 5.`;
+        },
         evalPage: async (_job, expression) => {
           browserCalls.push(expression);
-          if (expression.includes("aria-describedby")) return { description: slider };
-          if (expression.includes("power.focus")) return { focused: false };
+          if (expression.includes("aria-describedby")) return { description: pickerOpen ? slider : "" };
+          if (expression.includes("power.focus")) return { focused: focusable && pickerOpen };
           if (expression.includes("createTreeWalker")) return { label: "Thinking effort Pro" };
           return { frames: [{ selector: "#research-frame", src: "https://fixture.web-sandbox.oaiusercontent.com/" }] };
         },
@@ -167,6 +184,12 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       const result = await bridge.read(session.extensionRunner.createContext(), { jobId, projectId: initial.projectId });
       assert.deepEqual(result.details.job.observedSelection, saved.observedSelection);
       assert.match(result.content[0].text, /observed-product: pro/);
+      // The closed pill names no stop, so the worker reopens the picker and resumes from the slider.
+      focusable = true;
+      await worker.configurePowerSlider({ ...initial, selection: { modelFamily: "instant" } });
+      assert.equal(slider, "Instant, 1 of 5.");
+      saved = JSON.parse(await readFile(jobPath, "utf8"));
+      assert.equal(saved.observedSelection.effortLabel, "Instant (1 of 5)");
 
       // A new research job has no model picker label: its own product, not requested Pro, is observed.
       delete saved.observedSelection;

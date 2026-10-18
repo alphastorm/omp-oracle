@@ -12,6 +12,7 @@ history is kept below the divider.
 
 ### Fixed
 - a slider reading logged before model configuration failed was lost because `observedSelection` was written only after configuration finished. The worker now merges each logged slider observation through its existing locked atomic job-state write path.
+- a thinking-effort picker that ChatGPT closed mid-step (observed one step off Pro, landing on High, behind a composer pill that names no stop) failed the job with `Lost the ChatGPT thinking-effort slider while stepping`. The worker now reopens the picker, at most twice, and resumes stepping from the stop the slider itself reports.
 
 ## 0.4.4 - 2026-10-17
 
