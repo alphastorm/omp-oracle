@@ -7,7 +7,7 @@ history is kept below the divider.
 ## Unreleased
 
 ### Added
-- `oracle_read` accepts an optional owning `projectId`; `/oracle-status` and `/oracle-read` accept `--projectId`. An id found in another project names the owning root and requires an explicit retry instead of hiding the job or returning its response silently. Lookup reuses job-directory enumeration, with no new index; cancel and cleanup remain current-project only.
+- `oracle_read` accepts an optional owning `projectId`; `/oracle-status` and `/oracle-read` accept `--projectId`. An id found in another project names the owning root and requires an explicit retry instead of hiding the job or returning its response silently. Every project's jobs share the configured jobs root, so lookup needs no new index; cancel and cleanup remain current-project only.
 - the existing `observedSelection` gains an observed `product` and the bound `deepResearchIframeTitle`, alongside its existing model-selector text (`modelLabel`), slider stop (`effortLabel`), and timestamp (`at`). Read/status surfaces expose these optional facts without new DOM queries or answer/auth data; legacy jobs need no migration.
 
 ### Fixed

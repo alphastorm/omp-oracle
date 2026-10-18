@@ -114,6 +114,7 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       const jobPath = join(jobsDir, `oracle-${jobId}`, "job.json");
       const initial = JSON.parse(await readFile(jobPath, "utf8"));
       let slider = "Medium, 2 of 5.";
+      let markerResolves = true;
       const browserCalls = [];
       const logs = [];
       const bindings = {
@@ -137,7 +138,7 @@ test("native Oracle status command dispatch creates no external job", { timeout:
           send: async (method) => {
             browserCalls.push(method);
             if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
-            if (method === "DOM.querySelector") return { nodeId: 2 };
+            if (method === "DOM.querySelector") return { nodeId: markerResolves ? 2 : 0 };
             if (method === "DOM.describeNode") return { node: { frameId: "fixture-frame", attributes: ["title", "Deep research"] } };
             throw new Error(`Unexpected DOM call: ${method}`);
           },
@@ -189,6 +190,9 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       const research = await bridge.read(session.extensionRunner.createContext(), { jobId, projectId: initial.projectId });
       assert.deepEqual(research.details.job.observedSelection, saved.observedSelection);
       assert.equal(fetch.mock.callCount(), 0);
+      // A re-rendered frame loses its capture marker before DOM.querySelector; its src still binds it.
+      markerResolves = false;
+      assert.equal((await worker.boundResearchFrame({}, { responseIndex: 0 })).targetId, "fixture-frame");
     });
   } finally {
     try {

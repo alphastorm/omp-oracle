@@ -2516,15 +2516,15 @@ async function boundResearchFrame(job, binding) {
   const documentNode = await deepResearchCdp.send("DOM.getDocument", {}, deepResearchPageSession);
   const boundFrames = [];
   for (const frame of turn.frames) {
+    // A frame whose marker no longer resolves stays matchable by its src.
     const found = await deepResearchCdp.send("DOM.querySelector", { nodeId: documentNode.root.nodeId, selector: frame.selector }, deepResearchPageSession);
-    if (!found.nodeId) continue;
-    const description = await deepResearchCdp.send("DOM.describeNode", { nodeId: found.nodeId }, deepResearchPageSession);
-    const attributes = description.node?.attributes ?? [];
+    const node = found.nodeId ? (await deepResearchCdp.send("DOM.describeNode", { nodeId: found.nodeId }, deepResearchPageSession)).node : undefined;
+    const attributes = node?.attributes ?? [];
     let title;
     for (let index = 0; index < attributes.length; index += 2) {
       if (attributes[index] === "title") title = attributes[index + 1];
     }
-    boundFrames.push({ frameId: description.node?.frameId, src: frame.src, title });
+    boundFrames.push({ frameId: node?.frameId, src: frame.src, title });
   }
   const matches = [];
   for (const candidate of deepResearchCdp.frameSessions()) {

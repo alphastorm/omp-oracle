@@ -93,11 +93,11 @@ conversion accept them. The extension also exposes a host-internal programmatic 
 Read/status lookup uses an explicit `projectId` if supplied, otherwise the current project.
 `oracle_read` accepts that optional field; `/oracle-status` and `/oracle-read` accept
 `[job-id] [--projectId <project-root>]` (double-quote roots containing spaces).
-On a project miss, `readJobForProject` reuses `listOracleJobDirs` to discover the id under the
-configured jobs root. A different owning project produces an error naming that root and the
-explicit retry, never its saved response. Enumeration already finds external-cwd submissions,
-so there is no index file. No-id status listing stays scoped to the selected project, and cancel,
-cleanup, follow-up, and wake-up session ownership are unchanged.
+Every project's jobs live under the same configured jobs root, so `readJobForProject` finds an
+external-cwd submission directly by id, with no index file. A different owning project produces an
+error naming that root and the explicit retry, never its saved response. No-id status listing
+stays scoped to the selected project, and cancel, cleanup, follow-up, and wake-up session
+ownership are unchanged.
 
 ## High-level flow
 

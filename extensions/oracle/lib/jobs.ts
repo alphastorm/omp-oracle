@@ -285,14 +285,12 @@ export class OracleJobProjectMismatchError extends Error {
   }
 }
 
-/** Discover external-cwd jobs without treating discovery as permission to read them. */
+/** Every project's jobs share one jobs root, so an id is found directly; only its owning projectId authorizes the read. */
 export function readJobForProject(jobId: string, projectId: string): OracleJob {
-  const local = readJob(jobId);
-  if (local?.id === jobId && local.projectId === projectId) return local;
-  const found = listOracleJobDirs().map((dir) => readJob(dir)).find((job) => job?.id === jobId);
-  if (!found) throw new Error(`Oracle job not found in this project: ${jobId}`);
-  if (found.projectId !== projectId) throw new OracleJobProjectMismatchError(jobId, found.projectId);
-  return found;
+  const job = readJob(jobId);
+  if (job?.id !== jobId) throw new Error(`Oracle job not found in this project: ${jobId}`);
+  if (job.projectId !== projectId) throw new OracleJobProjectMismatchError(jobId, job.projectId);
+  return job;
 }
 
 async function writeJobUnlocked(job: OracleJob): Promise<void> {

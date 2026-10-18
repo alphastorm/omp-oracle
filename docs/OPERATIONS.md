@@ -327,7 +327,7 @@ If a helper submitted from another cwd, first read its id normally. The error na
 `projectId`; explicitly pass that exact root to `oracle_read({ jobId, projectId: "/owning/root" })`,
 or `/oracle-status <job-id> --projectId "/owning/root"` (also supported by `/oracle-read`).
 Without an id, `/oracle-status --projectId "/owning/root"` lists that project's recent jobs.
-Discovery enumerates the configured `${PI_ORACLE_JOBS_DIR:-/tmp}` only: use the same jobs root as
+Lookup covers the configured `${PI_ORACLE_JOBS_DIR:-/tmp}` only: use the same jobs root as
 the submitting helper. It does not return the other project's answer silently or change cancel,
 cleanup, or wake-up ownership.
 
