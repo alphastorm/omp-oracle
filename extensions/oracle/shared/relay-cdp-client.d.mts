@@ -31,7 +31,7 @@ export interface RelayCdpResults {
   "Target.setAutoAttach": Record<string, never>;
   "DOM.getDocument": { root: { nodeId: number } };
   "DOM.querySelector": { nodeId: number };
-  "DOM.describeNode": { node: { nodeId: number; frameId?: string } };
+  "DOM.describeNode": { node: { nodeId: number; frameId?: string; attributes?: string[] } };
   "Runtime.evaluate": { result: RelayCdpRemoteObject; exceptionDetails?: RelayCdpExceptionDetails };
 }
 

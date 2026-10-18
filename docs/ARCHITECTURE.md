@@ -90,6 +90,15 @@ conversion accept them. The extension also exposes a host-internal programmatic 
   collection on a completed job without sending a prompt.
 - `oracle_cancel` — cancels a queued or active job by id.
 
+Read/status lookup uses an explicit `projectId` if supplied, otherwise the current project.
+`oracle_read` accepts that optional field; `/oracle-status` and `/oracle-read` accept
+`[job-id] [--projectId <project-root>]` (double-quote roots containing spaces).
+On a project miss, `readJobForProject` reuses `listOracleJobDirs` to discover the id under the
+configured jobs root. A different owning project produces an error naming that root and the
+explicit retry, never its saved response. Enumeration already finds external-cwd submissions,
+so there is no index file. No-id status listing stays scoped to the selected project, and cancel,
+cleanup, follow-up, and wake-up session ownership are unchanged.
+
 ## High-level flow
 
 ### `/oracle ...`
@@ -366,7 +375,7 @@ Fields in `OracleJob` (`extensions/oracle/lib/jobs.ts`), grouped by responsibili
   `selection` (`{ provider, preset?, mode?, modelFamily, effort?, autoSwitchToThinking }`), `extensionProvenance`, `config`
 - **Thread and prompt state:** `followUpToJobId`, `chatUrl`, `conversationId`, `promptPath`, `reasoningPath`,
   `promptSendState` (`not_sent | attempted | accepted`), `observedSelection`
-  (`{ at, modelLabel?, effortLabel?, deepResearchVerified? }`), `observedTurn`
+  (`{ at, product?, modelLabel?, effortLabel?, deepResearchVerified?, deepResearchIframeTitle? }`), `observedTurn`
   (`{ at, durationLabel?, durationSeconds? }`, for example `Worked for 15m 7s` or `Research completed in 6m`)
 - **Generation and collection:** `responsePath`, `responseFormat` (`text/plain`), `generationStatus` (`completed`),
   `collectionStatus` (`complete | partial | failed`), `collectionRequiredMissing`, `collectionOptionalMissing`,
@@ -386,6 +395,16 @@ Fields in `OracleJob` (`extensions/oracle/lib/jobs.ts`), grouped by responsibili
 Legacy jobs written before collection binding or session-file provenance existed remain readable: missing `collectionStatus`
 is treated as unknown rather than failed, and jobs without `sessionId` stay inspectable by `projectId` without wake-up
 rebinding.
+
+`observedSelection` is optional, including on legacy jobs. It remains the single UI-provenance
+object: `modelLabel` is the already-read model-selector text, `effortLabel` the observed slider
+stop, and `at` the latest observation time. `product` classifies those actual controls as Pro,
+Thinking, or Instant, or a verified research pill/frame as Deep Research; unknown labels
+remain unclassified rather than copying the requested preset. Slider observations are merged
+immediately, so failure before model configuration finishes no longer loses a logged reading.
+The bound research iframe's `Deep research` title comes from the existing `DOM.describeNode`
+reply. All merges go through the worker's per-job lock and atomic write, preserving other fields.
+No additional DOM query, page/response text, cookie, or secret is added to this metadata.
 
 ## Response format
 

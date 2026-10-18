@@ -1,6 +1,11 @@
 export type OracleUiModelFamily = "instant" | "thinking" | "pro";
 export type OracleUiEffort = "light" | "standard" | "extended" | "heavy";
 
+export declare function mergeObservedSelection(
+  previous: import("../shared/job-observability-helpers.mjs").OracleObservedSelection | undefined,
+  observation: Partial<Omit<import("../shared/job-observability-helpers.mjs").OracleObservedSelection, "product">>,
+): import("../shared/job-observability-helpers.mjs").OracleObservedSelection;
+
 export interface OracleUiSelection {
   modelFamily: OracleUiModelFamily;
   effort?: OracleUiEffort;

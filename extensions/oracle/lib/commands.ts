@@ -16,9 +16,11 @@ import {
   isOpenOracleJob,
   isTerminalOracleJob,
   listJobsForCwd,
+  listJobsForProject,
   ORACLE_STALE_HEARTBEAT_MS,
   markWakeupSettled,
   readJob,
+  readJobForProject,
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
   shouldAdvanceQueueAfterCancellation,
@@ -55,12 +57,8 @@ async function summarizeJob(jobId: string, options?: { responsePreview?: boolean
   });
 }
 
-function getLatestJobId(cwd: string): string | undefined {
-  return listJobsForCwd(cwd)[0]?.id;
-}
-
-function listRecentJobIds(cwd: string, limit = 5): string | undefined {
-  const jobs = listJobsForCwd(cwd).slice(0, limit);
+function listRecentJobIds(projectId: string, limit = 5): string | undefined {
+  const jobs = listJobsForProject(projectId).slice(0, limit);
   if (jobs.length === 0) return undefined;
   return jobs.map((job) => `${job.id} (${job.status})`).join(", ");
 }
@@ -97,6 +95,37 @@ function emitCommandOutput(pi: ExtensionAPI, ctx: ExtensionCommandContext, messa
 }
 
 export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
+  async function inspectJob(args: string, ctx: ExtensionCommandContext, options: { source: "oracle_status" | "oracle_read_command" }): Promise<void> {
+    const responsePreview = options.source === "oracle_read_command";
+    try {
+      const match = args.trim().match(/^(?:([^- \t\r\n][^ \t\r\n]*)\s*)?(?:--projectId\s+(.+))?$/);
+      const command = responsePreview ? "oracle-read" : "oracle-status";
+      if (!match) throw new Error(`Usage: /${command} [job-id] [--projectId <project-root>]`);
+      const explicitJobId = match[1];
+      const projectId = match[2] === undefined ? getProjectId(ctx.cwd)
+        : match[2].startsWith('"') ? JSON.parse(match[2]) : match[2];
+      if (typeof projectId !== "string" || !projectId.trim()) throw new Error("projectId must be a non-empty project root");
+      const jobId = explicitJobId || listJobsForProject(projectId)[0]?.id;
+      if (!jobId) {
+        emitCommandOutput(pi, ctx, "No oracle jobs found for this project", "info");
+        return;
+      }
+      const job = readJobForProject(jobId, projectId);
+      if (isTerminalOracleJob(job)) {
+        await markWakeupSettled(job.id, {
+          source: options.source,
+          sessionFile: ctx.sessionManager.getSessionFile?.(),
+          cwd: ctx.cwd,
+        });
+      }
+      const summary = await summarizeJob(job.id, { responsePreview });
+      const recentJobs = !responsePreview && !explicitJobId ? listRecentJobIds(projectId) : undefined;
+      emitCommandOutput(pi, ctx, [summary, recentJobs ? `Recent jobs: ${recentJobs}` : undefined].filter(Boolean).join("\n"), "info");
+    } catch (error) {
+      emitCommandOutput(pi, ctx, error instanceof Error ? error.message : String(error), "warning");
+    }
+  }
+
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT or Grok cookies from the configured local browser profile into the provider auth seed profile",
     handler: async (args, ctx) => {
@@ -113,55 +142,13 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
   });
 
   pi.registerCommand("oracle-status", {
-    description: "Show oracle job status and recent job ids",
-    handler: async (args, ctx) => {
-      const explicitJobId = args.trim();
-      const jobId = explicitJobId || getLatestJobId(ctx.cwd);
-      if (!jobId) {
-        emitCommandOutput(pi, ctx, "No oracle jobs found for this project", "info");
-        return;
-      }
-      const job = readScopedJob(jobId, ctx.cwd);
-      if (!job) {
-        emitCommandOutput(pi, ctx, `Oracle job ${jobId} was not found in this project`, "warning");
-        return;
-      }
-      if (isTerminalOracleJob(job)) {
-        await markWakeupSettled(job.id, {
-          source: "oracle_status",
-          sessionFile: ctx.sessionManager.getSessionFile?.(),
-          cwd: ctx.cwd,
-        });
-      }
-      const summary = await summarizeJob(job.id);
-      const recentJobs = !explicitJobId ? listRecentJobIds(ctx.cwd) : undefined;
-      emitCommandOutput(pi, ctx, [summary, recentJobs ? `Recent jobs: ${recentJobs}` : undefined].filter(Boolean).join("\n"), "info");
-    },
+    description: "Show oracle job status and recent job ids; optionally pass --projectId <project-root>",
+    handler: (args, ctx) => inspectJob(args, ctx, { source: "oracle_status" }),
   });
 
   pi.registerCommand("oracle-read", {
-    description: "Show oracle job status plus saved response preview",
-    handler: async (args, ctx) => {
-      const explicitJobId = args.trim();
-      const jobId = explicitJobId || getLatestJobId(ctx.cwd);
-      if (!jobId) {
-        emitCommandOutput(pi, ctx, "No oracle jobs found for this project", "info");
-        return;
-      }
-      const job = readScopedJob(jobId, ctx.cwd);
-      if (!job) {
-        emitCommandOutput(pi, ctx, `Oracle job ${jobId} was not found in this project`, "warning");
-        return;
-      }
-      if (isTerminalOracleJob(job)) {
-        await markWakeupSettled(job.id, {
-          source: "oracle_read_command",
-          sessionFile: ctx.sessionManager.getSessionFile?.(),
-          cwd: ctx.cwd,
-        });
-      }
-      emitCommandOutput(pi, ctx, await summarizeJob(job.id, { responsePreview: true }), "info");
-    },
+    description: "Show oracle job status plus saved response preview; optionally pass --projectId <project-root>",
+    handler: (args, ctx) => inspectJob(args, ctx, { source: "oracle_read_command" }),
   });
 
   pi.registerCommand("oracle-cancel", {

@@ -55,6 +55,7 @@ import {
   matchesModelConfigurationOpener,
   matchesModelFamilyLabel,
   matchesRequestedModelControlLabel,
+  mergeObservedSelection,
   requestedEffortLabel,
   effortSelectionVisible,
   classifyDeepResearchTurn,
@@ -253,6 +254,11 @@ async function mutateJob(mutator) {
     currentJob = next;
     return next;
   });
+}
+
+/** @param {Partial<Omit<import("../shared/job-observability-helpers.mjs").OracleObservedSelection, "product">>} observation */
+async function recordObservedSelection(observation) {
+  return mutateJob((job) => ({ ...job, observedSelection: mergeObservedSelection(job.observedSelection, observation) }));
 }
 
 async function heartbeat(patch = undefined, options = {}) {
@@ -1740,9 +1746,6 @@ async function focusPowerSlider(job) {
   return Boolean(result && typeof result === "object" && result.focused === true);
 }
 
-// The effort the slider reported when configuration finished, e.g. "Pro (5 of 5)".
-let observedEffortLabel;
-
 // Drive the current slider-based thinking-effort picker: only the current stop is rendered, so
 // step with real arrow keys and trust the slider's own description after every step.
 async function configurePowerSlider(job) {
@@ -1750,6 +1753,7 @@ async function configurePowerSlider(job) {
   let state = await readPowerSliderState(job);
   if (!state) throw new Error("Could not read the ChatGPT thinking-effort slider");
   await log(`Thinking-effort slider reads ${state.label} (${state.index} of ${state.count}); target ${target}`);
+  await recordObservedSelection({ effortLabel: `${state.label} (${state.index} of ${state.count})` });
   if (state.label !== target) {
     if (!(await focusPowerSlider(job))) throw new Error("Could not focus the ChatGPT thinking-effort slider");
     for (let step = 0; step < state.count && state.label !== target; step += 1) {
@@ -1762,7 +1766,7 @@ async function configurePowerSlider(job) {
       if (!state) {
         if (powerSliderClosedIntoSelection(await snapshotText(job), job.selection)) {
           await log(`Thinking-effort picker closed on ${target}; the composer already reads it`);
-          observedEffortLabel = target;
+          await recordObservedSelection({ effortLabel: target });
           return;
         }
         throw new Error("Lost the ChatGPT thinking-effort slider while stepping");
@@ -1771,8 +1775,9 @@ async function configurePowerSlider(job) {
     }
   }
   if (state.label !== target) throw new Error(`Could not set the thinking-effort slider to ${target}; it reads ${state.label}`);
-  observedEffortLabel = `${state.label} (${state.index} of ${state.count})`;
+  const observedEffortLabel = `${state.label} (${state.index} of ${state.count})`;
   await log(`Thinking-effort slider set to ${observedEffortLabel}`);
+  await recordObservedSelection({ effortLabel: observedEffortLabel });
 }
 
 // What the composer shows once configuration finished: the model picker's text, the slider's
@@ -1796,7 +1801,7 @@ async function observeSelection(job, { deepResearchVerified } = {}) {
     return { label: parts.join(' ').replace(/\\s+/g, ' ').trim() };
   `)).catch(() => undefined);
   const modelLabel = typeof picker?.label === "string" && picker.label ? picker.label.slice(0, 80) : undefined;
-  return { at: new Date().toISOString(), ...(modelLabel ? { modelLabel } : {}), ...(observedEffortLabel ? { effortLabel: observedEffortLabel } : {}),
+  return { at: new Date().toISOString(), ...(modelLabel ? { modelLabel } : {}),
     ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
 }
 
@@ -2509,20 +2514,27 @@ async function boundResearchFrame(job, binding) {
   const turn = await evalPage(job, toJsonScript(`return ${captureExpression({ responseIndex: binding.responseIndex, messageId: binding.messageId, conversationId: binding.conversationId })};`));
   if (!turn?.frames?.length) throw new Error("No research iframe exists in the bound assistant turn.");
   const documentNode = await deepResearchCdp.send("DOM.getDocument", {}, deepResearchPageSession);
-  const frameIds = [];
+  const boundFrames = [];
   for (const frame of turn.frames) {
     const found = await deepResearchCdp.send("DOM.querySelector", { nodeId: documentNode.root.nodeId, selector: frame.selector }, deepResearchPageSession);
     if (!found.nodeId) continue;
     const description = await deepResearchCdp.send("DOM.describeNode", { nodeId: found.nodeId }, deepResearchPageSession);
-    if (description.node?.frameId) frameIds.push(description.node.frameId);
+    const attributes = description.node?.attributes ?? [];
+    let title;
+    for (let index = 0; index < attributes.length; index += 2) {
+      if (attributes[index] === "title") title = attributes[index + 1];
+    }
+    boundFrames.push({ frameId: description.node?.frameId, src: frame.src, title });
   }
   const matches = [];
   for (const candidate of deepResearchCdp.frameSessions()) {
     const href = await deepResearchCdp.evaluate(candidate.sessionId, "location.href");
     if (typeof href !== "string" || !/^https:\/\/[^/]*web-sandbox\.oaiusercontent\.com(?:\/|$)/.test(href)) continue;
-    if (frameIds.includes(candidate.targetId) || turn.frames.some((frame) => frame.src === href)) matches.push(candidate);
+    const bound = boundFrames.find((frame) => frame.frameId === candidate.targetId || frame.src === href);
+    if (bound) matches.push({ ...candidate, title: bound.title });
   }
   if (matches.length !== 1) throw new Error("The bound report frame is absent or ambiguous.");
+  if (matches[0].title) await recordObservedSelection({ deepResearchIframeTitle: matches[0].title });
   return matches[0];
 }
 
@@ -2795,7 +2807,7 @@ async function run() {
       deepResearchVerified = await enableDeepResearch(currentJob);
     }
     const observedSelection = await observeSelection(currentJob, { deepResearchVerified });
-    if (observedSelection) currentJob = await mutateJob((job) => ({ ...job, observedSelection }));
+    if (observedSelection) currentJob = await recordObservedSelection(observedSelection);
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "uploading_archive", {
       at: new Date().toISOString(),
       source: "oracle:worker",

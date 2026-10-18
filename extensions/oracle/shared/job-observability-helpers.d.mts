@@ -1,5 +1,14 @@
 import type { OracleJobLifecycleEvent } from "./job-lifecycle-helpers.d.mts";
 
+export interface OracleObservedSelection {
+  at: string;
+  product?: "deep_research" | "pro" | "thinking" | "instant";
+  modelLabel?: string;
+  effortLabel?: string;
+  deepResearchVerified?: boolean;
+  deepResearchIframeTitle?: string;
+}
+
 export interface OracleJobSummaryLike {
   id: string;
   status: string;
@@ -35,7 +44,7 @@ export interface OracleJobSummaryLike {
   recollectionError?: string;
   recollectionNeeded?: boolean;
   promptSendState?: "not_sent" | "attempted" | "accepted";
-  observedSelection?: { at: string; modelLabel?: string; effortLabel?: string; deepResearchVerified?: boolean };
+  observedSelection?: OracleObservedSelection;
   observedTurn?: { at: string; durationLabel?: string; durationSeconds?: number };
   lastCleanupAt?: string;
   cleanupWarnings?: string[];

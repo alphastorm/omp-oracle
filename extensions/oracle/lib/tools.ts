@@ -45,8 +45,10 @@ import {
   isTerminalOracleJob,
   listOracleJobDirs,
   markWakeupSettled,
+  OracleJobProjectMismatchError,
   ORACLE_STALE_HEARTBEAT_MS,
   readJob,
+  readJobForProject,
   pruneTerminalOracleJobs,
   reconcileStaleOracleJobs,
   resolveArchiveInputs,
@@ -127,6 +129,7 @@ const ORACLE_AUTH_PARAMS = Type.Object({
 
 const ORACLE_READ_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
+  projectId: Type.Optional(Type.String({ minLength: 1, description: "Owning project root recorded at submission. Defaults to the current project; another project's job requires this explicit acknowledgment." })),
   action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect the saved turn of an already completed job without sending a prompt: by its message ID, its content hash, or the user turn that carries the job's archive. Default: read saved files only." })),
   responseIndex: Type.Optional(Type.Integer({ minimum: 0, description: "For legacy jobs without a saved turn binding only: explicit zero-based assistant turn index, paired with messageId." })),
   messageId: Type.Optional(Type.String({ minLength: 1, description: "For legacy jobs without a saved turn binding only: exact observed data-message-id of the completed assistant turn." })),
@@ -704,6 +707,15 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
+  if (toolName === "oracle_read" && error instanceof OracleJobProjectMismatchError) {
+    return {
+      code: "job_wrong_project",
+      message,
+      rejectedValue: error.jobId,
+      suggestedNextStep: `Retry oracle_read with jobId: ${JSON.stringify(error.jobId)}, projectId: ${JSON.stringify(error.projectId)}.`,
+    };
+  }
+
   if (toolName === "oracle_submit" && (message.startsWith("Oracle archive exceeds provider upload limit") || message.startsWith("Oracle archive exceeds ChatGPT upload limit"))) {
     return {
       code: "archive_too_large",
@@ -1246,16 +1258,13 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
   pi.registerTool({
     name: "oracle_read",
     label: "Oracle Read",
-    description: "Read saved status and outputs, or explicitly recollect a completed bound result without sending a prompt.",
+    description: "Read saved status and outputs, optionally naming the owning projectId for an external-project job, or explicitly recollect a completed bound result without sending a prompt.",
     promptSnippet: "Read oracle job status, queue position, artifacts, and response preview by job id.",
     promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of an already completed exact bound turn; it never submits or regenerates a response."],
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
-        const job = readJob(params.jobId);
-        if (!job || job.projectId !== getProjectId(ctx.cwd)) {
-          throw new Error(`Oracle job not found in this project: ${params.jobId}`);
-        }
+        const job = readJobForProject(params.jobId, params.projectId ?? getProjectId(ctx.cwd));
         if (params.action === "recollect") {
           if (job.status !== "complete") throw new Error("Recollection requires an already completed job.");
           if ((params.responseIndex === undefined) !== (params.messageId === undefined)) throw new Error("Legacy turn binding requires responseIndex and messageId together.");

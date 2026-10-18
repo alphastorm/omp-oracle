@@ -624,6 +624,31 @@ export function parseDeepResearchWidgetText(text) {
 export const POWER_SLIDER_TIER_LABELS = Object.freeze(["Instant", "Medium", "High", "Extra High", "Pro"]);
 
 /**
+ * Merge only UI-control facts already read by the worker, never requested settings or page text.
+ * Unknown labels remain unclassified; a verified research tool takes precedence over the picker.
+ * @param {import("../shared/job-observability-helpers.mjs").OracleObservedSelection | undefined} previous
+ * @param {Partial<Omit<import("../shared/job-observability-helpers.mjs").OracleObservedSelection, "product">>} observation
+ * @returns {import("../shared/job-observability-helpers.mjs").OracleObservedSelection}
+ */
+export function mergeObservedSelection(previous, observation) {
+  const next = { ...previous, at: observation.at ?? new Date().toISOString() };
+  if (observation.modelLabel) next.modelLabel = observation.modelLabel.slice(0, 80);
+  if (observation.effortLabel) next.effortLabel = observation.effortLabel.slice(0, 80);
+  if (observation.deepResearchVerified === true) next.deepResearchVerified = true;
+  if (observation.deepResearchIframeTitle && /^deep research$/i.test(observation.deepResearchIframeTitle)) {
+    next.deepResearchIframeTitle = observation.deepResearchIframeTitle;
+  }
+  const label = (observation.modelLabel ?? observation.effortLabel ?? "")
+    .replace(/^(?:Pro )?Thinking effort\s+/i, "").replace(/\s+\(\d+ of \d+\)$/, "");
+  if (next.deepResearchVerified || next.deepResearchIframeTitle) next.product = "deep_research";
+  else if (/\bPro\b/i.test(label)) next.product = "pro";
+  else if (/\bInstant\b/i.test(label)) next.product = "instant";
+  else if (/\bThinking\b/i.test(label) || /^(?:Medium|High|Extra High)$/i.test(label)) next.product = "thinking";
+  else if (label) delete next.product;
+  return next;
+}
+
+/**
  * @param {string} snapshot
  * @returns {boolean}
  */

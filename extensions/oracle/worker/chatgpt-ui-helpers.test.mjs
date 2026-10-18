@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
+import { mergeObservedSelection } from "./chatgpt-ui-helpers.mjs";
 import { classifyDeepResearchTurn, effortSelectionVisible, findDialogCloseEntry, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotHasUsableComposerControls, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel, waitForStationaryControl } from "./chatgpt-ui-helpers.mjs";
 
 // Composer fragment of the authenticated redesigned shell, captured 2026-09-29 by a failed job.
@@ -113,6 +114,25 @@ test("the slider description yields the current stop, and anything else yields n
   assert.equal(parsePowerSliderDescription("Use Left and Right arrow keys to adjust power."), undefined);
   assert.equal(parsePowerSliderDescription("Pro, 6 of 5."), undefined);
   assert.equal(parsePowerSliderDescription(undefined), undefined);
+});
+
+test("observed products use control labels rather than a requested model or page text", () => {
+  const at = "2026-10-18T00:00:00.000Z";
+  for (const [modelLabel, product] of [
+    ["Thinking effort Pro", "pro"], ["Thinking effort Instant", "instant"],
+    ["Extra High", "thinking"], ["GPT-5 Thinking", "thinking"], ["Unknown", undefined],
+    ["Thinking effort Unknown", undefined],
+  ]) {
+    const result = mergeObservedSelection(undefined, { at, modelLabel, pageText: "not provenance", product: "pro" });
+    assert.equal(result.product, product);
+    assert.equal(result.pageText, undefined);
+    assert.equal(result.at, at);
+  }
+  const prior = mergeObservedSelection(undefined, { at, effortLabel: "Pro (5 of 5)" });
+  const combined = mergeObservedSelection(prior, { modelLabel: "Thinking effort Pro", at });
+  assert.equal(combined.effortLabel, "Pro (5 of 5)");
+  assert.equal(mergeObservedSelection(combined, { deepResearchVerified: true, at }).product, "deep_research");
+  assert.equal(mergeObservedSelection(undefined, { deepResearchIframeTitle: "unrelated page title", at }).deepResearchIframeTitle, undefined);
 });
 
 test("presets map onto the five slider stops the way compact tiers already do", () => {

@@ -99,7 +99,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
     enumerable: false,
     value: Object.freeze({
       version: 1 as const,
-      read: (ctx: ExtensionContext, params: { jobId: string; action?: "read" | "recollect"; responseIndex?: number; messageId?: string }) =>
+      read: (ctx: ExtensionContext, params: { jobId: string; projectId?: string; action?: "read" | "recollect"; responseIndex?: number; messageId?: string }) =>
         readTool.execute(`oracle-read-${crypto.randomUUID()}`, params, abortSignal, () => undefined, ctx),
       preflight: (ctx: ExtensionContext) =>
         preflightTool.execute(

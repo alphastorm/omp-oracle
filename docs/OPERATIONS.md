@@ -323,6 +323,23 @@ Exit the `--no-session` run (`omp --no-session` or `pi --no-session`), start a n
 
 Run `/oracle-status` to list recent job ids for the project, then run `/oracle-read <job-id>` (or call `oracle_read({ jobId })`) to read the saved response from disk.
 
+If a helper submitted from another cwd, first read its id normally. The error names the owning
+`projectId`; explicitly pass that exact root to `oracle_read({ jobId, projectId: "/owning/root" })`,
+or `/oracle-status <job-id> --projectId "/owning/root"` (also supported by `/oracle-read`).
+Without an id, `/oracle-status --projectId "/owning/root"` lists that project's recent jobs.
+Discovery enumerates the configured `${PI_ORACLE_JOBS_DIR:-/tmp}` only: use the same jobs root as
+the submitting helper. It does not return the other project's answer silently or change cancel,
+cleanup, or wake-up ownership.
+
+For UI provenance, inspect `observedSelection` in `job.json` or the read/status output:
+`observed-product`, `observed-model`, `deep-research-verified`, and `deep-research-iframe-title`.
+The existing `modelLabel`, `effortLabel`, and `at` record the selector text, slider stop, and
+latest observation time. `product` and `deepResearchIframeTitle` add explicit product and frame
+evidence. Deep Research deliberately has no ordinary model label: a verified composer tool,
+not the requested underlying model family, selects that product. Missing fields mean not
+observed, not a failed job; legacy jobs remain readable. No CDP inspection is needed to read
+these saved facts, and the metadata contains no answer text or auth data.
+
 ### `/oracle-clean` refuses a terminal job right after completion
 
 `/oracle-clean` blocks removal during the short post-send retention grace window after a wake-up was sent and returns a `Retry after ...` timestamp. Wait until the `Retry after ...` timestamp passes, then rerun `/oracle-clean <job-id|all>`.

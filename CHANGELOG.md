@@ -4,6 +4,15 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Added
+- `oracle_read` accepts an optional owning `projectId`; `/oracle-status` and `/oracle-read` accept `--projectId`. An id found in another project names the owning root and requires an explicit retry instead of hiding the job or returning its response silently. Lookup reuses job-directory enumeration, with no new index; cancel and cleanup remain current-project only.
+- the existing `observedSelection` gains an observed `product` and the bound `deepResearchIframeTitle`, alongside its existing model-selector text (`modelLabel`), slider stop (`effortLabel`), and timestamp (`at`). Read/status surfaces expose these optional facts without new DOM queries or answer/auth data; legacy jobs need no migration.
+
+### Fixed
+- a slider reading logged before model configuration failed was lost because `observedSelection` was written only after configuration finished. The worker now merges each logged slider observation through its existing locked atomic job-state write path.
+
 ## 0.4.4 - 2026-10-17
 
 ### Changed

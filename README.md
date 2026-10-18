@@ -168,6 +168,19 @@ Agent-facing tools:
 - `oracle_read` — Agent callers can use `oracle_read({ jobId })` to read saved output in-turn, or `oracle_read({ jobId, action: "recollect" })` to retry collection of a completed turn without resending the prompt. Failed jobs include `errorCode` and `prompt-send-state`, and completed turns report `generationStatus`, `collectionStatus`, and `response.capture.json`; see [Operations → Troubleshooting](docs/OPERATIONS.md#troubleshooting).
 - `oracle_cancel` — cancels a queued or active job by id.
 
+Jobs submitted by a helper from another project are discoverable by id within the same
+`${PI_ORACLE_JOBS_DIR:-/tmp}`. A read from the wrong project returns the owning root and requires an
+explicit retry: `oracle_read({ jobId, projectId: "/path/used/at/submit" })`. The slash commands accept
+`/oracle-status <job-id> --projectId "/path/used/at/submit"` and the same option on `/oracle-read`.
+No response from another project is returned without that acknowledgment; cancel and cleanup stay
+current-project only.
+
+`oracle_read` and `/oracle-status` show the worker's `observedSelection`, not just the requested
+preset: `product`, `modelLabel` (model-selector text), `effortLabel`, `deepResearchVerified`,
+`deepResearchIframeTitle`, and `at` when observed. Deep Research uses its own product, so it does
+not borrow the ordinary model picker's label. These optional UI-control facts contain no answer
+text or credentials; old jobs without them remain readable.
+
 ### Example requests
 
 - `/oracle Review the current pending changes. Include the whole repo unless a narrower archive is clearly better. Give me a prioritized code review with concrete fixes.`

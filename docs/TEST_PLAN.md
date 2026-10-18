@@ -22,6 +22,19 @@ Companion docs: [Architecture](ARCHITECTURE.md) Â· [Operations](OPERATIONS.md) Â
 
 ## Isolated `pi` session smoke
 
+For read/status and observed-selection changes, `node --test scripts/oracle-native.test.mjs`
+also loads this checkout in an isolated persisted native Pi JSON session, with separate HOME,
+agent, jobs, and state directories and network access forbidden. Two fixture project roots prove
+local reads, wrong-project guidance without response disclosure, explicit owning-root reads,
+missing ids, legacy records, unchanged cancellation scope, and `/oracle-status`/`/oracle-read`
+dispatch (including quoted roots with spaces). Production worker declarations run against
+fixture browser observations but real per-job locks and atomic job writes, proving early slider
+facts survive a configuration failure, later observations merge, and Deep Research frame
+metadata round-trips through the loaded extension. This is offline state/dispatch proof, not
+live ChatGPT DOM or model-selection qualification. Helper tests cover product classification
+and exclusion of unrelated text. A live run, when authorized, still requires isolated auth and
+the `instant` or `thinking_light` preset.
+
 Use this repeatable pre-commit workflow for code changes when you need end-to-end evidence beyond `npm test`. It validates that:
 
 - isolated `pi` or `omp` print-mode sessions load the local extension source directly;
