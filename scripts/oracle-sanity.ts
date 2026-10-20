@@ -1965,8 +1965,10 @@ async function testOraclePromptCommandsInjectHiddenInstructions(): Promise<void>
 
   const ui = createUiStub();
   const tuiCtx = createExtensionCtx({ getSessionFile: () => "/tmp/oracle-sanity-hidden-prompt-session.jsonl" } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], ui, process.cwd(), "tui");
-  const handled = await inputHandler({ text: "/oracle Read README.md", source: "interactive" }, tuiCtx) as { action?: string };
-  assert(handled?.action === "handled", "TUI /oracle input should be handled before prompt-template expansion");
+  const handled = await inputHandler({ text: "/oracle Read README.md", source: "interactive" }, tuiCtx) as { action?: string; handled?: boolean };
+  // pi consumes input on `action: "handled"`, Oh My Pi on `handled: true`; missing either makes that
+  // host also submit the typed text, so the request and its hidden dispatch reach the model twice.
+  assert(handled?.action === "handled" && handled.handled === true, "TUI /oracle input should be consumed under both pi's and Oh My Pi's input contracts");
   assert(pi.sentUserMessages.at(-1)?.content === "/oracle Read README.md", "oracle input interceptor should reinject the compact user command so prompt history survives session reloads");
   const beforeAgentStart = pi.handlers.get("before_agent_start");
   assert(beforeAgentStart, "oracle extension should inject hidden dispatch instructions before the reinjected user command reaches the model");
@@ -1976,8 +1978,8 @@ async function testOraclePromptCommandsInjectHiddenInstructions(): Promise<void>
   assert(String(message?.content || "").includes("Read README.md"), "oracle before-agent injection should include the user request in hidden dispatch instructions");
   assert(ui.notifications.at(-1)?.message === "Preparing oracle job… running preflight", "oracle input interceptor should show compact user-facing status");
 
-  const followupHandled = await inputHandler({ text: "/oracle-followup job-123 continue", source: "interactive" }, tuiCtx) as { action?: string };
-  assert(followupHandled?.action === "handled", "TUI /oracle-followup input should be handled before prompt-template expansion");
+  const followupHandled = await inputHandler({ text: "/oracle-followup job-123 continue", source: "interactive" }, tuiCtx) as { action?: string; handled?: boolean };
+  assert(followupHandled?.action === "handled" && followupHandled.handled === true, "TUI /oracle-followup input should be consumed under both pi's and Oh My Pi's input contracts");
   assert(pi.sentUserMessages.at(-1)?.content === "/oracle-followup job-123 continue", "oracle-followup interceptor should reinject the compact user command for prompt history");
   const followupInjection = await beforeAgentStart({ prompt: "/oracle-followup job-123 continue" }, tuiCtx) as { message?: { display?: boolean; content?: unknown } };
   const followupMessage = followupInjection?.message;
@@ -1987,8 +1989,8 @@ async function testOraclePromptCommandsInjectHiddenInstructions(): Promise<void>
 
   const usageUi = createUiStub();
   const usageCtx = createExtensionCtx({ getSessionFile: () => "/tmp/oracle-sanity-hidden-prompt-session.jsonl" } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], usageUi, process.cwd(), "tui");
-  const usageResult = await inputHandler({ text: "/oracle-followup job-123", source: "interactive" }, usageCtx) as { action?: string };
-  assert(usageResult?.action === "handled" && usageUi.notifications.at(-1)?.message === "Usage: /oracle-followup <job-id> <request>", "TUI /oracle-followup should report usage before invoking hidden dispatch when the request is missing");
+  const usageResult = await inputHandler({ text: "/oracle-followup job-123", source: "interactive" }, usageCtx) as { action?: string; handled?: boolean };
+  assert(usageResult?.action === "handled" && usageResult.handled === true && usageUi.notifications.at(-1)?.message === "Usage: /oracle-followup <job-id> <request>", "TUI /oracle-followup should report usage, and consume the input on both hosts, before invoking hidden dispatch when the request is missing");
 
   const printCtx = createExtensionCtx({ getSessionFile: () => "/tmp/oracle-sanity-hidden-prompt-session.jsonl" } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub(), process.cwd(), "print");
   const printResult = await inputHandler({ text: "/oracle Read README.md", source: "interactive" }, printCtx) as { action?: string };

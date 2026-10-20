@@ -60,6 +60,11 @@ function oracleDispatchMessage(command: "oracle" | "oracle-followup", args: stri
   };
 }
 
+// pi consumes input on `action: "handled"` and Oh My Pi on `handled: true`. A consumed /oracle
+// command carries both; with only one, the other host also submits the typed text, and the request
+// and its hidden dispatch instructions reach the model twice.
+const INPUT_CONSUMED = { action: "handled", handled: true } as const;
+
 export default function oracleExtension(pi: ExtensionAPI) {
   const extensionDir = dirname(fileURLToPath(import.meta.url));
   const workerPath = join(extensionDir, "worker", "run-job.mjs");
@@ -192,17 +197,17 @@ export default function oracleExtension(pi: ExtensionAPI) {
     if (!parsed) return { action: "continue" };
     if (!parsed.args || (parsed.command === "oracle-followup" && !/^\S+\s+\S/.test(parsed.args))) {
       ctx.ui.notify(parsed.command === "oracle" ? "Usage: /oracle <request>" : "Usage: /oracle-followup <job-id> <request>", "warning");
-      return { action: "handled" };
+      return INPUT_CONSUMED;
     }
     const template = parsed.command === "oracle" ? oraclePrompt : oracleFollowupPrompt;
     if (!template?.trim()) {
       ctx.ui.notify(`/${parsed.command} is unavailable because its internal dispatch prompt could not be loaded.`, "warning");
-      return { action: "handled" };
+      return INPUT_CONSUMED;
     }
     ctx.ui.notify("Preparing oracle job… running preflight", "info");
     const delivery = event.streamingBehavior ? { deliverAs: event.streamingBehavior } : undefined;
     pi.sendUserMessage(formatOracleUserCommand(parsed.command, parsed.args), delivery);
-    return { action: "handled" };
+    return INPUT_CONSUMED;
   });
 
   pi.on("session_start", async (_event, ctx) => {
