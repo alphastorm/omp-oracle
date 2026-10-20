@@ -18,7 +18,7 @@ Required workflow:
 2. If the request does not include both a prior oracle job id and a follow-up request, stop and report: `Usage: /oracle-followup <job-id> <request>. Find the job id in the earlier oracle response or via /oracle-status.`
 3. Same-thread follow-ups cannot switch providers. If the user asks to move a ChatGPT thread to Grok or a Grok thread to ChatGPT, stop and tell them to start a new `/oracle` job instead.
 4. Call `oracle_preflight` immediately with the parsed `followUpJobId` so readiness checks use the prior job's provider.
-5. If `oracle_preflight` reports `ready: false`, stop before any expensive prep. Do not read files, search the codebase, prepare archive inputs, or call `oracle_auth` automatically. Report the blocking issue plus the suggested next step.
+5. If `oracle_preflight` reports `ready: false` (its result reads `Oracle preflight blocked: …`), stop before any expensive prep. Do not read files, search the codebase, prepare archive inputs, or call `oracle_auth` automatically. Report the blocking issue plus the suggested next step; where that step says to call `oracle_auth` or run `/oracle-auth`, tell the user to run `/oracle-auth` (or `/oracle-auth grok` for Grok) instead of calling the tool.
 6. Treat the parsed job id as `followUpJobId` for `oracle_submit`.
 7. Understand whether the follow-up request is explicitly narrow or genuinely broad.
 8. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the provider archive ceiling: 250 MiB for ChatGPT, 200 MiB for Grok.
