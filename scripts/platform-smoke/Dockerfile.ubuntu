@@ -1,4 +1,4 @@
-FROM cimg/node:24.16
+FROM cimg/node:24.22
 
 USER root
 RUN apt-get update \
