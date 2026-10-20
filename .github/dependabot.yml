@@ -7,6 +7,17 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # @types/node follows the oldest supported Node line (`engines` >=22.19.0), not the newest.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # TypeScript 7 no longer ships the compiler API that scripts/oracle-native.test.mjs uses to
+      # parse the worker (`ts.ScriptTarget` is undefined there).
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      # typebox stays on the copy the pi development baseline pins (1.3.27 for pi 1.3.0); it moves
+      # together with the @earendil-works devDependencies, never on its own.
+      - dependency-name: typebox
   - package-ecosystem: github-actions
     directory: /
     schedule:
