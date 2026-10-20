@@ -291,7 +291,7 @@ export function formatOracleSubmitResponse(job, options) {
     `Response will be written to: ${job.responsePath}`,
     formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job)) ? `Last event: ${formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job))}` : undefined,
     options.queued ? "The job will start automatically when capacity is available." : undefined,
-    "Do not poll now; wait for the one-time oracle completion wake-up.",
+    `Do not poll; the one-time completion wake-up arrives in this session. If the user asks for status before then, call oracle_read with jobId "${job.id}".`,
   ]
     .filter(Boolean)
     .join("\n");

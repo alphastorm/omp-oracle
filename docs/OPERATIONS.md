@@ -246,8 +246,9 @@ the built-in generic Chromium cookie reader and prompts for macOS Keychain acces
   before building an archive.
 - **Wake-ups and reading (`oracle_read`, `/oracle-read`, `/oracle-status`).** Completion delivery into the
   host session is one best-effort wake-up per finished job, sent only while the session is idle with nothing
-  queued. Jobs that finish together arrive as one batched message, and an `oracle_read` (or `/oracle-read` /
-  `/oracle-status`) by the job's own session settles the wake-up first. The job directory is the durable
+  queued. Agents must not poll; if the user asks for status before the wake-up, call `oracle_read({ jobId })`
+  with the submitted job's id. Jobs that finish together arrive as one batched message, and an `oracle_read`
+  (or `/oracle-read` / `/oracle-status`) by the job's own session settles the wake-up first. The job directory is the durable
   record: run `/oracle-status [job-id]` to inspect a job or list recent job ids, `/oracle-read [job-id]` to
   read the saved response preview, or `oracle_read({ jobId })` from an agent turn.
 - **Continuing and cancelling.** Run `/oracle-followup <job-id> <request>` (or pass `followUpJobId` to

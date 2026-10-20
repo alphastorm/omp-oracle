@@ -5642,6 +5642,13 @@ function testSharedObservabilityHelpers(): void {
   });
   assert(submitResponse.includes("Oracle job queued: job-observe") && submitResponse.includes("Archive auto-pruned"), "shared observability helpers should format queued submit responses and auto-prune notes consistently");
   assert(submitResponse.includes("Model preset: thinking_light (family=thinking, effort=light)"), "submit responses should disclose the resolved oracle model preset snapshot for transparency");
+  assert(submitResponse.includes("Queue position: 2 of 3") && submitResponse.includes("The job will start automatically when capacity is available."), "queued submit responses should retain queue position and automatic-start guidance");
+  for (const queued of [false, true]) {
+    const submitJob = { ...job, id: `job-observe-${queued ? "queued" : "dispatched"}` };
+    const response = formatOracleSubmitResponse(submitJob, { autoPrunedPrefixes: [], queued });
+    assert(/\bdo not poll\b/i.test(response), "dispatched and queued submit responses must forbid polling");
+    assert(response.split("\n").some((line) => /\boracle_read\b/.test(line) && line.includes(`jobId "${submitJob.id}"`)), "dispatched and queued submit responses must name oracle_read with that job's id");
+  }
   const grokSubmitResponse = formatOracleSubmitResponse({
     ...job,
     id: "job-observe-grok",

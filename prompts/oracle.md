@@ -12,6 +12,7 @@ Hard requirements:
 - If the user explicitly says ChatGPT Instant or Instant, use provider `chatgpt` and preset `instant`; never switch that request to Grok.
 - If a required tool call is unavailable or fails, stop and report that exact blocker instead of fabricating progress.
 - After a successful or queued `oracle_submit`, your final answer must be only a terse dispatch summary with the job id and response path. Do not ask questions, offer to watch/poll/read, list next steps, or continue working.
+- Do not poll while waiting for the one-time completion wake-up in this session. If the user later asks for status, call `oracle_read` with the submitted `jobId`.
 
 Required workflow:
 1. Call `oracle_preflight` immediately. If the user says to use Grok, pass `provider: "grok"` to `oracle_preflight`. If the user says to use ChatGPT, pass `provider: "chatgpt"`. If the user says to use ChatGPT Instant, pass `provider: "chatgpt"` and later call `oracle_submit` with `preset: "instant"`. If the user explicitly provides an existing ChatGPT conversation id or `https://chatgpt.com/c/...` URL, pass it as `chatGptConversationId` to `oracle_preflight` and force `provider: "chatgpt"`. Omit `chatGptConversationId` unless the user explicitly asks to continue an existing browser-created ChatGPT thread.
@@ -23,7 +24,7 @@ Required workflow:
 7. Choose archive inputs for the oracle job.
 8. Craft a concise but complete oracle prompt for the selected web provider.
 9. Call `oracle_submit` with the prompt and exact archive inputs. Include `chatGptConversationId` only when the user explicitly provided an existing ChatGPT conversation id/URL to continue; otherwise omit it so the default remains a fresh oracle thread. Do not ask for confirmation before this submit step unless `oracle_preflight` or `oracle_submit` returns a blocker that requires user action.
-10. Stop immediately after dispatching the oracle job. “Stop” means no follow-up questions, no offers to poll/watch/read, and no extra next-step list.
+10. Stop immediately after dispatching the oracle job.
 
 Oracle provider/model (`oracle_submit`):
 - If the user says to use Grok (for example “Use the oracle to Grok about ...”), pass **`provider: "grok"`**. Grok currently supports only **`mode: "heavy"`**; omit `mode` unless the user explicitly says Heavy.

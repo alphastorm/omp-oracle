@@ -8,6 +8,7 @@ history is kept below the divider.
 
 ### Changed
 - the Ubuntu platform-smoke image installs `agent-browser@0.39.1` instead of `0.29.1`, which predates the documented `0.35.0` floor for relay mode; `0.35.0` remains the minimum
+- `oracle_submit` told callers not to poll but named no way to check status, which an isolated-session agent flagged on 2026-10-20 (job `72a0c013`). Dispatched and queued replies keep the no-polling instruction and now name `oracle_read` with the job id for a status check the user asks for before the completion wake-up; the tool guidelines, `/oracle` and `/oracle-followup` templates, and docs say the same
 
 ### Fixed
 - with `agent-browser` 0.39, `/oracle-auth` could not be rerun after a challenge. A challenge leaves the auth browser open on purpose; the rerun closed that session and relaunched on the same session name while its daemon was still exiting, and 0.39 refuses to re-send a command that reached a dying daemon (`Invalid response: EOF … it may or may not have run, so it was not retried`), where 0.35 had re-sent it silently. The retry taken from upstream 0.7.22 matched only the earlier `Could not configure browser` message. `/oracle-auth` now closes the auth session only when the driver lists it and relaunches once the driver stops listing it, the rule job teardown already followed; both now share it

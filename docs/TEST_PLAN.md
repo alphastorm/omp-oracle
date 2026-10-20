@@ -169,6 +169,7 @@ echo "TEST_ROOT=$TEST_ROOT"
 **Test 1 (whole-repo archive default exclusions):**
 
 - Expected: the isolated `pi` session loads the local extension and `oracle_submit` creates a job and archive path under `$TEST1_JOBS`.
+- Expected: the submit response forbids polling, describes the one-time completion wake-up in the submitting session, and names `oracle_read` with that job's `jobId` for user-requested status checks. `sanity:oracle` covers both dispatched and queued responses.
 - Expected: expanding `.` excludes `.pi/`, `.oracle-context/`, `.cursor/`, and `.scratchpad.md` (`MISSING`), and includes normal repository files such as `README.md` (`FOUND`).
 - Why the fixture writes `.oracle-seed-generation`: this smoke test does not require `/oracle-auth`, but `oracle_submit` rejects missing or unverified seed profiles before archiving; an empty marker (`touch`) counts as unverified and is rejected at submit time. With a timestamped marker-only seed profile, the worker fails later due to missing real auth, leaving the archive on disk for inspection.
 

@@ -11,6 +11,7 @@ Hard requirements:
 - Do not claim preflight, auth, archive prep, or submission happened unless the matching tool call actually happened in this turn.
 - If a required tool call is unavailable or fails, stop and report that exact blocker instead of fabricating progress.
 - After a successful or queued `oracle_submit`, your final answer must be only a terse dispatch summary with the job id and response path. Do not ask questions, offer to watch/poll/read, list next steps, or continue working.
+- Do not poll while waiting for the one-time completion wake-up in this session. If the user later asks for status, call `oracle_read` with the submitted `jobId`.
 
 Required workflow:
 1. Parse the user request as `<job-id> <follow-up request>`.

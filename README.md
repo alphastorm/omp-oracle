@@ -165,7 +165,7 @@ Agent-facing tools:
 - `oracle_preflight` — checks persisted-session readiness, local prerequisites, and global active/queued job capacity before expensive context gathering.
 - `oracle_auth` — runs the `/oracle-auth` flow for agents; agent callers can use `oracle_auth({})` once before retrying a stale-auth submission.
 - `oracle_submit` — builds the archive and dispatches or queues the job; `chatGptConversationId` is optional and only for continuing an explicitly named ChatGPT browser thread.
-- `oracle_read` — Agent callers can use `oracle_read({ jobId })` to read saved output in-turn, or `oracle_read({ jobId, action: "recollect" })` to retry collection of a completed turn without resending the prompt. Failed jobs include `errorCode` and `prompt-send-state`, and completed turns report `generationStatus`, `collectionStatus`, and `response.capture.json`; see [Operations → Troubleshooting](docs/OPERATIONS.md#troubleshooting).
+- `oracle_read` — Agent callers can use `oracle_read({ jobId })` for status when the user asks before the completion wake-up, or to read saved output in-turn. Do not poll; otherwise wait for the one-time wake-up in the submitting session. Use `oracle_read({ jobId, action: "recollect" })` to retry collection of a completed turn without resending the prompt. Failed jobs include `errorCode` and `prompt-send-state`, and completed turns report `generationStatus`, `collectionStatus`, and `response.capture.json`; see [Operations → Troubleshooting](docs/OPERATIONS.md#troubleshooting).
 - `oracle_cancel` — cancels a queued or active job by id.
 
 Jobs submitted by a helper from another project are discoverable by id within the same

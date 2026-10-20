@@ -974,7 +974,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
       "Pass chatGptConversationId only when the user explicitly provides an existing ChatGPT conversation id/URL; otherwise omit it for a fresh thread.",
       "If auth is stale, call oracle_auth at most once before retrying. If oracle_auth fails, stop and report it.",
       "If details.error.code is 'archive_too_large', retry once with a smaller archive using the reported size/pruning details; do not loop.",
-      "After a successful or queued oracle_submit, stop and report only the dispatch summary. Do not keep working while the oracle job runs.",
+      "After a successful or queued oracle_submit, stop and report only the dispatch summary. Do not keep working while the oracle job runs, and do not poll; if the user later asks for status, call oracle_read with the returned jobId.",
       "For ChatGPT, use preset only when the user requests model control; otherwise omit it. For Grok, pass provider='grok' and omit preset.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,

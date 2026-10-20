@@ -120,6 +120,9 @@ dispatch prompt instructs the agent to:
 6. craft the prompt, call `oracle_submit`, and end the turn with a terse dispatch summary so the session returns to idle for
    the completion wake-up
 
+Dispatched and queued submit responses forbid polling and name `oracle_read` with the job's `jobId` for a later
+user-requested status check before the one-time completion wake-up in the submitting session.
+
 ### `/oracle-auth`
 
 On the default isolated-seed transport, `/oracle-auth` runs under the global auth-maintenance lock:
