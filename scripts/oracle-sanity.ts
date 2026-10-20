@@ -382,16 +382,18 @@ async function testBrowserProfileHelpers(): Promise<void> {
 
     const passwordEnv = {
       SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD: "chrome-secret",
+      SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD: "chromium-secret",
       SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD: "brave-secret",
       KEEP_ME: "yes",
     } as NodeJS.ProcessEnv;
     const scrubbedChildEnv = sweetCookieSafeStoragePasswordScrubbedEnv(passwordEnv);
     assert(passwordEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === "chrome-secret", "child-env scrubbing should not mutate the original env object");
     assert(scrubbedChildEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === undefined, "child env should omit Chrome safe-storage passwords");
+    assert(scrubbedChildEnv.SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD === undefined, "child env should omit the Chromium safe-storage password sweet-cookie 0.4 reads for Chromium profiles");
     assert(scrubbedChildEnv.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD === undefined, "child env should omit Brave safe-storage passwords");
     assert(scrubbedChildEnv.KEEP_ME === "yes", "child env scrubbing should preserve unrelated environment variables");
     scrubSweetCookieSafeStoragePasswordEnv(passwordEnv);
-    assert(passwordEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === undefined, "in-process scrubbing should remove Chrome safe-storage passwords after cookie import");
+    assert(passwordEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === undefined && passwordEnv.SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD === undefined, "in-process scrubbing should remove every safe-storage password after cookie import");
     assert(passwordEnv.KEEP_ME === "yes", "in-process scrubbing should preserve unrelated environment variables");
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });

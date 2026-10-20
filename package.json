@@ -86,7 +86,7 @@
     "verify:oracle:platform": "npm run check:oracle-extension && npm run check:platform-smoke && npm run sanity:oracle:platform && npm run pack:check"
   },
   "dependencies": {
-    "@steipete/sweet-cookie": "^0.3.0"
+    "@steipete/sweet-cookie": "^0.4.4"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

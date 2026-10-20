@@ -61,8 +61,8 @@ narrower paths when the whole repository should not leave the machine.
 - Each job clones the seed into a private runtime profile under `browser.runtimeProfilesDir` and
   deletes the clone in `finally`. Runtime and conversation leases prevent two jobs from sharing a
   runtime profile or a provider thread.
-- Safe-storage password overrides (`SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`,
-  `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_EDGE_SAFE_STORAGE_PASSWORD`) are
+- Safe-storage password overrides (every `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` variable, such as
+  `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` or `SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD`) are
   scrubbed from the environment before browser, helper, or archive subprocesses start.
 - Seed and runtime profiles hold live provider sessions. Treat `browser.authSeedProfileDir` and
   `browser.runtimeProfilesDir` as credential stores: keep them on an encrypted disk and do not

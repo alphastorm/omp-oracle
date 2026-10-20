@@ -74,8 +74,10 @@ Per-release changes are recorded in [Changelog](../CHANGELOG.md).
   and jobs-directory fixes were already covered by the fork. Re-checked on 2026-10-20, with upstream
   `main` still at `d658a98`: the fork has since moved to its own Pi 1.3 development baseline
   (`^1.3.0`, without upstream's pinned 1.0.0 and shrinkwrap; its `before_agent_start` guard now
-  matches upstream's `"prompt" in event` form) and has its own trusted-publishing release workflow
-  in place of upstream's auto-publish CI. The previous sync, upstream
+  matches upstream's `"prompt" in event` form), has its own trusted-publishing release workflow in
+  place of upstream's auto-publish CI, and reads Linux Chromium `v11` cookies through
+  `@steipete/sweet-cookie` 0.4.4, which closes the gap upstream's native importer filled. The
+  previous sync, upstream
   `4d96ffc` (2026-09-22), imported cancellation-race and protected-profile test improvements plus
   a native Pi status smoke while keeping runtime code, package identity, CI, and release gates
   fork-owned.

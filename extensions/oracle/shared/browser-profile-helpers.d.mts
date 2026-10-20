@@ -16,12 +16,6 @@ export interface KnownBrowserUserDataPathMatchDetails {
   configuredPath?: string;
 }
 
-export const SWEET_COOKIE_SAFE_STORAGE_PASSWORD_ENV_NAMES: readonly [
-  "SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD",
-  "SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD",
-  "SWEET_COOKIE_EDGE_SAFE_STORAGE_PASSWORD",
-];
-
 export function expandHomePath(value: string, homeDir?: string): string;
 export function normalizedAbsolutePath(value: string, options?: BrowserPathOptions): string;
 export function linuxConfigHome(options?: BrowserPathOptions): string;

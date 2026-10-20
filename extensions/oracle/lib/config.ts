@@ -681,7 +681,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
     throw new Error(
       "Invalid oracle config: auth.chromiumKeychain is macOS-only. " +
         "On Linux, set auth.chromeCookiePath/auth.chromeProfile without auth.chromiumKeychain and use @steipete/sweet-cookie's " +
-        "SWEET_COOKIE_LINUX_KEYRING, SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD, or SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD options for encrypted Chromium cookies.",
+        "SWEET_COOKIE_LINUX_KEYRING or the safe-storage password for the profile's browser (SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD, SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD, or SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD) for encrypted Chromium cookies.",
     );
   }
 

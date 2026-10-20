@@ -486,7 +486,7 @@ function formatAuthFailureGuidance(error) {
     );
     if (process.platform === "linux") {
       lines.push(
-        "5. If Chromium encrypted-cookie warnings mention the Linux keyring, install/configure secret-tool or kwallet-query, or set SWEET_COOKIE_LINUX_KEYRING / SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD / SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD for this run before rerunning.",
+        "5. If Chromium encrypted-cookie warnings mention the Linux keyring, install/configure secret-tool or kwallet-query, or set SWEET_COOKIE_LINUX_KEYRING or the safe-storage password for the profile's browser (SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD, SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD, or SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD) for this run before rerunning.",
       );
     }
   }

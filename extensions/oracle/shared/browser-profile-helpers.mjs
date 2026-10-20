@@ -12,11 +12,10 @@ import { basename, delimiter, dirname, isAbsolute, join, normalize, resolve } fr
 /** @typedef {import("./browser-profile-helpers.d.mts").BrowserPathOptions} BrowserPathOptions */
 /** @typedef {import("./browser-profile-helpers.d.mts").ExecutableSearchOptions} ExecutableSearchOptions */
 
-export const SWEET_COOKIE_SAFE_STORAGE_PASSWORD_ENV_NAMES = Object.freeze([
-  "SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD",
-  "SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD",
-  "SWEET_COOKIE_EDGE_SAFE_STORAGE_PASSWORD",
-]);
+// Every sweet-cookie safe-storage override matches this name: Chrome, Chromium (read for Chromium
+// profiles since sweet-cookie 0.4), Brave, Edge, and any browser it adds later. None may reach a
+// browser, helper, or archive subprocess.
+const SWEET_COOKIE_SAFE_STORAGE_PASSWORD_ENV_NAME = /^SWEET_COOKIE_\w+_SAFE_STORAGE_PASSWORD$/i;
 
 const LINUX_COOKIE_IMPORT_USER_DATA_RELATIVE_DIRS = Object.freeze([
   ["google-chrome"],
@@ -395,8 +394,8 @@ export function detectDefaultBrowserProfileSource(platform = process.platform, o
  * @returns {void}
  */
 export function scrubSweetCookieSafeStoragePasswordEnv(env = process.env) {
-  for (const name of SWEET_COOKIE_SAFE_STORAGE_PASSWORD_ENV_NAMES) {
-    delete env[name];
+  for (const name of Object.keys(env)) {
+    if (SWEET_COOKIE_SAFE_STORAGE_PASSWORD_ENV_NAME.test(name)) delete env[name];
   }
 }
 

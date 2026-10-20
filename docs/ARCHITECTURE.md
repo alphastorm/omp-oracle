@@ -315,8 +315,10 @@ Scope and trust invariants:
 - **Cookie import backends.** Default `/oracle-auth` cookie import uses `@steipete/sweet-cookie`'s Chrome/Chromium backend
   (Edge and Firefox backends are not selected). On Linux, the importer auto-detects Google Chrome, Chromium, Chromium Browser,
   and Brave roots under `${XDG_CONFIG_HOME:-~/.config}` and decrypts cookies via `secret-tool`, `kwallet-query`/`dbus-send`,
-  `SWEET_COOKIE_LINUX_KEYRING=gnome|kwallet|basic`, or the `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` and
-  `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` overrides (scrubbed from the environment before spawning browser subprocesses).
+  `SWEET_COOKIE_LINUX_KEYRING=gnome|kwallet|basic`, or the safe-storage password override for the profile's browser
+  (`SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD`, or
+  `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD`). Every `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` variable is scrubbed from the
+  environment before browser, helper, or archive subprocesses spawn.
 - **macOS alternate Keychain importer.** `auth.chromiumKeychain` (`account`, `services`, optional `label`) is a macOS-only
   opt-in source for Chromium-family browsers outside the default importer and must be paired with `auth.chromeCookiePath`
   (partial config is rejected so `/oracle-auth` never falls back silently to another profile; Linux configs leave

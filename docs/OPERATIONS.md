@@ -192,8 +192,12 @@ helpers:
 - `SWEET_COOKIE_LINUX_KEYRING=gnome|kwallet|basic` selects GNOME/libsecret, KDE KWallet, or no keyring
   probing.
 - GNOME probing shells out to `secret-tool`; KDE probing shells out to `kwallet-query` and `dbus-send`.
-- `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` and `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` bypass keyring
-  probing when you already know the browser safe-storage password.
+- A safe-storage password override bypasses keyring probing when you already know the browser's password.
+  Sweet Cookie reads the one named for the profile's browser: `SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD`
+  for a profile under a Chromium root (`~/.config/chromium`, or the Snap or Flatpak Chromium root),
+  `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` for Brave, and `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`
+  for Google Chrome and any other path. Before `omp-oracle` moved to Sweet Cookie 0.4, Chromium profiles used
+  Chrome's keyring entry and override.
 
 Do not put safe-storage passwords in project config or persistent shell startup files. Prefer keyring
 helpers; when you pass an environment override for one `/oracle-auth` run, Oracle scrubs
@@ -297,8 +301,8 @@ the built-in generic Chromium cookie reader and prompts for macOS Keychain acces
 - Confirm the selected provider is signed in inside the browser profile named by `auth.chromeProfile`.
 - For custom Chromium cookie sources, verify `auth.chromeCookiePath` points at that profile's `Cookies`
   SQLite database. On macOS, verify `auth.chromiumKeychain.services` names the browser's safe-storage
-  Keychain service. On Linux, leave `auth.chromiumKeychain` unset and configure `SWEET_COOKIE_LINUX_KEYRING`,
-  `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`, or `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD`.
+  Keychain service. On Linux, leave `auth.chromiumKeychain` unset and configure `SWEET_COOKIE_LINUX_KEYRING` or
+  the safe-storage password override for the profile's browser ([Linux](#linux)).
 - If the provider is half-logged-in or waiting on a challenge, finish sign-in in the headed auth browser (or
   in Chrome for relay and managed modes), then rerun `/oracle-auth` (or call `oracle_auth({})` once from an
   agent turn).
@@ -502,7 +506,7 @@ Defaults and validation live in `DEFAULT_CONFIG` and `validateOracleConfig` in
 | `PI_ORACLE_MANAGED_BROWSER_IDLE_MS` | `120000` (2 minutes) | Positive integer milliseconds before the managed-browser keeper quits an Oracle-started Chrome with no jobs or pages |
 | `AGENT_BROWSER_PATH` | `/opt/homebrew/bin/agent-browser`, `/usr/local/bin/agent-browser`, or `PATH` | `agent-browser` executable path override |
 | `SWEET_COOKIE_LINUX_KEYRING` | Unset | `@steipete/sweet-cookie` Linux keyring selection (`gnome`, `kwallet`, or `basic`) |
-| `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_EDGE_SAFE_STORAGE_PASSWORD` | Unset | One-run safe-storage password overrides; scrubbed from subprocess environments before browser or helper commands run |
+| `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_EDGE_SAFE_STORAGE_PASSWORD` | Unset | One-run safe-storage password overrides; every `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` variable is scrubbed from subprocess environments before browser or helper commands run |
 | `XDG_CONFIG_HOME` | `~/.config` | Linux config root searched when auto-detecting Chrome, Chromium, and Brave profiles |
 | `PI_CODING_AGENT_DIR` | Host agent directory (`~/.omp/agent` or `~/.pi/agent`) | Agent directory fallback used by the auth worker when host `configLoad` metadata is absent |
 | `PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS`, `PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS`, `PI_ORACLE_AUTH_KILL_GRACE_MS`, `PI_ORACLE_AUTH_COOKIE_READ_TIMEOUT_MS` | `30000`, `10000`, `2000`, `30000` | Positive integer millisecond timeouts for `/oracle-auth` browser commands, close, kill grace, and cookie reads |
