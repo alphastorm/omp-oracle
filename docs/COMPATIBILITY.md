@@ -18,9 +18,9 @@ Companion docs: [Operations](OPERATIONS.md) · [Release](RELEASE.md) · [Test pl
 
 | Host | Status | Evidence |
 | --- | --- | --- |
-| `pi` 0.80.9 (baseline) | **Validated upstream**; **required by the release gate** | Upstream `pi-oracle` 0.7.19 and 0.7.20 release gates and the fork's Crabbox checks run against `pi` 0.80.9 (`devDependencies` `^0.80.9`); entries in the [release ledger](RELEASE.md#evidence-ledger) |
-| `pi` newer than 0.80.9 | **Declared** | `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox` are optional wildcard peers, so npm does not block newer host releases |
-| `pi` older than 0.80.9 | **Declared** | Not blocked by package metadata and not exercised by the release gate |
+| `pi` 1.3.0 (baseline) | **Required by the release gate** | The local gate (the three typechecks, the sanity harness, and the native `pi` status smoke) and the Crabbox `real-extension` lanes run against the `pi` development baseline (`devDependencies` `^1.3.0`); releases after `0.4.6` record it in the [release ledger](RELEASE.md#evidence-ledger) |
+| `pi` 0.80.9 | **Validated upstream**; **Observed** through `0.4.6` | Upstream `pi-oracle` 0.7.19 and 0.7.20 release gates and the fork's release gate through `0.4.6` ran against `pi` 0.80.9; entries in the [release ledger](RELEASE.md#evidence-ledger) |
+| Other `pi` versions | **Declared** | `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox` are optional wildcard peers, so npm does not block other host releases |
 | Oh My Pi | **Observed**; **required by the release gate** | Exercised through source-loaded isolated Oh My Pi print-mode sessions (`omp … --no-extensions -e`, see the [release runner](RELEASE.md#chatgpt-preset-proof)) for the eight-preset ChatGPT release proof, through a registry-installed package job recorded per release in the [release ledger](RELEASE.md#fork-evidence-omp-oracle) (recorded on Oh My Pi 18.2.6, 18.2.7, and 18.2.11), and with `omp install --dry-run` resolving this checkout as `omp-oracle` |
 | Oh My Pi hosts without Pi's trust exports | **Observed** (unit test) | Supported by design: `scripts/oracle-host-compat.test.mjs` links the config loader against a host API without `hasTrustRequiringProjectResources` or `ProjectTrustStore`; project overrides then require an explicit host trust decision |
 

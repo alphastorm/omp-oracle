@@ -30,7 +30,7 @@ session that asked gets one wake-up when it lands.
 [ci]: https://github.com/alphastorm/omp-oracle/actions/workflows/ci.yml
 [ci-badge]: https://img.shields.io/github/actions/workflow/status/alphastorm/omp-oracle/ci.yml?branch=main&label=CI&labelColor=0B0E11
 [compat]: docs/COMPATIBILITY.md
-[pi-badge]: https://img.shields.io/badge/pi%20baseline-0.80.9-1C232B?labelColor=0B0E11
+[pi-badge]: https://img.shields.io/badge/pi%20baseline-1.3.0-1C232B?labelColor=0B0E11
 [npm]: https://www.npmjs.com/package/omp-oracle
 [npm-badge]: https://img.shields.io/npm/v/omp-oracle?label=npm&color=1C232B&labelColor=0B0E11
 [license]: LICENSE
@@ -280,7 +280,7 @@ See the [Security model](docs/SECURITY.md) and the [Security policy](SECURITY.md
 
 | | Current contract |
 | --- | --- |
-| Hosts | Oh My Pi and `pi`. Pi `0.80.9+` is the suggested tested floor; the `pi` runtime packages are optional wildcard peers, so npm does not block newer hosts |
+| Hosts | Oh My Pi and `pi`. Pi `1.3.0` is the tested baseline (`0.4.6` and earlier were tested on `0.80.9`); the `pi` runtime packages are optional wildcard peers, so npm does not block other host versions |
 | Platforms | macOS and Linux pass the release gate; Windows native is declared and validated upstream, not re-qualified by this fork |
 | Providers | ChatGPT (nine presets) and Grok (`heavy`) |
 | Transports | Isolated seed profile for both providers; existing-Chrome relay and managed browser for ChatGPT |

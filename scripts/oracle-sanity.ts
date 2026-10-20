@@ -1980,6 +1980,8 @@ async function testOraclePromptCommandsInjectHiddenInstructions(): Promise<void>
   const followupInjection = await beforeAgentStart({ prompt: "/oracle-followup job-123 continue" }, tuiCtx) as { message?: { display?: boolean; content?: unknown } };
   const followupMessage = followupInjection?.message;
   assert(followupMessage?.display === false && String(followupMessage.content || "").includes("job-123 continue"), "oracle-followup before-agent injection should hide verbose dispatch instructions while preserving arguments");
+  const wakeupTurn = await beforeAgentStart({ type: "before_agent_start", messageType: "custom", message: { role: "custom", customType: "oracle-wakeup-reminder", content: "/oracle Read README.md", display: false } }, tuiCtx);
+  assert(wakeupTurn === undefined, "a custom-message run (an oracle wake-up on pi 1.2+) carries no prompt and must not be dispatched as an /oracle command");
 
   const usageUi = createUiStub();
   const usageCtx = createExtensionCtx({ getSessionFile: () => "/tmp/oracle-sanity-hidden-prompt-session.jsonl" } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], usageUi, process.cwd(), "tui");
@@ -4316,8 +4318,6 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
   }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
-  assert(readmeSource.includes("Pi `0.80.9+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.80.9 floor without making it a hard peer requirement");
-  assert(designSource.includes("pi` 0.80.9+") || designSource.includes("`pi` 0.80.9+"), "design doc should name the current suggested Pi 0.80.9 compatibility floor");
   assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");

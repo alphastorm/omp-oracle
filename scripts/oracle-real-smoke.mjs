@@ -11,7 +11,6 @@ import { basename, dirname, join, resolve } from "node:path";
 const DEFAULT_PROVIDER = "zai";
 const DEFAULT_MODEL = "glm-5.2";
 const DEFAULT_TIMEOUT_MS = 180_000;
-const EXPECTED_PI_VERSION = "0.80.9";
 const PACKAGE_NAME = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).name;
 
 function usage() {
@@ -364,8 +363,10 @@ async function run(mode = "packed") {
   const assertions = [];
 
   mkdirSync(runDir, { recursive: true });
+  // The smoke proves the project's own pi devDependency, never a stray global `pi` on PATH.
+  const expectedPiVersion = JSON.parse(readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/package.json", import.meta.url), "utf8")).version;
   const piVersion = await mustRun(runDir, "pi-version", piCommand(), ["--version"], { cwd: process.cwd(), env: process.env, timeoutMs: 30_000 });
-  if (piVersion.stdout.trim() !== EXPECTED_PI_VERSION) throw new Error(`real smoke requires Pi ${EXPECTED_PI_VERSION}; found ${piVersion.stdout.trim() || "unknown"}`);
+  if (piVersion.stdout.trim() !== expectedPiVersion) throw new Error(`real smoke requires the installed Pi devDependency ${expectedPiVersion}; found ${piVersion.stdout.trim() || "unknown"}`);
   const tmpRoot = mkdtempSync(join(tmpdir(), "pi-oracle-real-smoke-"));
 
   function assert(id, condition, message) {

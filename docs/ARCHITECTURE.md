@@ -10,9 +10,9 @@ Companion docs: [Documentation](README.md) · [Operations](OPERATIONS.md) · [Se
 
 Compatibility and verification targets:
 
-- Hosts: Oh My Pi and `pi`; `pi` 0.80.9+ is the suggested tested floor for project-trust-aware package and runtime validation
+- Hosts: Oh My Pi and `pi`; `pi` 1.3.0 is the tested baseline for project-trust-aware package and runtime validation
   ([Compatibility](COMPATIBILITY.md) records host observations).
-- Package metadata keeps the `pi` runtime packages as optional wildcard peers so npm does not block newer hosts.
+- Package metadata keeps the `pi` runtime packages as optional wildcard peers so npm does not block other host versions.
 - Session lifecycle uses `session_start` and `session_shutdown` only, with no shims for removed `session_switch` or
   `session_fork` events.
 - Validation: [Test plan](TEST_PLAN.md#which-check-to-run) for local and isolated-session checks,

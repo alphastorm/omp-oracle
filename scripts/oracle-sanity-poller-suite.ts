@@ -723,11 +723,12 @@ async function testPreAssistantSameSessionNotificationPreservesInMemoryHistory(c
   const adopterSessionManager = createPersistedSessionManager("poller-preassistant-history-adopter");
   const targetSessionFile = targetSessionManager.getSessionFile();
   assert(targetSessionFile, "pre-assistant notification test should persist a target session file path");
-  appendUserMessage(targetSessionManager, "check oracle completion");
+  // In-memory-only history: pi 0.99+ writes the session file at the first user message and older
+  // pi at the first assistant message, so the fixture holds only entries every host keeps in memory.
   targetSessionManager.appendCustomEntry("oracle-sanity-preassistant", { stage: "before-assistant" });
   targetSessionManager.appendModelChange("anthropic", "claude-sonnet-4");
   const preFlushSnapshot = SessionManager.open(targetSessionFile, undefined, process.cwd());
-  assert(preFlushSnapshot.getEntries().length === 0, "pre-assistant notification test should start with in-memory-only session history before the first assistant message flushes it");
+  assert(preFlushSnapshot.getEntries().length === 0, "pre-assistant notification test should start with in-memory-only session history that the host has not written yet");
 
   const jobId = await createTerminalJob(config, process.cwd(), targetSessionFile);
   const liveSent: SentMessageLike[] = [];
@@ -772,11 +773,12 @@ async function testPreAssistantBranchedSameSessionSkipsDurableNotification(confi
   const sessionManager = createPersistedSessionManager("poller-preassistant-branched");
   const sessionFile = sessionManager.getSessionFile();
   assert(sessionFile, "pre-assistant branched notification test should persist a session file");
-  const userEntryId = appendUserMessage(sessionManager, "branch before oracle completion");
+  // Custom entries only, so the history stays in memory under every pi persistence rule (see above).
+  const baseEntryId = sessionManager.appendCustomEntry("oracle-sanity-preassistant-base", { stage: "base" });
   sessionManager.appendCustomEntry("oracle-sanity-preassistant-branched", { stage: "before-assistant" });
   const modelEntryId = sessionManager.appendModelChange("anthropic", "claude-sonnet-4");
   const branchedSessionManager = sessionManager;
-  branchedSessionManager.branch(userEntryId);
+  branchedSessionManager.branch(baseEntryId);
   const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
 
   const sent: SentMessageLike[] = [];
