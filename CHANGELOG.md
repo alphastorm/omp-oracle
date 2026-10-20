@@ -4,6 +4,11 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Changed
+- releases publish from GitHub Actions through npm trusted publishing: pushing the `vX.Y.Z` tag runs `.github/workflows/release.yml`, which repeats the local gate on the tagged commit, packs it, and publishes that tarball from a separate job that holds the short-lived OIDC credential and runs no repository or dependency code. No npm token is involved, the maintainer no longer approves each publish in a browser, and versions published this way carry an npm provenance attestation. The live preset proof and Crabbox lanes still pass locally before the tag is pushed. `ci.yml` no longer runs on tags, because the release workflow runs the same gate there
+
 ## 0.4.6 - 2026-10-19
 
 ### Changed

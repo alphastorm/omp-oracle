@@ -80,7 +80,7 @@ format: `type(scope): description`, lowercase imperative.
 
 ## Releases
 
-Publishing runs `npm run release:check` through `prepublishOnly`; see [Release](docs/RELEASE.md) for the release gate, preset proof, and evidence ledger.
+A release passes `npm run release:check` locally; pushing its `vX.Y.Z` tag then publishes it to npm from GitHub Actions through trusted publishing. See [Release](docs/RELEASE.md) for the release gate, preset proof, [publishing](docs/RELEASE.md#publishing), and evidence ledger.
 
 ## Security
 

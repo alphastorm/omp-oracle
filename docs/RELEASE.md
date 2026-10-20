@@ -14,7 +14,8 @@ For everyday validation and choosing which check to run during development, see 
 
 ## Release gate
 
-`npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check` across three stages:
+`npm run release:check` runs the release gate in three stages; `prepublishOnly` runs it too, so a
+local `npm publish` cannot skip it:
 
 1. `npm run verify:oracle` (`npm test` is an alias) — runs, in order: syntax and bundle checks
    (`check:oracle-extension`), platform-smoke invariants (`check:platform-smoke`), helper unit tests
@@ -29,8 +30,9 @@ For everyday validation and choosing which check to run during development, see 
    than source-tree `pi -e` loading. `windows-native` is an available target, not a
    release-required lane; see [Compatibility](COMPATIBILITY.md#platforms-and-runtime).
 
-Hosted CI runs only the local gate (`npm run verify:oracle`). The live preset proof and Crabbox
-matrix run locally in the order above, followed by artifact review.
+Hosted CI runs only the local gate (`npm run verify:oracle`): on `main`, on pull requests, and on
+the release tag before publishing. The live preset proof and Crabbox matrix run locally in the order
+above, followed by artifact review, before the release tag is pushed ([Publishing](#publishing)).
 
 ### ChatGPT preset proof
 
@@ -100,6 +102,44 @@ The real runtime suite (`scripts/oracle-real-smoke.mjs`) defaults to determinist
 - For inner-loop source loading only, use `npm run smoke:real:source`; it is not release proof.
 - Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path.
 - Set `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1` to run the optional second real-agent negative symlink check; `npm run sanity:oracle` covers archive and symlink rejection by default.
+
+## Publishing
+
+Pushing the tag `vX.Y.Z` publishes that commit to npm from
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) through npm
+[trusted publishing](https://docs.npmjs.com/trusted-publishers/). The workflow authenticates with a
+short-lived OIDC token, so no npm token exists and nobody approves the publish in a browser, and npm
+attaches a provenance attestation naming the workflow run and the commit.
+
+- Push the tag only after `npm run release:check` has passed on the tagged commit. The workflow
+  repeats only the local gate; pushing the tag asserts that the preset proof and the Crabbox lanes
+  passed.
+- The `verify` job checks that the tag names the `package.json` version, runs
+  `npm run verify:oracle`, and packs the tarball. The `publish` job, the only one that can obtain the
+  npm credential, checks nothing out and installs nothing: it publishes that tarball. A tarball
+  publish runs no lifecycle scripts, so `prepublishOnly` does not run there.
+- The registry's `dist.shasum` is the one the `verify` job's `npm pack` printed. A local pack of the
+  same commit on another Node release can differ even when the contents match, because the gzip
+  bytes depend on the Node build: for `v0.4.6`, Node 24 and Node 26 produce different shasums from a
+  byte-identical tar. Ledger entries therefore bind the registry tarball to the workflow run and its
+  provenance, not to a local dry run.
+- Release one version at a time: tags for different versions run concurrently.
+
+**One-time setup.** At the first release that uses the workflow, the npm account owner links the
+package to the workflow with npm 11.15 or later. An unused link expires after two days, so create it
+just before pushing that release's tag:
+
+```bash
+npm login --auth-type=web
+npm trust github omp-oracle --file release.yml --repo alphastorm/omp-oracle --allow-publish --yes
+```
+
+After that first trusted publish succeeds, set the package's **Publishing access** on npmjs.com to
+"Require two-factor authentication and disallow tokens"; trusted publishing is unaffected.
+
+**Fallback.** If the workflow cannot publish, an interactive `npm publish` from a clean checkout of
+the tag still works: `prepublishOnly` runs `npm run release:check`, and npm asks for browser approval
+of the login and of the publish.
 
 ## Evidence ledger
 

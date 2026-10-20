@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -11,12 +10,12 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  cancel-in-progress: true
 
 jobs:
   local-gate:
-    # The everyday local gate only. Release proof (live ChatGPT presets, Crabbox matrix) stays
-    # local by design; see docs/RELEASE.md.
+    # The everyday local gate. Tags run release.yml, which repeats this gate before publishing;
+    # the release proof (live ChatGPT presets, Crabbox matrix) stays local. See docs/RELEASE.md.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

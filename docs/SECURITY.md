@@ -127,6 +127,15 @@ narrower paths when the whole repository should not leave the machine.
   sensitive local files; `/oracle-clean <job-id|all>` and age-based retention remove terminal job
   directories.
 
+## Release integrity
+
+- npm releases are published by [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+  through npm trusted publishing: no long-lived npm token exists, and the job that can publish runs
+  no repository or dependency code. Versions published this way carry an npm provenance
+  attestation naming the commit and workflow run, shown on the package page and checked by
+  `npm audit signatures`. `0.4.6` and earlier were published from the maintainer's workstation and
+  carry none.
+
 ## Out of scope
 
 - Untrusted local accounts on the same machine. Jobs, state, profiles, and loopback DevTools or
