@@ -2228,7 +2228,8 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText) {
 // ChatGPT's composer swaps Send for a stop control while a turn is generating, and keeps it until
 // after the turn's text is final. That control (a stop test id in the earlier shell, the submit
 // button labeled Stop in the current one) is the authoritative generation signal; observeTurns reads
-// it in the same evaluation as the turns, and the accessibility labels remain a fallback.
+// rendered controls (not retained hidden workspaces) in the same evaluation as the turns, and the
+// accessibility labels remain a fallback.
 async function waitForChatCompletion(job, baselineAssistantCount) {
   const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
   const conversationId = isGrokJob(job) ? undefined : job.conversationId;

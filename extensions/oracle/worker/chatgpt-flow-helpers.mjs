@@ -24,8 +24,8 @@ export function chatGptStreamingVisible(snapshot) {
  * persistence, so no assistant-action label count is evidence that generation finished: counting
  * "Copy response" never matches a live turn (the job hangs) and matches mid-rehydration, when the
  * turn text is still partially rendered (the job captures a truncated response). `domStopButton`
- * is the DOM reading of CHATGPT_STOP_CONTROL_SELECTOR, which stays present until after the text is
- * final; the accessibility labels remain a fallback for when that markup drifts.
+ * reads rendered matches of CHATGPT_STOP_CONTROL_SELECTOR, excluding retained hidden workspaces;
+ * the accessibility labels remain a fallback for when that markup drifts.
  *
  * @param {{ snapshot: string, domStopButton?: boolean }} args
  * @returns {boolean}

@@ -324,7 +324,10 @@ export function observeConversationTurns({ conversationId, stopSelector, archive
     href,
     conversationId: observed,
     onConversation: true,
-    stopPresent: stopSelector ? Boolean(document.querySelector(stopSelector)) : undefined,
+    // Home can remain mounted in a display:none workspace after send, retaining its old Stop.
+    // Only rendered controls describe the conversation. Layout boxes still exist offscreen and
+    // in background tabs: this must not depend on viewport intersection, focus, or tab visibility.
+    stopPresent: stopSelector ? [...document.querySelectorAll(stopSelector)].some((node) => node.getClientRects().length > 0) : undefined,
     archiveTurnCount: archiveFileName && typeof archiveTurnsOf === 'function' ? archiveTurnsOf(archiveFileName).length : undefined,
     messages: headingMessages.some((message) => message.text) ? headingMessages : nodeMessages,
   };

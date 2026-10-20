@@ -455,6 +455,37 @@ ${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, 
     assert.deepEqual(result, { responseIndex: 1, responseText: 'OWN FINAL ANSWER' }, 'Completion and text come from the job conversation only');
     assert.equal(waited.lifecycleEvents.filter((event) => event.kind === 'navigation').length, 1, 'One breadcrumb per departure');
 
+    // Live 2026-10-20, job 8df0d1e1: navigation from Home left its composer mounted in a
+    // display:none workspace. Its Stop had no layout box and was absent from accessibility,
+    // while the visible conversation had finished (Copy / Rate response / Regenerate response).
+    // Replay the retained workspace, not a timer that merely removes the stale control.
+    const hiddenStopPage = `<!doctype html><div class="Workspace-IfYAxV" style="display:none!important">
+<form><div class="ComposerLayoutFooter-_8IVRO"><button type="button" aria-label="Stop"><svg><path d="M4 4H16V16H4Z"></path></svg></button></div></form></div>
+<main>${exchange('h0', 'Marker prompt', 'hidden-stop-0', 'STALE_STOP_DIAGNOSTIC_OK')}
+<button aria-label="Copy"></button><button aria-label="Rate response"></button><button aria-label="Regenerate response"></button></main>`;
+    pages.set('/c/hidden-stop', hiddenStopPage);
+    await navigate(`${origin}/c/hidden-stop`);
+    const hiddenStopJob = { ...navJob, id: 'hidden-stop', conversationId: 'hidden-stop', chatUrl: `${origin}/c/hidden-stop`,
+      config: { worker: { pollMs: 20, completionTimeoutMs: 1000 } } };
+    const beforeHiddenCompletion = opens.length;
+    const hiddenCompletion = await waitForCompletion(hiddenStopJob, 0);
+    assert.deepEqual(hiddenCompletion.result, { responseIndex: 0, responseText: 'STALE_STOP_DIAGNOSTIC_OK' },
+      'A non-rendered Home composer must not hold a finished conversation until the stale-stop reload');
+    assert.equal(opens.length - beforeHiddenCompletion, 1, 'Only normal committed-turn reconciliation reloads the conversation');
+
+    // A hidden match can precede a real generating control. Offscreen is not non-rendered:
+    // polling must still wait with unchanged text, no text during thinking, and Deep Research.
+    await evaluate(`document.body.insertAdjacentHTML('beforeend', '<button id="live-stop" aria-label="Stop" style="position:absolute;left:-10000px">Stop</button>')`);
+    for (const [text, tool] of [['UNCHANGED PARTIAL', undefined], ['', undefined], ['Deep Research has started.', 'deep_research']]) {
+      await evaluate(`document.querySelector('[data-chatgpt-selection-message-id="hidden-stop-0"]').textContent=${JSON.stringify(text)}`);
+      await assert.rejects(waitForCompletion({ ...hiddenStopJob, selection: { provider: 'chatgpt', tool },
+        config: { worker: { pollMs: 20, completionTimeoutMs: 150 } } }, 0), /Timed out waiting for ChatGPT response completion/,
+      'A rendered stop remains authoritative, regardless of action buttons or text stability');
+    }
+    await evaluate(`document.querySelector('#live-stop').remove()`);
+    assert.equal((await evaluate(observeConversationExpression({ conversationId: 'hidden-stop', stopSelector: CHATGPT_STOP_CONTROL_SELECTOR }))).stopPresent, false);
+    console.log('Hidden-workspace stop replay: prompt completion; active, empty-thinking, and research turns still wait.');
+
     // A capture that cannot reach the bound turn saves nothing, least of all text streamed from
     // another conversation, and records that recollection (never resubmission) recovers it.
     const navDir = join(root, 'nav-job');
