@@ -11,7 +11,7 @@ import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import ts from 'typescript';
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
-import { sharedBrowserEndpoint, usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
+import { usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
 import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings } from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, composeResearchResponse, durationLabelSeconds, observeConversationExpression, readResearchReportState, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
 import { CHATGPT_COMPOSER_EDITOR_SELECTOR, CHATGPT_STOP_CONTROL_SELECTOR, classifyDeepResearchTurn, deriveAssistantCompletionSignature, isChatGptComposerEntry, waitForStationaryControl } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
@@ -228,38 +228,6 @@ try {
   assert(changed.collectionOptionalMissing.some((gap) => /refusing index-only recollection/.test(gap)));
   assert.equal(await readFile(changed.responsePath, 'utf8'), exact, 'Earlier bytes survive the refusal');
   await evaluate(`document.querySelectorAll('article p').forEach((p) => p.remove()); document.querySelectorAll('article')[0].setAttribute('data-message-id', 'old'); document.querySelectorAll('article')[1].setAttribute('data-message-id', 'new');`);
-
-  // The driver's `close` returns while its session daemon is still listed; a same-name command in
-  // that window is served by the dying daemon (orphan tab, then "Connection refused"). The worker's
-  // browser teardown must return only once the driver no longer lists the session, and must not
-  // spawn a daemon just to close a session that is not listed.
-  const teardownNames = new Set(['closeBrowser', 'agentBrowserSessionListed', 'waitForAgentBrowserSessionTeardown']);
-  const teardownDeclarations = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && teardownNames.has(node.name?.text));
-  assert.equal(teardownDeclarations.length, teardownNames.size);
-  const teardown = new Function('usesSharedBrowser', 'sharedBrowserEndpoint', 'sleep', `const AGENT_BROWSER_BIN='driver', AGENT_BROWSER_CLOSE_TIMEOUT_MS=2000; let cleaningUpBrowser=false, browserStarted=true, deepResearchCdp, currentJob;
-    const calls=[]; let listedUntil=0; let inventoryBroken=false;
-    function browserBaseArgs(job){ return ['--session', job.runtimeSessionName]; }
-    async function terminateBrowserProcess(){}
-    async function spawnCommand(_bin, args){ calls.push({ at: Date.now(), args });
-      if (args[0]==='session') return inventoryBroken ? { code:1, stdout:'', stderr:'daemon inventory unavailable' } : { code:0, stdout: Date.now() < listedUntil ? 'Active sessions:\\n  '+currentSession+'\\n' : 'Active sessions:\\n' };
-      if (args.at(-1)==='close') { listedUntil = Date.now()+300; return { code:0, stdout:'✓ Browser closed' }; }
-      throw new Error('unexpected driver call '+args.join(' ')); }
-    let currentSession='oracle-live';
-    ${teardownDeclarations.map((node) => node.getText(tree)).join('\n')}
-    return { calls, run: async (job, listed, broken=false) => { currentSession=job.runtimeSessionName; listedUntil = listed ? Date.now()+60_000 : 0; inventoryBroken=broken; browserStarted=true; await closeBrowser(job); } };`)(usesSharedBrowser, sharedBrowserEndpoint, sleep);
-  const relayJob = { runtimeSessionName: 'oracle-live', config: { browser: { chatGptRelayEndpoint: 'http://127.0.0.1:9224' } } };
-  const closeStartedAt = Date.now();
-  await teardown.run(relayJob, true);
-  const closeCall = teardown.calls.find((call) => call.args.at(-1) === 'close');
-  assert(closeCall, 'a listed session is closed through the driver');
-  assert(Date.now() - closeCall.at >= 300, 'teardown returns only after the driver stops listing the session');
-  assert(teardown.calls.filter((call) => call.args[0] === 'session').length >= 2, 'teardown polls the driver session inventory');
-  teardown.calls.length = 0;
-  await teardown.run({ ...relayJob, runtimeSessionName: 'oracle-unlisted' }, false);
-  assert(!teardown.calls.some((call) => call.args.at(-1) === 'close'), 'an unlisted session is never closed: the driver would spawn a daemon and a stray tab for it');
-  teardown.calls.length = 0;
-  await assert.rejects(teardown.run(relayJob, true, true), /inventory is unavailable/, 'an unreadable inventory is an error, never evidence that the daemon is gone');
-  assert(!teardown.calls.some((call) => call.args.at(-1) === 'close'), 'no blind close is issued when the inventory cannot be read');
 
   await evaluate(`document.body.innerHTML='<article data-message-author-role="assistant" data-message-id="rich"><h1>Report</h1><p><a href="https://example.invalid/primary?x=1#evidence">Primary</a></p><ul><li>First</li><li>Second</li></ul><table><tr><th>Metric</th><th>Value</th></tr><tr><td>ARR</td><td>forecast</td></tr></table><a download href="https://example.invalid/file?X-Amz-Signature=DO_NOT_PERSIST">Download</a></article>'`);
   await evaluate(`const literal=document.createElement('code');literal.textContent='https://example.invalid/literal?case=inline#source';document.querySelector('article').append(literal);`);

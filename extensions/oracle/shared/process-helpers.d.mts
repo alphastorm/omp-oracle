@@ -30,6 +30,13 @@ export interface OracleRunCommandResult {
 
 export declare function resolveNodeExecutable(): string;
 export declare function resolveAgentBrowserBinary(env?: Record<string, string | undefined>): string;
+export declare function disableAgentBrowserWebMcp(env?: NodeJS.ProcessEnv): void;
+export declare function closeAgentBrowserSession(
+  binary: string,
+  sessionArgs: string[],
+  sessionName: string,
+  options: { timeoutMs: number; killGraceMs?: number },
+): Promise<boolean>;
 export declare function killProcessTree(child: ChildProcess): void;
 export declare function killProcess(child: ChildProcess): void;
 export declare function runCommand(command: string, args: string[], options?: OracleRunCommandOptions): Promise<OracleRunCommandResult>;

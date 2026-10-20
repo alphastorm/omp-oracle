@@ -4,6 +4,15 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Changed
+- the Ubuntu platform-smoke image installs `agent-browser@0.39.1` instead of `0.29.1`, which predates the documented `0.35.0` floor for relay mode; `0.35.0` remains the minimum
+
+### Fixed
+- with `agent-browser` 0.39, `/oracle-auth` could not be rerun after a challenge. A challenge leaves the auth browser open on purpose; the rerun closed that session and relaunched on the same session name while its daemon was still exiting, and 0.39 refuses to re-send a command that reached a dying daemon (`Invalid response: EOF … it may or may not have run, so it was not retried`), where 0.35 had re-sent it silently. The retry taken from upstream 0.7.22 matched only the earlier `Could not configure browser` message. `/oracle-auth` now closes the auth session only when the driver lists it and relaunches once the driver stops listing it, the rule job teardown already followed; both now share it
+- with `agent-browser` 0.36 or newer, a page that registers WebMCP tools makes the driver append a tool announcement to the text output of `eval`, `get url`, `snapshot`, and `get text`, which the workers parse: the auth probe then reads as invalid and `/oracle-auth` times out. Neither provider's page registers tools today, but the driver enables WebMCP by default in the Chrome it launches, which includes the auth browser. Both workers now run every driver command with `AGENT_BROWSER_NO_WEBMCP=1`, which earlier drivers ignore
+
 ## 0.4.5 - 2026-10-18
 
 ### Added

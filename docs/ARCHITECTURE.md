@@ -130,8 +130,9 @@ On the default isolated-seed transport, `/oracle-auth` runs under the global aut
    the source browser
 3. sweep stale `.staging-*` directories when no auth browser session is active, then create a fresh staged seed profile next
    to `browser.authSeedProfileDir`
-4. launch a headed isolated browser with a dedicated auth `--session` and the staged `--profile`, clear its cookies, and
-   import the provider cookies
+4. close an auth browser that an earlier run left open, only when the driver lists its session, and wait until the driver
+   stops listing it; then launch a headed isolated browser with a dedicated auth `--session` and the staged `--profile`,
+   clear its cookies, and import the provider cookies
 5. open the provider URL and poll the page-state classifier until `authenticated_and_ready`
 6. on success, close the browser so Chrome flushes state, atomically swap the staged directory into
    `browser.authSeedProfileDir` (keeping `*.prev` for rollback), and write a non-empty `.oracle-seed-generation` marker
@@ -206,6 +207,10 @@ For each `submitted` job (`extensions/oracle/worker/run-job.mjs`):
    validated `artifacts/`.
 9. **Teardown.** In `finally`, close the isolated browser and delete `runtimeProfileDir` (or close the pinned tab on shared
    Chrome), release runtime and conversation leases, and promote the next eligible `queued` job.
+
+Both workers (`run-job.mjs` and `auth-bootstrap.mjs`) run every `agent-browser` command with `AGENT_BROWSER_NO_WEBMCP=1`.
+From 0.36 the driver otherwise enables WebMCP in the Chrome it launches and appends page-provided tool announcements to the
+text output of `eval`, `get url`, `snapshot`, and `get text`, which the workers parse; Oracle uses no page tools.
 
 ## Existing-Chrome relay transport
 

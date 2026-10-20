@@ -18,7 +18,7 @@ import {
   runQueuedJobPromotionPass,
 } from "../shared/job-coordination-helpers.mjs";
 import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
-import { killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
+import { closeAgentBrowserSession, disableAgentBrowserWebMcp, killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir, getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
@@ -122,6 +122,7 @@ const AGENT_BROWSER_BIN = resolveAgentBrowserBinary();
 const CHROME_DEVTOOLS_READY_TIMEOUT_MS = 15_000;
 const CP_BIN = process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 scrubSweetCookieSafeStoragePasswordEnv();
+disableAgentBrowserWebMcp();
 
 // Failures callers must tell apart carry a stable code into job.json (errorCode) and tool results.
 class OracleWorkerError extends Error {
@@ -577,25 +578,6 @@ async function terminateBrowserProcess() {
   }
 }
 
-// `agent-browser close` returns before its session daemon exits. A command issued on the same
-// session name during that window is served by the dying daemon and its tab is orphaned, and the
-// next command finds a vanished socket (observed live as "Connection refused"). Only a listed
-// session is closed, and teardown is complete only once the driver no longer lists the session.
-// An unreadable inventory is an error, never evidence of absence.
-async function agentBrowserSessionListed(sessionName) {
-  const result = await spawnCommand(AGENT_BROWSER_BIN, ["session", "list"], { allowFailure: true, timeoutMs: 5_000 });
-  if (result.code !== 0) throw new Error(`agent-browser session inventory is unavailable: ${result.stderr || result.stdout || `exit code ${result.code}`}`);
-  return String(result.stdout || "").split("\n").some((line) => line.trim() === sessionName);
-}
-
-async function waitForAgentBrowserSessionTeardown(sessionName) {
-  const deadline = Date.now() + AGENT_BROWSER_CLOSE_TIMEOUT_MS;
-  while (await agentBrowserSessionListed(sessionName)) {
-    if (Date.now() >= deadline) throw new Error(`agent-browser session ${sessionName} is still active after close`);
-    await sleep(50);
-  }
-}
-
 async function closeBrowser(job) {
   if (cleaningUpBrowser) return;
   deepResearchCdp?.close();
@@ -617,16 +599,7 @@ async function closeBrowser(job) {
         tabCleanupError = error;
       }
     }
-    if (await agentBrowserSessionListed(job.runtimeSessionName)) {
-      const result = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "close"], {
-        allowFailure: true,
-        timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS,
-      });
-      if (result.code !== 0) {
-        throw new Error(result.stderr || result.stdout || `agent-browser close exited with code ${result.code}`);
-      }
-      await waitForAgentBrowserSessionTeardown(job.runtimeSessionName);
-    }
+    await closeAgentBrowserSession(AGENT_BROWSER_BIN, browserBaseArgs(job), job.runtimeSessionName, { timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS });
     if (tabCleanupError) throw tabCleanupError;
   } finally {
     await terminateBrowserProcess();

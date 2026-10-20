@@ -10,7 +10,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import { assertNotKnownBrowserUserDataPath } from "../shared/browser-profile-helpers.mjs";
-import { resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
+import { closeAgentBrowserSession, disableAgentBrowserWebMcp, resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
 import { getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
@@ -62,6 +62,7 @@ let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
 const ORACLE_STATE_DIR = getOracleStateDir();
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const AGENT_BROWSER_BIN = resolveAgentBrowserBinary();
+disableAgentBrowserWebMcp();
 
 function readPositiveIntEnv(name, fallback) {
   const value = process.env[name]?.trim();
@@ -155,13 +156,16 @@ function targetBrowserBaseArgs(options = {}) {
   return args;
 }
 
+// The auth browser can still be open from an earlier run (a challenge leaves it open on purpose),
+// and the relaunch below reuses its session name, so it may start only once the driver has torn
+// that session down.
 async function closeTargetBrowser() {
-  await log(`Closing target browser session ${authSessionName()} if present`);
-  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "close"], {
-    allowFailure: true,
+  await log(`Closing target browser session ${authSessionName()} if the driver lists it`);
+  const closed = await closeAgentBrowserSession(AGENT_BROWSER_BIN, targetBrowserBaseArgs(), authSessionName(), {
     timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS,
+    killGraceMs: AGENT_BROWSER_KILL_GRACE_MS,
   });
-  await log(`close result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
+  await log(closed ? `Closed target browser session ${authSessionName()}` : `Target browser session ${authSessionName()} was not active`);
 }
 
 async function ensureNotSymlink(path, label) {
@@ -271,20 +275,9 @@ async function launchTargetBrowser() {
   await closeTargetBrowser();
   const args = [...targetBrowserBaseArgs({ withLaunchOptions: true, mode: "headed" }), "open", "about:blank"];
   await log(`Launching isolated browser: agent-browser ${JSON.stringify(args)}`);
-  const deadline = Date.now() + AGENT_BROWSER_COMMAND_TIMEOUT_MS;
-  while (true) {
-    const result = await spawnCommand(AGENT_BROWSER_BIN, args, { allowFailure: true, timeoutMs: Math.max(1, deadline - Date.now()) });
-    await log(`launch result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
-    if (result.code === 0) return;
-    const message = result.stderr || result.stdout || "Failed to launch isolated oracle browser";
-    // agent-browser can return from close before its daemon socket disappears. This configure
-    // failure happens before open is dispatched; other launch errors are not safe to retry.
-    if (!/Could not configure browser: Failed to connect: No such file or directory/i.test(message) || Date.now() >= deadline) {
-      throw new Error(message);
-    }
-    await log("Waiting for the closing agent-browser daemon before retrying launch");
-    await sleep(Math.min(250, deadline - Date.now()));
-  }
+  const result = await spawnCommand(AGENT_BROWSER_BIN, args, { allowFailure: true });
+  await log(`launch result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
+  if (result.code !== 0) throw new Error(result.stderr || result.stdout || "Failed to launch isolated oracle browser");
 }
 
 async function streamStatus() {
@@ -924,7 +917,7 @@ async function run() {
       shouldPreserveBrowser = Boolean(error && typeof error === "object" && error.preserveBrowser === true);
       await log(`Auth bootstrap failed: ${error instanceof Error ? error.message : String(error)}`);
       if (!shouldPreserveBrowser) {
-        await closeTargetBrowser().catch(() => undefined);
+        await closeTargetBrowser().catch((closeError) => log(`Target browser close failed: ${closeError instanceof Error ? closeError.message : String(closeError)}`));
       }
       if (profilePlan && !committedProfile && !shouldPreserveBrowser) {
         await rm(profilePlan.stagingDir, { recursive: true, force: true }).catch(() => undefined);

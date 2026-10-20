@@ -1,7 +1,7 @@
 // Purpose: Provide shared process-identity and termination helpers for oracle runtime, worker, and queue coordination.
-// Responsibilities: Read stable process start identities, detect liveness, wait for freshly spawned processes, and terminate tracked processes safely.
+// Responsibilities: Read stable process start identities, detect liveness, wait for freshly spawned processes, terminate tracked processes safely, and run and close agent-browser driver sessions.
 // Scope: Local process coordination only; job-state mutation and queue semantics stay in higher-level helpers.
-// Usage: Imported by lib/jobs.ts, lib/runtime.ts, worker/run-job.mjs, and shared state helpers.
+// Usage: Imported by lib/jobs.ts, lib/runtime.ts, worker/run-job.mjs, worker/auth-bootstrap.mjs, and shared state helpers.
 // Invariants/Assumptions: Process identity is validated with `ps -o lstart=` to defend against PID reuse on macOS.
 
 import { spawn, execFileSync } from "node:child_process";
@@ -117,6 +117,54 @@ export function resolveAgentBrowserBinary(env = process.env) {
   return [env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
     (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
   ) || "agent-browser";
+}
+
+/**
+ * Turn off agent-browser's experimental WebMCP support for every driver command this process
+ * runs. From 0.36 the driver enables WebMCP in the Chrome it launches and appends page-provided
+ * tool announcements to the text output of `eval`, `get url`, `snapshot`, and `get text`, which the
+ * workers parse. Oracle uses no page tools, and earlier drivers ignore the variable.
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function disableAgentBrowserWebMcp(env = process.env) {
+  env.AGENT_BROWSER_NO_WEBMCP = "1";
+}
+
+/**
+ * Whether the driver lists `sessionName` as an active session. An unreadable inventory is an
+ * error, never evidence of absence.
+ * @param {string} binary
+ * @param {string} sessionName
+ * @returns {Promise<boolean>}
+ */
+async function agentBrowserSessionListed(binary, sessionName) {
+  const result = await runCommand(binary, ["session", "list"], { allowFailure: true, timeoutMs: 5_000 });
+  if (result.code !== 0) throw new Error(`agent-browser session inventory is unavailable: ${result.stderr || result.stdout || `exit code ${result.code}`}`);
+  return result.stdout.split("\n").some((line) => line.trim() === sessionName);
+}
+
+/**
+ * Close a session the driver lists, and return only once it no longer lists it. `close` returns
+ * before the session daemon exits, and a command sent on the same session name in that window
+ * reaches the dying daemon: its tab is orphaned, the command fails to connect, or (agent-browser
+ * 0.39) it is dropped as "may or may not have run". A session the driver does not list is never
+ * closed, since `close` would spawn a daemon for it.
+ * @param {string} binary
+ * @param {string[]} sessionArgs `--session <name>` plus the session's connection flags
+ * @param {string} sessionName
+ * @param {{ timeoutMs: number; killGraceMs?: number }} options bounds both the close command and the wait for teardown
+ * @returns {Promise<boolean>} whether a listed session was closed
+ */
+export async function closeAgentBrowserSession(binary, sessionArgs, sessionName, { timeoutMs, killGraceMs }) {
+  if (!(await agentBrowserSessionListed(binary, sessionName))) return false;
+  const result = await runCommand(binary, [...sessionArgs, "close"], { allowFailure: true, timeoutMs, killGraceMs });
+  if (result.code !== 0) throw new Error(result.stderr || result.stdout || `agent-browser close exited with code ${result.code}`);
+  const deadline = Date.now() + timeoutMs;
+  while (await agentBrowserSessionListed(binary, sessionName)) {
+    if (Date.now() >= deadline) throw new Error(`agent-browser session ${sessionName} is still active after close`);
+    await sleep(50);
+  }
+  return true;
 }
 
 /**
