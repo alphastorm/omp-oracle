@@ -2597,6 +2597,8 @@ async function testOracleCleanRefusesTerminalJobsWithLiveWorkers(config: OracleC
     await releaseConversationLease(conversationId);
     await cleanupJob(jobId);
     await rm(fakeWorkerPath, { force: true });
+    // The live worker makes cleanup refuse by design, so the runtime profile created above stays.
+    await rm(job.runtimeProfileDir, { recursive: true, force: true });
   }
 }
 
