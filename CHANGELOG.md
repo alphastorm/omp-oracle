@@ -4,6 +4,11 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Documentation
+- propose a read-only ChatGPT conversation index and selected-chat recall workflow for maintainer feedback: streamline reuse of pre-existing threads and preserve continuity across Oracle clients/platforms through explicit conversation identity, with integrated-versus-companion packaging open; no runtime behavior is added
+
 ## 0.4.7 - 2026-10-20
 
 ### Changed
