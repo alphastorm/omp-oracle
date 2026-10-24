@@ -153,6 +153,23 @@ test("fresh effort observations clear stale values and absence markers without l
   }
 });
 
+test("a full fresh observation clears unreadable model provenance and classifies a readable slider", () => {
+  const previous = mergeObservedSelection(undefined, {
+    at: "2000-01-01T00:00:00.000Z", modelLabel: "Thinking effort Pro", effortLabel: "Pro (5 of 5)",
+  });
+  for (const effortControls of ["absent", "unavailable"]) {
+    const fresh = { at: "2026-10-24T00:00:00.000Z", modelLabel: null, effortLabel: null, effortControls };
+    const cleared = mergeObservedSelection(previous, fresh);
+    assert.equal(cleared.modelLabel, undefined);
+    assert.equal(cleared.product, undefined);
+    const research = mergeObservedSelection(previous, { ...fresh, deepResearchVerified: true });
+    assert.equal(research.modelLabel, undefined);
+    assert.equal(research.product, "deep_research");
+  }
+  const slider = mergeObservedSelection(previous, { modelLabel: "Select ChatGPT model", effortLabel: "Medium (2 of 5)" });
+  assert.equal(slider.product, "thinking", "a generic picker caption must not shadow the actual effort stop");
+});
+
 test("presets map onto the five slider stops the way compact tiers already do", () => {
   assert.equal(powerSliderTargetLabel({ modelFamily: "instant" }), "Instant");
   assert.equal(powerSliderTargetLabel({ modelFamily: "thinking", effort: "light" }), "Medium");

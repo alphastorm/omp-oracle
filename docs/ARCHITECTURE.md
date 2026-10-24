@@ -410,11 +410,15 @@ rebinding.
 `observedSelection` is optional, including on legacy jobs. It remains the single UI-provenance
 object: `modelLabel` is the already-read model-selector text, `effortLabel` the observed slider
 stop (`<Label> (<index> of <count>)`), and `at` the latest observation time. Each ChatGPT submission
-re-reads the mounted Power control without opening its menu or changing the selection, even when
+re-reads the currently open Power control without opening its menu or changing the selection, even when
 model configuration already matches. An absent/unmounted control, including Deep Research, clears
-stale effort evidence with `effortLabel: null` and `effortControls: "absent"`; a failed read uses
-`"unavailable"` instead and does not block submission. Neither case infers the offered count.
-`product` classifies those actual controls as Pro,
+stale effort evidence with `effortLabel: null` and `effortControls: "absent"`. A retained menu
+contradicted by its collapsed opener is absent too; a failed read or unparsable mounted control
+uses `"unavailable"` instead and does not block submission. Neither case infers the offered count,
+and a configuration-time stop is not retained as the submission's currently offered set after the
+picker closes. The current model-selector DOM text, or an existing supported compact opener's
+snapshot label, supplies `modelLabel`; an unreadable label clears old model/product provenance.
+`product` prefers a readable slider stop over a generic picker caption and classifies those actual controls as Pro,
 Thinking, or Instant, or a verified research pill/frame as Deep Research; unknown labels
 remain unclassified rather than copying the requested preset. Slider observations are merged
 immediately, so failure before model configuration finishes no longer loses a logged reading.

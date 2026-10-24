@@ -7,7 +7,7 @@ history is kept below the divider.
 ## Unreleased
 
 ### Fixed
-- every ChatGPT submission refreshes its read-only effort observation, including when model configuration is skipped because the composer already matches. A mounted Power slider records its current label, index, and offered count; an absent control (including Deep Research) records `effortLabel: null` and `effortControls: "absent"` instead of keeping stale effort evidence. A failed read records `"unavailable"` without changing selection or submission behavior.
+- every ChatGPT submission refreshes its read-only effort observation, including when model configuration is skipped because the composer already matches. A currently open Power slider records its current label, index, and offered count; an absent control (including Deep Research or a retained menu behind a collapsed opener) records `effortLabel: null` and `effortControls: "absent"` instead of keeping stale effort evidence. A failed read or unparsable mounted control records `"unavailable"` without changing selection or submission behavior. Supported compact picker labels are observed too, unreadable model labels clear old provenance, and an actual slider stop takes precedence over a generic picker caption.
 
 ## 0.4.7 - 2026-10-20
 

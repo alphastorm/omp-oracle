@@ -1702,10 +1702,12 @@ async function readPowerSliderState(job) {
   // Bare string results come back JSON-quoted from parseEvalResult; wrap in an object instead.
   const result = await evalPage(job, toJsonScript(`
     const power = ${POWER_SLIDER_ELEMENT};
-    if (!power) return { description: "" };
+    if (!power) return { present: false };
     const ids = (power.getAttribute("aria-describedby") || "").split(/\\s+/).filter(Boolean);
     return { description: ids.map((id) => (document.getElementById(id)?.textContent || "").trim()).join(" ") };
   `));
+  // Keep absence distinct from a mounted control whose description cannot be read or parsed.
+  if (result && typeof result === "object" && result.present === false) return null;
   const description = result && typeof result === "object" && typeof result.description === "string" ? result.description : "";
   return parsePowerSliderDescription(description);
 }
@@ -1785,8 +1787,9 @@ async function configurePowerSlider(job) {
 async function observeSelection(job, { deepResearchVerified } = {}) {
   if (isGrokJob(job)) return undefined;
   // A composer tool runs its own model, so the picker's text says nothing about the job.
-  if (job.selection.tool) return { at: new Date().toISOString(), effortLabel: null, effortControls: "absent",
+  if (job.selection.tool) return { at: new Date().toISOString(), modelLabel: null, effortLabel: null, effortControls: "absent",
     ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
+  const snapshot = await snapshotText(job).catch(() => undefined);
   // The picker nests a caption and the selection ("Thinking effort", "Instant"); its text nodes are
   // joined with spaces, skipping screen-reader-only text.
   const picker = await evalPage(job, toJsonScript(`
@@ -1800,18 +1803,18 @@ async function observeSelection(job, { deepResearchVerified } = {}) {
     }
     return { label: parts.join(' ').replace(/\\s+/g, ' ').trim() };
   `)).catch(() => undefined);
-  const modelLabel = typeof picker?.label === "string" && picker.label ? picker.label.slice(0, 80) : undefined;
+  const opener = snapshot === undefined ? undefined : findLastEntry(snapshot, (entry) =>
+    matchesModelConfigurationOpener(entry) && !/^(?:Select ChatGPT model|Model(?: selector)?)$/.test(entry.label || ""));
+  const modelLabel = typeof picker?.label === "string" && picker.label
+    ? picker.label.slice(0, 80) : opener?.label?.slice(0, 80) ?? null;
   // Re-read even when configureModel skipped or already recorded a stop. Never open the picker,
   // focus the slider, or infer an offered count from requested settings or an earlier observation.
-  /** @type {"absent" | "unavailable"} */
-  let effortControls = "absent";
-  const state = await readPowerSliderState(job).catch(() => {
-    effortControls = "unavailable";
-    return undefined;
-  });
-  return { at: new Date().toISOString(), ...(modelLabel ? { modelLabel } : {}),
+  // A retained Power node contradicted by a collapsed opener is not currently offered UI.
+  const state = snapshot === undefined ? undefined : !snapshotHasPowerSliderMenu(snapshot) ? null
+    : await readPowerSliderState(job).catch(() => undefined);
+  return { at: new Date().toISOString(), modelLabel,
     effortLabel: state ? `${state.label} (${state.index} of ${state.count})` : null,
-    ...(!state ? { effortControls } : {}),
+    ...(!state ? { effortControls: state === null ? "absent" : "unavailable" } : {}),
     ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
 }
 

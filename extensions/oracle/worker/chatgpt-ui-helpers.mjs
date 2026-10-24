@@ -632,7 +632,8 @@ export const POWER_SLIDER_TIER_LABELS = Object.freeze(["Instant", "Medium", "Hig
  */
 export function mergeObservedSelection(previous, observation) {
   const next = { ...previous, at: observation.at ?? new Date().toISOString() };
-  if (observation.modelLabel) next.modelLabel = observation.modelLabel.slice(0, 80);
+  if (observation.modelLabel === null) delete next.modelLabel;
+  else if (observation.modelLabel) next.modelLabel = observation.modelLabel.slice(0, 80);
   if (observation.effortLabel === null) next.effortLabel = null;
   else if (observation.effortLabel) {
     next.effortLabel = observation.effortLabel.slice(0, 80);
@@ -645,13 +646,13 @@ export function mergeObservedSelection(previous, observation) {
   if (observation.deepResearchIframeTitle && /^deep research$/i.test(observation.deepResearchIframeTitle)) {
     next.deepResearchIframeTitle = observation.deepResearchIframeTitle;
   }
-  const label = (observation.modelLabel ?? observation.effortLabel ?? "")
+  const label = (observation.effortLabel || observation.modelLabel || "")
     .replace(/^(?:Pro )?Thinking effort\s+/i, "").replace(/\s+\(\d+ of \d+\)$/, "");
   if (next.deepResearchVerified || next.deepResearchIframeTitle) next.product = "deep_research";
   else if (/\bPro\b/i.test(label)) next.product = "pro";
   else if (/\bInstant\b/i.test(label)) next.product = "instant";
   else if (/\bThinking\b/i.test(label) || /^(?:Medium|High|Extra High)$/i.test(label)) next.product = "thinking";
-  else if (label) delete next.product;
+  else if (label || observation.modelLabel === null || observation.effortLabel === null) delete next.product;
   return next;
 }
 

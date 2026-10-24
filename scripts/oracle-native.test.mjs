@@ -7,7 +7,8 @@ import test from "node:test";
 import ts from "typescript";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { mergeObservedSelection, parsePowerSliderDescription, POWER_SLIDER_TIER_LABELS, powerSliderClosedIntoSelection, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasPowerSliderMenu } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
+import { CHATGPT_MODEL_PICKER_SELECTOR, matchesModelConfigurationOpener, mergeObservedSelection, parsePowerSliderDescription, POWER_SLIDER_TIER_LABELS, powerSliderClosedIntoSelection, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasPowerSliderMenu } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
+import { parseSnapshotEntries } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import { withLock } from "../extensions/oracle/worker/state-locks.mjs";
 
 // Unlike the sanity harness, command dispatch and session lifecycle here are native Pi.
@@ -107,7 +108,7 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       const tree = ts.createSourceFile("run-job.mjs", workerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
       const names = new Set(["secureWriteText", "readJobUnlocked", "writeJobUnlocked", "mutateJob",
         "recordObservedSelection", "configurePowerSlider", "readPowerSliderState", "focusPowerSlider",
-        "observeSelection", "configureModel", "toJsonScript", "boundResearchFrame"]);
+        "observeSelection", "configureModel", "findLastEntry", "toJsonScript", "boundResearchFrame"]);
       const declarations = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
       assert.equal(declarations.length, names.size);
       const jobId = "external-fixture";
@@ -120,9 +121,14 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       let snapshotOverride;
       let modelLabel = "Thinking effort Pro";
       let sliderReadError = false;
+      let malformedSliderReply = false;
+      let currentPickerMounted = true;
+      let retainedPower = false;
+      let closeAtTarget = false;
       // The open picker (2026-09-30) and the composer left behind by the 2026-10-18 failure.
       const openPicker = '- button "Select ChatGPT model" [expanded=true, ref=e118]\n- menuitem "Select model" [ref=e5]\n- menuitem "Power" [ref=e3]';
       const closedComposer = '- textbox "Ask ChatGPT" [ref=e136]: \n- button "Select ChatGPT model" [expanded=false, ref=e139]\n- button "Dictate" [ref=e140]';
+      let closedSnapshot = closedComposer;
       const browserCalls = [];
       const automationCalls = [];
       const logs = [];
@@ -130,14 +136,18 @@ test("native Oracle status command dispatch creates no external job", { timeout:
         jobId, jobPath, ORACLE_STATE_DIR: join(root, "state"), process,
         readFile, writeFile, chmod, rename, withLock, mergeObservedSelection,
         powerSliderTargetLabel, parsePowerSliderDescription, powerSliderStepKey, powerSliderClosedIntoSelection, snapshotCanSafelySkipModelConfiguration, snapshotHasPowerSliderMenu,
+        matchesModelConfigurationOpener, parseSnapshotEntries,
         POWER_SLIDER_REOPEN_LIMIT: 2,
         POWER_SLIDER_ELEMENT: 'document.querySelector("[role=menuitem]")',
-        CHATGPT_MODEL_PICKER_SELECTOR: 'button[aria-label="Select ChatGPT model"]',
+        CHATGPT_MODEL_PICKER_SELECTOR,
+        CHATGPT_LABELS: { close: "Close" },
         isGrokJob: () => false,
         log: async (message) => logs.push(message),
         dismissBlockingDialog: async () => {},
-        snapshotText: async () => snapshotOverride ?? (pickerOpen ? openPicker : closedComposer),
+        snapshotText: async () => snapshotOverride ?? (pickerOpen ? openPicker : closedSnapshot),
         openModelConfiguration: async () => { automationCalls.push("openModelConfiguration"); pickerOpen = true; return openPicker; },
+        maybeClickLabeledEntry: async () => { automationCalls.push("close"); pickerOpen = false; return true; },
+        waitForModelConfigurationToSettle: async () => { assert.equal(pickerOpen, false); },
         agentBrowser: async (_job, command, key) => {
           automationCalls.push([command, key]);
           if (command !== "press" || !pickerOpen) return;
@@ -145,17 +155,37 @@ test("native Oracle status command dispatch creates no external job", { timeout:
           // Live 2026-10-18: one ArrowLeft off Pro closed the picker with the composer on High.
           const leavingPro = stop === 4 && key === "ArrowLeft";
           const next = leavingPro ? 2 : stop + (key === "ArrowLeft" ? -1 : 1);
-          pickerOpen = !leavingPro;
+          pickerOpen = !leavingPro && !(closeAtTarget && next === 0);
           slider = `${POWER_SLIDER_TIER_LABELS[next]}, ${next + 1} of 5.`;
         },
         evalPage: async (_job, expression) => {
           browserCalls.push(expression);
           if (expression.includes("aria-describedby")) {
             if (sliderReadError) throw new Error("Fixture slider read failed");
-            return { description: pickerOpen ? slider : "" };
+            if (malformedSliderReply) return {};
           }
           if (expression.includes("power.focus")) return { focused: focusable && pickerOpen };
-          if (expression.includes("createTreeWalker")) return { label: modelLabel };
+          if (expression.includes("aria-describedby") || expression.includes("createTreeWalker")) {
+            // Execute the production DOM expression, including its actual selector and null handling.
+            const document = {
+              querySelector: (selector) => {
+                if (selector === "[role=menuitem]") return pickerOpen || retainedPower
+                  ? { getAttribute: () => "power-description" } : null;
+                if (selector === CHATGPT_MODEL_PICKER_SELECTOR) return currentPickerMounted ? {} : null;
+                throw new Error(`Unexpected selector: ${selector}`);
+              },
+              getElementById: () => ({ textContent: slider }),
+              createTreeWalker: () => {
+                let read = false;
+                return { nextNode: () => {
+                  if (read || !modelLabel) return null;
+                  read = true;
+                  return { textContent: modelLabel, parentElement: { closest: () => null } };
+                } };
+              },
+            };
+            return JSON.parse(new Function("document", "NodeFilter", `return ${expression}`)(document, { SHOW_TEXT: 4 }));
+          }
           return { frames: [{ selector: "#research-frame", src: "https://fixture.web-sandbox.oaiusercontent.com/" }] };
         },
         captureExpression: () => "({})",
@@ -200,10 +230,21 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       saved = JSON.parse(await readFile(jobPath, "utf8"));
       assert.equal(saved.observedSelection.effortLabel, "Instant (1 of 5)");
 
+      workerTest.beforeEach(() => {
+        snapshotOverride = undefined;
+        sliderReadError = false;
+        malformedSliderReply = false;
+        currentPickerMounted = true;
+        retainedPower = false;
+        closeAtTarget = false;
+        closedSnapshot = closedComposer;
+        modelLabel = "Thinking effort Pro";
+      });
+
       await workerTest.test("already-configured submissions freshly read the current slider without reconfiguring", async () => {
         const selection = { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false };
         const configuredJob = { ...initial, selection };
-        snapshotOverride = '- button "Thinking, click to remove" [ref=e110]\n- button "Thinking" [expanded=false, ref=e111]';
+        snapshotOverride = '- button "Thinking, click to remove" [ref=e110]\n- button "Thinking" [expanded=false, ref=e111]\n' + openPicker;
         modelLabel = "Thinking effort Medium";
         pickerOpen = true;
         const beforeAutomation = automationCalls.length;
@@ -238,27 +279,95 @@ test("native Oracle status command dispatch creates no external job", { timeout:
         snapshotOverride = undefined;
       });
 
-      await workerTest.test("absent or unreadable effort controls replace stale evidence without changing submission behavior", async () => {
+      await workerTest.test("a configured compact picker reports its actual label without a current-shell DOM node", async () => {
+        currentPickerMounted = false;
         pickerOpen = false;
+        snapshotOverride = '- button "Thinking, click to remove" [ref=e110]\n- button "Thinking" [expanded=false, ref=e111]';
+        const configuredJob = { ...initial, selection: { modelFamily: "thinking", effort: "standard" } };
         const beforeAutomation = automationCalls.length;
-        for (const unavailable of [false, true]) {
+        await worker.configureModel(configuredJob);
+        await worker.recordObservedSelection(await worker.observeSelection(configuredJob));
+        saved = JSON.parse(await readFile(jobPath, "utf8"));
+        assert.equal(saved.observedSelection.modelLabel, "Thinking");
+        assert.equal(saved.observedSelection.effortLabel, null);
+        assert.equal(automationCalls.length, beforeAutomation);
+        snapshotOverride = undefined;
+        currentPickerMounted = true;
+      });
+
+      await workerTest.test("absent or unreadable effort controls replace stale evidence without changing submission behavior", async () => {
+        const beforeAutomation = automationCalls.length;
+        for (const fixture of [
+          { open: false, expected: "absent" },
+          { open: true, error: true, expected: "unavailable" },
+          { open: true, description: "Use arrow keys to adjust power.", expected: "unavailable" },
+          { open: true, description: "Pro, 6 of 5.", expected: "unavailable" },
+          { open: true, malformed: true, expected: "unavailable" },
+        ]) {
           saved = JSON.parse(await readFile(jobPath, "utf8"));
-          saved.observedSelection = { at: "2000-01-01T00:00:00.000Z", effortLabel: "Pro (5 of 5)" };
+          saved.observedSelection = { at: "2000-01-01T00:00:00.000Z", modelLabel: "Thinking effort Pro", product: "pro", effortLabel: "Pro (5 of 5)" };
           await writeFile(jobPath, JSON.stringify(saved));
-          sliderReadError = unavailable;
+          pickerOpen = fixture.open;
+          sliderReadError = fixture.error;
+          malformedSliderReply = fixture.malformed;
+          slider = fixture.description ?? "Pro, 5 of 5.";
+          modelLabel = "";
           const observedAfter = Date.now();
           await worker.recordObservedSelection(await worker.observeSelection(proJob));
           saved = JSON.parse(await readFile(jobPath, "utf8"));
           assert.equal(saved.observedSelection.effortLabel, null);
-          assert.equal(saved.observedSelection.effortControls, unavailable ? "unavailable" : "absent");
+          assert.equal(saved.observedSelection.effortControls, fixture.expected);
+          assert.equal(saved.observedSelection.modelLabel, undefined);
+          assert.equal(saved.observedSelection.product, undefined);
           assert.ok(Date.parse(saved.observedSelection.at) >= observedAfter);
         }
         assert.equal(automationCalls.length, beforeAutomation);
         sliderReadError = false;
+        malformedSliderReply = false;
+        modelLabel = "Thinking effort Pro";
+      });
+
+      await workerTest.test("a collapsed picker cannot refresh provenance from its retained Power node", async () => {
+        pickerOpen = false;
+        retainedPower = true;
+        slider = "Pro, 5 of 5.";
+        snapshotOverride = closedComposer + '\n- menuitem "Power" [ref=e3]';
+        const beforeAutomation = automationCalls.length;
+        const observation = await worker.observeSelection(proJob);
+        assert.equal(observation.effortLabel, null);
+        assert.equal(observation.effortControls, "absent");
+        assert.equal(automationCalls.length, beforeAutomation);
+        retainedPower = false;
+        snapshotOverride = undefined;
+      });
+
+      await workerTest.test("submission-time absence intentionally replaces the configuration-time slider reading", async () => {
+        pickerOpen = false;
+        slider = "Pro, 5 of 5.";
+        await worker.configureModel(proJob);
+        saved = JSON.parse(await readFile(jobPath, "utf8"));
+        assert.equal(saved.observedSelection.effortLabel, "Pro (5 of 5)");
+        await worker.recordObservedSelection(await worker.observeSelection(proJob));
+        saved = JSON.parse(await readFile(jobPath, "utf8"));
+        assert.equal(saved.observedSelection.effortLabel, null);
+        assert.equal(saved.observedSelection.effortControls, "absent");
+        // Also exercise the existing branch where stepping closes the picker on the target.
+        pickerOpen = true;
+        slider = "Medium, 2 of 5.";
+        closeAtTarget = true;
+        closedSnapshot = '- button "Instant" [expanded=false, ref=e111]';
+        await worker.configurePowerSlider({ ...initial, selection: { modelFamily: "instant" } });
+        saved = JSON.parse(await readFile(jobPath, "utf8"));
+        assert.equal(saved.observedSelection.effortLabel, "Instant");
+        await worker.recordObservedSelection(await worker.observeSelection(proJob));
+        saved = JSON.parse(await readFile(jobPath, "utf8"));
+        assert.equal(saved.observedSelection.effortLabel, null, "do not relabel configuration-time evidence as a current offered set");
+        closeAtTarget = false;
+        closedSnapshot = closedComposer;
       });
 
       // Research observes its own product and explicit absence, not an old model's slider evidence.
-      saved.observedSelection = { at: "2000-01-01T00:00:00.000Z", effortLabel: "Pro (5 of 5)" };
+      saved.observedSelection = { at: "2000-01-01T00:00:00.000Z", modelLabel: "Thinking effort Pro", product: "pro", effortLabel: "Pro (5 of 5)" };
       await writeFile(jobPath, JSON.stringify(saved));
       const before = browserCalls.length;
       await worker.recordObservedSelection(await worker.observeSelection({ selection: { tool: "deep_research" } }, { deepResearchVerified: true }));
