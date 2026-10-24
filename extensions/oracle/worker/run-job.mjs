@@ -1698,6 +1698,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
 const POWER_SLIDER_ELEMENT = `document.querySelector('[role="menuitem"][aria-label="Power"]')`;
 
 async function readPowerSliderState(job) {
+  // Observation and configuration share this read-only view of the currently mounted control.
   // Bare string results come back JSON-quoted from parseEvalResult; wrap in an object instead.
   const result = await evalPage(job, toJsonScript(`
     const power = ${POWER_SLIDER_ELEMENT};
@@ -1776,11 +1777,16 @@ async function configurePowerSlider(job) {
 
 // What the composer shows once configuration finished: the model picker's text, the slider's
 // effort, and whether the Deep Research pill was verified. Never inferred from the request.
-/** @param {any} job @param {{ deepResearchVerified?: boolean }} [options] */
+/**
+ * @param {any} job
+ * @param {{ deepResearchVerified?: boolean }} [options]
+ * @returns {Promise<Partial<Omit<import("../shared/job-observability-helpers.mjs").OracleObservedSelection, "product">> | undefined>}
+ */
 async function observeSelection(job, { deepResearchVerified } = {}) {
   if (isGrokJob(job)) return undefined;
   // A composer tool runs its own model, so the picker's text says nothing about the job.
-  if (job.selection.tool) return { at: new Date().toISOString(), ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
+  if (job.selection.tool) return { at: new Date().toISOString(), effortLabel: null, effortControls: "absent",
+    ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
   // The picker nests a caption and the selection ("Thinking effort", "Instant"); its text nodes are
   // joined with spaces, skipping screen-reader-only text.
   const picker = await evalPage(job, toJsonScript(`
@@ -1795,7 +1801,17 @@ async function observeSelection(job, { deepResearchVerified } = {}) {
     return { label: parts.join(' ').replace(/\\s+/g, ' ').trim() };
   `)).catch(() => undefined);
   const modelLabel = typeof picker?.label === "string" && picker.label ? picker.label.slice(0, 80) : undefined;
+  // Re-read even when configureModel skipped or already recorded a stop. Never open the picker,
+  // focus the slider, or infer an offered count from requested settings or an earlier observation.
+  /** @type {"absent" | "unavailable"} */
+  let effortControls = "absent";
+  const state = await readPowerSliderState(job).catch(() => {
+    effortControls = "unavailable";
+    return undefined;
+  });
   return { at: new Date().toISOString(), ...(modelLabel ? { modelLabel } : {}),
+    effortLabel: state ? `${state.label} (${state.index} of ${state.count})` : null,
+    ...(!state ? { effortControls } : {}),
     ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
 }
 
