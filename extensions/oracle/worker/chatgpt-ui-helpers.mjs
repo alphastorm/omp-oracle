@@ -633,7 +633,14 @@ export const POWER_SLIDER_TIER_LABELS = Object.freeze(["Instant", "Medium", "Hig
 export function mergeObservedSelection(previous, observation) {
   const next = { ...previous, at: observation.at ?? new Date().toISOString() };
   if (observation.modelLabel) next.modelLabel = observation.modelLabel.slice(0, 80);
-  if (observation.effortLabel) next.effortLabel = observation.effortLabel.slice(0, 80);
+  if (observation.effortLabel === null) next.effortLabel = null;
+  else if (observation.effortLabel) {
+    next.effortLabel = observation.effortLabel.slice(0, 80);
+    delete next.effortControls;
+  }
+  if (observation.effortControls === "absent" || observation.effortControls === "unavailable") {
+    next.effortControls = observation.effortControls;
+  }
   if (observation.deepResearchVerified === true) next.deepResearchVerified = true;
   if (observation.deepResearchIframeTitle && /^deep research$/i.test(observation.deepResearchIframeTitle)) {
     next.deepResearchIframeTitle = observation.deepResearchIframeTitle;

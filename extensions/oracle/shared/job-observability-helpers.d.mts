@@ -4,7 +4,8 @@ export interface OracleObservedSelection {
   at: string;
   product?: "deep_research" | "pro" | "thinking" | "instant";
   modelLabel?: string;
-  effortLabel?: string;
+  effortLabel?: string | null;
+  effortControls?: "absent" | "unavailable";
   deepResearchVerified?: boolean;
   deepResearchIframeTitle?: string;
 }

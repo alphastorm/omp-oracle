@@ -135,6 +135,24 @@ test("observed products use control labels rather than a requested model or page
   assert.equal(mergeObservedSelection(undefined, { deepResearchIframeTitle: "unrelated page title", at }).deepResearchIframeTitle, undefined);
 });
 
+test("fresh effort observations clear stale values and absence markers without losing unrelated metadata", () => {
+  const at = "2026-10-24T00:00:00.000Z";
+  const previous = mergeObservedSelection(undefined, {
+    at: "2000-01-01T00:00:00.000Z", modelLabel: "Thinking effort Pro", effortLabel: "Pro (5 of 5)",
+  });
+  for (const effortControls of ["absent", "unavailable"]) {
+    const cleared = mergeObservedSelection(previous, { at, effortLabel: null, effortControls });
+    assert.equal(cleared.effortLabel, null);
+    assert.equal(cleared.effortControls, effortControls);
+    assert.equal(cleared.modelLabel, previous.modelLabel);
+    assert.equal(cleared.at, at);
+    const observed = mergeObservedSelection(cleared, { at, effortLabel: "Medium (3 of 6)" });
+    assert.equal(observed.effortLabel, "Medium (3 of 6)");
+    assert.equal(observed.effortControls, undefined);
+    assert.equal(observed.product, "thinking");
+  }
+});
+
 test("presets map onto the five slider stops the way compact tiers already do", () => {
   assert.equal(powerSliderTargetLabel({ modelFamily: "instant" }), "Instant");
   assert.equal(powerSliderTargetLabel({ modelFamily: "thinking", effort: "light" }), "Medium");

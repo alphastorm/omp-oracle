@@ -7,7 +7,7 @@ import test from "node:test";
 import ts from "typescript";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { mergeObservedSelection, parsePowerSliderDescription, POWER_SLIDER_TIER_LABELS, powerSliderClosedIntoSelection, powerSliderStepKey, powerSliderTargetLabel, snapshotHasPowerSliderMenu } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
+import { mergeObservedSelection, parsePowerSliderDescription, POWER_SLIDER_TIER_LABELS, powerSliderClosedIntoSelection, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasPowerSliderMenu } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { withLock } from "../extensions/oracle/worker/state-locks.mjs";
 
 // Unlike the sanity harness, command dispatch and session lifecycle here are native Pi.
@@ -100,14 +100,14 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       assert.equal(fetch.mock.callCount(), 0, "cross-project inspection must remain offline");
     });
 
-    await t.test("worker slider observations survive failure, reopen a closed picker, and round-trip through native read/status", async () => {
+    await t.test("worker slider observations survive failure, reopen a closed picker, and round-trip through native read/status", async (workerTest) => {
       // Like the capture proof, execute the production worker declarations without its main loop.
       // Browser replies are fixtures; mutation, locking, atomic files, and the loaded extension are real.
       const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
       const tree = ts.createSourceFile("run-job.mjs", workerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
       const names = new Set(["secureWriteText", "readJobUnlocked", "writeJobUnlocked", "mutateJob",
         "recordObservedSelection", "configurePowerSlider", "readPowerSliderState", "focusPowerSlider",
-        "observeSelection", "toJsonScript", "boundResearchFrame"]);
+        "observeSelection", "configureModel", "toJsonScript", "boundResearchFrame"]);
       const declarations = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
       assert.equal(declarations.length, names.size);
       const jobId = "external-fixture";
@@ -117,23 +117,29 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       let pickerOpen = true;
       let focusable = false;
       let markerResolves = true;
+      let snapshotOverride;
+      let modelLabel = "Thinking effort Pro";
+      let sliderReadError = false;
       // The open picker (2026-09-30) and the composer left behind by the 2026-10-18 failure.
       const openPicker = '- button "Select ChatGPT model" [expanded=true, ref=e118]\n- menuitem "Select model" [ref=e5]\n- menuitem "Power" [ref=e3]';
       const closedComposer = '- textbox "Ask ChatGPT" [ref=e136]: \n- button "Select ChatGPT model" [expanded=false, ref=e139]\n- button "Dictate" [ref=e140]';
       const browserCalls = [];
+      const automationCalls = [];
       const logs = [];
       const bindings = {
         jobId, jobPath, ORACLE_STATE_DIR: join(root, "state"), process,
         readFile, writeFile, chmod, rename, withLock, mergeObservedSelection,
-        powerSliderTargetLabel, parsePowerSliderDescription, powerSliderStepKey, powerSliderClosedIntoSelection, snapshotHasPowerSliderMenu,
+        powerSliderTargetLabel, parsePowerSliderDescription, powerSliderStepKey, powerSliderClosedIntoSelection, snapshotCanSafelySkipModelConfiguration, snapshotHasPowerSliderMenu,
         POWER_SLIDER_REOPEN_LIMIT: 2,
         POWER_SLIDER_ELEMENT: 'document.querySelector("[role=menuitem]")',
         CHATGPT_MODEL_PICKER_SELECTOR: 'button[aria-label="Select ChatGPT model"]',
         isGrokJob: () => false,
         log: async (message) => logs.push(message),
-        snapshotText: async () => (pickerOpen ? openPicker : closedComposer),
-        openModelConfiguration: async () => { pickerOpen = true; return openPicker; },
+        dismissBlockingDialog: async () => {},
+        snapshotText: async () => snapshotOverride ?? (pickerOpen ? openPicker : closedComposer),
+        openModelConfiguration: async () => { automationCalls.push("openModelConfiguration"); pickerOpen = true; return openPicker; },
         agentBrowser: async (_job, command, key) => {
+          automationCalls.push([command, key]);
           if (command !== "press" || !pickerOpen) return;
           const stop = POWER_SLIDER_TIER_LABELS.indexOf(slider.split(",")[0]);
           // Live 2026-10-18: one ArrowLeft off Pro closed the picker with the composer on High.
@@ -144,9 +150,12 @@ test("native Oracle status command dispatch creates no external job", { timeout:
         },
         evalPage: async (_job, expression) => {
           browserCalls.push(expression);
-          if (expression.includes("aria-describedby")) return { description: pickerOpen ? slider : "" };
+          if (expression.includes("aria-describedby")) {
+            if (sliderReadError) throw new Error("Fixture slider read failed");
+            return { description: pickerOpen ? slider : "" };
+          }
           if (expression.includes("power.focus")) return { focused: focusable && pickerOpen };
-          if (expression.includes("createTreeWalker")) return { label: "Thinking effort Pro" };
+          if (expression.includes("createTreeWalker")) return { label: modelLabel };
           return { frames: [{ selector: "#research-frame", src: "https://fixture.web-sandbox.oaiusercontent.com/" }] };
         },
         captureExpression: () => "({})",
@@ -164,7 +173,7 @@ test("native Oracle status command dispatch creates no external job", { timeout:
         },
       };
       const worker = new Function(...Object.keys(bindings),
-        `let currentJob;\n${declarations.map((node) => node.getText(tree)).join("\n")}\nreturn {configurePowerSlider, observeSelection, recordObservedSelection, boundResearchFrame};`)(...Object.values(bindings));
+        `let currentJob;\n${declarations.map((node) => node.getText(tree)).join("\n")}\nreturn {configurePowerSlider, configureModel, observeSelection, recordObservedSelection, boundResearchFrame};`)(...Object.values(bindings));
       const proJob = { ...initial, selection: { modelFamily: "pro" } };
       await assert.rejects(worker.configurePowerSlider(proJob), /Could not focus/);
       let saved = JSON.parse(await readFile(jobPath, "utf8"));
@@ -191,8 +200,65 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       saved = JSON.parse(await readFile(jobPath, "utf8"));
       assert.equal(saved.observedSelection.effortLabel, "Instant (1 of 5)");
 
-      // A new research job has no model picker label: its own product, not requested Pro, is observed.
-      delete saved.observedSelection;
+      await workerTest.test("already-configured submissions freshly read the current slider without reconfiguring", async () => {
+        const selection = { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false };
+        const configuredJob = { ...initial, selection };
+        snapshotOverride = '- button "Thinking, click to remove" [ref=e110]\n- button "Thinking" [expanded=false, ref=e111]';
+        modelLabel = "Thinking effort Medium";
+        pickerOpen = true;
+        const beforeAutomation = automationCalls.length;
+        for (const [description, expected] of [
+          ["Medium, 2 of 5.", "Medium (2 of 5)"],
+          ["Medium, 3 of 6.", "Medium (3 of 6)"],
+        ]) {
+          saved = JSON.parse(await readFile(jobPath, "utf8"));
+          saved.observedSelection = { at: "2000-01-01T00:00:00.000Z", effortLabel: "Pro (5 of 5)" };
+          await writeFile(jobPath, JSON.stringify(saved));
+          slider = description;
+          const beforeReads = browserCalls.length;
+          const observedAfter = Date.now();
+          await worker.configureModel(configuredJob);
+          assert.match(logs.at(-1), /already appears configured.*skipping reconfiguration/);
+          await worker.recordObservedSelection(await worker.observeSelection(configuredJob));
+          saved = JSON.parse(await readFile(jobPath, "utf8"));
+          assert.equal(saved.observedSelection.effortLabel, expected,
+            "a skipped configuration must replace stale effort evidence with this submission's slider reading");
+          assert.equal(saved.observedSelection.modelLabel, modelLabel);
+          assert.ok(Date.parse(saved.observedSelection.at) >= observedAfter, "observation timestamp must come from this read");
+          assert.equal(saved.observedSelection.effortControls, undefined);
+          assert.equal(slider, description, "observing the slider must not change its selection");
+          const reads = browserCalls.slice(beforeReads);
+          assert.equal(reads.filter((expression) => expression.includes("aria-describedby")).length, 1);
+          assert.ok(reads.every((expression) => !/\.(?:focus|click)\(/.test(expression)), "observation must be read-only");
+          assert.equal(saved.responsePath, initial.responsePath);
+          const observed = await bridge.read(session.extensionRunner.createContext(), { jobId, projectId: initial.projectId });
+          assert.deepEqual(observed.details.job.observedSelection, saved.observedSelection);
+        }
+        assert.equal(automationCalls.length, beforeAutomation, "configured submissions must not reopen a menu or send keys");
+        snapshotOverride = undefined;
+      });
+
+      await workerTest.test("absent or unreadable effort controls replace stale evidence without changing submission behavior", async () => {
+        pickerOpen = false;
+        const beforeAutomation = automationCalls.length;
+        for (const unavailable of [false, true]) {
+          saved = JSON.parse(await readFile(jobPath, "utf8"));
+          saved.observedSelection = { at: "2000-01-01T00:00:00.000Z", effortLabel: "Pro (5 of 5)" };
+          await writeFile(jobPath, JSON.stringify(saved));
+          sliderReadError = unavailable;
+          const observedAfter = Date.now();
+          await worker.recordObservedSelection(await worker.observeSelection(proJob));
+          saved = JSON.parse(await readFile(jobPath, "utf8"));
+          assert.equal(saved.observedSelection.effortLabel, null);
+          assert.equal(saved.observedSelection.effortControls, unavailable ? "unavailable" : "absent");
+          assert.ok(Date.parse(saved.observedSelection.at) >= observedAfter);
+        }
+        assert.equal(automationCalls.length, beforeAutomation);
+        sliderReadError = false;
+      });
+
+      // Research observes its own product and explicit absence, not an old model's slider evidence.
+      saved.observedSelection = { at: "2000-01-01T00:00:00.000Z", effortLabel: "Pro (5 of 5)" };
       await writeFile(jobPath, JSON.stringify(saved));
       const before = browserCalls.length;
       await worker.recordObservedSelection(await worker.observeSelection({ selection: { tool: "deep_research" } }, { deepResearchVerified: true }));
@@ -202,7 +268,8 @@ test("native Oracle status command dispatch creates no external job", { timeout:
       assert.equal(saved.observedSelection.product, "deep_research");
       assert.equal(saved.observedSelection.deepResearchIframeTitle, "Deep research");
       assert.equal(saved.observedSelection.modelLabel, undefined);
-      assert.equal(saved.observedSelection.effortLabel, undefined);
+      assert.equal(saved.observedSelection.effortLabel, null);
+      assert.equal(saved.observedSelection.effortControls, "absent");
       assert.ok(Number.isFinite(Date.parse(saved.observedSelection.at)));
       assert.deepEqual(browserCalls.slice(before + 1), ["DOM.getDocument", "DOM.querySelector", "DOM.describeNode"],
         "iframe provenance reuses exactly the existing frame-binding DOM calls");
