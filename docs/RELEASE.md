@@ -289,6 +289,21 @@ Artifact run ids live under the gitignored `.artifacts/` root.
   live provider (covered by native fixtures instead). No failed live ChatGPT job was
   discarded or silently restaged; the only failed prerequisite was the diagnosed local
   model driver before any Oracle submission.
+- Follow-up sf-studio activation (2026-10-25): the founder explicitly authorized installation
+  with top-level OMP PID **54109** still running. `git pull --ff-only` and
+  `bun install --frozen-lockfile` activated **0.4.8** on Oh My Pi **18.12.6**; the plugins
+  worktree ended clean and even with `origin/omp-plugins` at `05f8519`. An isolated print-mode
+  `oracle_preflight` loaded the installed entry point with `anthropic/claude-haiku-5-5` and
+  reported **ready** for ChatGPT (0/2 active, 0/2 queued); login is not verified by preflight.
+  No submission or authentication was exercised, no Oracle worker or diligence Chrome
+  process was present afterwards, and the temporary dry-run and preflight roots were removed.
+  PID 54109 started 2026-10-24 17:02:51 PDT, predating the installed package.json mtime
+  (2026-10-25 00:42:27 PDT); its already-loaded 0.4.7 extension requires a session restart.
+  Documentation link checks passed 2/2. On local Node 26.12.1, the first `sanity:oracle` run
+  failed with `broken-pipe archive test should record a tar pid file`; exactly one unchanged,
+  isolated rerun passed. The checkout included #19 (`fff95a67`), but local `node_modules`
+  still resolved undici 8.10.2 (`npm ls` reported the 8.12.2 override mismatch), so this is
+  not installed-undici-8.12.2 runtime validation.
 
 #### 0.4.7 (2026-10-20, `567facf`)
 
