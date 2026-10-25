@@ -386,7 +386,7 @@ Fields in `OracleJob` (`extensions/oracle/lib/jobs.ts`), grouped by responsibili
   `selection` (`{ provider, preset?, mode?, modelFamily, effort?, autoSwitchToThinking }`), `extensionProvenance`, `config`
 - **Thread and prompt state:** `followUpToJobId`, `chatUrl`, `conversationId`, `promptPath`, `reasoningPath`,
   `promptSendState` (`not_sent | attempted | accepted`), `observedSelection`
-  (`{ at, product?, modelLabel?, effortLabel?, deepResearchVerified?, deepResearchIframeTitle? }`), `observedTurn`
+  (`{ at, product?, modelLabel?, effortLabel?, effortControls?, deepResearchVerified?, deepResearchIframeTitle? }`), `observedTurn`
   (`{ at, durationLabel?, durationSeconds? }`, for example `Worked for 15m 7s` or `Research completed in 6m`)
 - **Generation and collection:** `responsePath`, `responseFormat` (`text/plain`), `generationStatus` (`completed`),
   `collectionStatus` (`complete | partial | failed`), `collectionRequiredMissing`, `collectionOptionalMissing`,
@@ -409,13 +409,22 @@ rebinding.
 
 `observedSelection` is optional, including on legacy jobs. It remains the single UI-provenance
 object: `modelLabel` is the already-read model-selector text, `effortLabel` the observed slider
-stop, and `at` the latest observation time. `product` classifies those actual controls as Pro,
+stop (`<Label> (<index> of <count>)`), and `at` the latest observation time. Each ChatGPT submission
+re-reads the currently open Power control without opening its menu or changing the selection, even when
+model configuration already matches. An absent/unmounted control, including Deep Research, clears
+stale effort evidence with `effortLabel: null` and `effortControls: "absent"`. A retained menu
+contradicted by its collapsed opener is absent too; a failed read or unparsable mounted control
+uses `"unavailable"` instead and does not block submission. Neither case infers the offered count,
+and a configuration-time stop is not retained as the submission's currently offered set after the
+picker closes. The current model-selector DOM text, or an existing supported compact opener's
+snapshot label, supplies `modelLabel`; an unreadable label clears old model/product provenance.
+`product` prefers a readable slider stop over a generic picker caption and classifies those actual controls as Pro,
 Thinking, or Instant, or a verified research pill/frame as Deep Research; unknown labels
 remain unclassified rather than copying the requested preset. Slider observations are merged
 immediately, so failure before model configuration finishes no longer loses a logged reading.
 The bound research iframe's `Deep research` title comes from the existing `DOM.describeNode`
 reply. All merges go through the worker's per-job lock and atomic write, preserving other fields.
-No additional DOM query, page/response text, cookie, or secret is added to this metadata.
+No page/response text, cookie, or secret is added to this metadata.
 
 ## Response format
 

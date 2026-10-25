@@ -3,8 +3,9 @@ import type { OracleJobLifecycleEvent } from "./job-lifecycle-helpers.d.mts";
 export interface OracleObservedSelection {
   at: string;
   product?: "deep_research" | "pro" | "thinking" | "instant";
-  modelLabel?: string;
-  effortLabel?: string;
+  modelLabel?: string | null;
+  effortLabel?: string | null;
+  effortControls?: "absent" | "unavailable";
   deepResearchVerified?: boolean;
   deepResearchIframeTitle?: string;
 }

@@ -4,6 +4,11 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+- every ChatGPT submission refreshes its read-only effort observation, including when model configuration is skipped because the composer already matches. A currently open Power slider records its current label, index, and offered count; an absent control (including Deep Research or a retained menu behind a collapsed opener) records `effortLabel: null` and `effortControls: "absent"` instead of keeping stale effort evidence. A failed read or unparsable mounted control records `"unavailable"` without changing selection or submission behavior. Supported compact picker labels are observed too, unreadable model labels clear old provenance, and an actual slider stop takes precedence over a generic picker caption.
+
 ## 0.4.7 - 2026-10-20
 
 ### Changed

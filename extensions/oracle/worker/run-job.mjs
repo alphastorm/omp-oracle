@@ -1698,13 +1698,16 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
 const POWER_SLIDER_ELEMENT = `document.querySelector('[role="menuitem"][aria-label="Power"]')`;
 
 async function readPowerSliderState(job) {
+  // Observation and configuration share this read-only view of the currently mounted control.
   // Bare string results come back JSON-quoted from parseEvalResult; wrap in an object instead.
   const result = await evalPage(job, toJsonScript(`
     const power = ${POWER_SLIDER_ELEMENT};
-    if (!power) return { description: "" };
+    if (!power) return { present: false };
     const ids = (power.getAttribute("aria-describedby") || "").split(/\\s+/).filter(Boolean);
     return { description: ids.map((id) => (document.getElementById(id)?.textContent || "").trim()).join(" ") };
   `));
+  // Keep absence distinct from a mounted control whose description cannot be read or parsed.
+  if (result && typeof result === "object" && result.present === false) return null;
   const description = result && typeof result === "object" && typeof result.description === "string" ? result.description : "";
   return parsePowerSliderDescription(description);
 }
@@ -1776,11 +1779,17 @@ async function configurePowerSlider(job) {
 
 // What the composer shows once configuration finished: the model picker's text, the slider's
 // effort, and whether the Deep Research pill was verified. Never inferred from the request.
-/** @param {any} job @param {{ deepResearchVerified?: boolean }} [options] */
+/**
+ * @param {any} job
+ * @param {{ deepResearchVerified?: boolean }} [options]
+ * @returns {Promise<Partial<Omit<import("../shared/job-observability-helpers.mjs").OracleObservedSelection, "product">> | undefined>}
+ */
 async function observeSelection(job, { deepResearchVerified } = {}) {
   if (isGrokJob(job)) return undefined;
   // A composer tool runs its own model, so the picker's text says nothing about the job.
-  if (job.selection.tool) return { at: new Date().toISOString(), ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
+  if (job.selection.tool) return { at: new Date().toISOString(), modelLabel: null, effortLabel: null, effortControls: "absent",
+    ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
+  const snapshot = await snapshotText(job).catch(() => undefined);
   // The picker nests a caption and the selection ("Thinking effort", "Instant"); its text nodes are
   // joined with spaces, skipping screen-reader-only text.
   const picker = await evalPage(job, toJsonScript(`
@@ -1794,8 +1803,18 @@ async function observeSelection(job, { deepResearchVerified } = {}) {
     }
     return { label: parts.join(' ').replace(/\\s+/g, ' ').trim() };
   `)).catch(() => undefined);
-  const modelLabel = typeof picker?.label === "string" && picker.label ? picker.label.slice(0, 80) : undefined;
-  return { at: new Date().toISOString(), ...(modelLabel ? { modelLabel } : {}),
+  const opener = snapshot === undefined ? undefined : findLastEntry(snapshot, (entry) =>
+    matchesModelConfigurationOpener(entry) && !/^(?:Select ChatGPT model|Model(?: selector)?)$/.test(entry.label || ""));
+  const modelLabel = typeof picker?.label === "string" && picker.label
+    ? picker.label.slice(0, 80) : opener?.label?.slice(0, 80) ?? null;
+  // Re-read even when configureModel skipped or already recorded a stop. Never open the picker,
+  // focus the slider, or infer an offered count from requested settings or an earlier observation.
+  // A retained Power node contradicted by a collapsed opener is not currently offered UI.
+  const state = snapshot === undefined ? undefined : !snapshotHasPowerSliderMenu(snapshot) ? null
+    : await readPowerSliderState(job).catch(() => undefined);
+  return { at: new Date().toISOString(), modelLabel,
+    effortLabel: state ? `${state.label} (${state.index} of ${state.count})` : null,
+    ...(!state ? { effortControls: state === null ? "absent" : "unavailable" } : {}),
     ...(deepResearchVerified ? { deepResearchVerified: true } : {}) };
 }
 
