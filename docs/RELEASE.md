@@ -154,6 +154,142 @@ time they were written, not this fork; current support claims live in
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.8 (2026-10-24, `136ca83`)
+
+- Scope: [#18](https://github.com/alphastorm/omp-oracle/pull/18), squash `73653d3`, refreshes
+  read-only per-submission effort provenance, including the already-configured path. Missing
+  controls explicitly clear stale effort; unreadable controls report uncertainty without
+  changing selection or submission. Its single batched review remediation (`1d2addb`) also
+  rejects retained closed-menu readings, observes supported compact model labels, clears
+  unreadable prior model/product evidence, and distinguishes malformed reads from absence.
+  The release-preparation commit is exactly `136ca834943ea9e50efa29104842af9d62a11ccd`.
+- Red before, green after, as recorded in #18: the original configured-path regression expected
+  `Medium (2 of 5)` but retained `Pro (5 of 5)`; Deep Research lacked explicit null effort.
+  Additional review regressions reproduced stale compact model labels, retained Power evidence,
+  and uncleared model/product provenance before remediation; the targeted native/helper command
+  passed 29/29 afterwards. Native sessions load the extension with real locking, atomic
+  persistence and read/status; browser replies remain fixtures. The fixture executes production
+  DOM-expression bodies but substitutes the Power-selector constant, so it is not a
+  production-selector mutation test.
+- Two focused review rounds completed on frozen heads `0e47aba2` and `1d2addb3`; both strong
+  critics completed each round. The
+  [round-one ledger](https://github.com/alphastorm/omp-oracle/pull/18#issuecomment-6391176293)
+  and [admitting ledger](https://github.com/alphastorm/omp-oracle/pull/18#issuecomment-6391176478)
+  retain every disposition. No confirmed P0/P1 remained. Accepted P2 provenance limitations:
+  snapshot and DOM reads are not atomic across a picker-close transition; the compact fallback
+  does not prove composer ownership of the last matching button; the older expanded `Medium`
+  compact picker can conservatively report null/absent. These are not claims of complete
+  older-shell coverage or authority for consumer adoption. Round two disclosed the lead's prior
+  close-path disposition and is not claimed to be another blind assessment of that allegation.
+- Preconditions: upstream `main` still matched recorded sync `d658a98`; no Dependabot PR was
+  open. #17 was an explicitly implementation-excluded design-feedback draft, not a release
+  change. #18 changed no dependencies; the version bump changed lockfile identity only, and
+  the hosted verify job ran `npm ci`. The existing Ubuntu smoke image
+  `f2fddfb8ce69` was present and reported Node 24.22.0 and agent-browser 0.39.1; no rebuild or
+  global browser-driver upgrade was needed.
+- Diagnostic-red driver prerequisite, before any ChatGPT job: the first isolated OMP session
+  on `nyc-n2/q38-ninfer` produced no assistant/tool output, then the runner aborted it after
+  300.90 s. A bounded `/v1/chat/completions` probe timed out after 40.02 s although `/v1/models`
+  had answered. No new Oracle job, browser, `job.json`, worker log or failure snapshot existed
+  to copy. The failed session and diagnosis are retained under
+  `.artifacts/ui-drift-2026-10-24/`; the fleet-owned service was not changed. Under the lead's
+  explicit authorization, the driver changed to the installed catalog's inexpensive
+  `anthropic/claude-haiku-5-5` because `models.yml` had only local/fleet routes. An isolated
+  no-tools prerequisite answered `OK`; only the nonsecret `auth.broker.url` setting was copied
+  into the proof agent configuration.
+- Fresh live eight-preset proof accepted on `136ca83` in one cloud-driven runner invocation
+  (332.53 s), with each job's loaded-source provenance matching 0.4.8 and the exact prep commit:
+  `pro_standard` `30f08573` 44.246 s, `pro_extended` `f434bc0e` 47.065 s,
+  `thinking_light` `ad1a42de` 37.181 s, `thinking_standard` `75e0389e` 42.361 s,
+  `thinking_extended` `3356a2b9` 40.300 s, `thinking_heavy` `dc6e504b` 38.041 s,
+  `instant` `3c957b5e` 42.104 s, and `instant_auto_switch` `c701e67e` 38.577 s.
+  These are runner per-preset elapsed times. Each saved response contained both exact markers.
+  Worker logs recorded the configured stops Pro, Pro, Medium, Medium, High, Extra High, Instant,
+  Instant, all out of five. At the subsequent observation the picker was closed: every
+  `observedSelection.effortLabel` was null with `effortControls: "absent"` and fresh actual model
+  labels `Thinking effort Pro`, Pro, Medium, Medium, High, Extra High, Instant, Instant
+  (the same `Thinking effort` prefix on each). Configuration-time stops were not relabeled as
+  currently offered sets. No picker reopen or stale-stop reload fired.
+- `npm run release:check` passed on the prep commit as one composition (152.13 s): syntax and
+  bundle, platform invariants, 61 helper/native tests, 4 site tests, 2 documentation tests,
+  all three typechecks, sanity, **`pack:check` 87 files**, fresh proof check, doctor, and Crabbox:
+  macOS `platform-build` 41.508 s (`run-1792898638506-312ueo`), `real-extension` 4.246 s
+  (`run-1792898680020-2oy62u`); Ubuntu `platform-build` 32.976 s
+  (`run-1792898651873-zl5qg0`), `real-extension` 3.613 s (`run-1792898684851-s6a5uy`).
+- The founder authorized the version, tag-triggered publication and activation. Origin `main`
+  was read back at the exact prep SHA before annotated tag `v0.4.8` was pushed. Release run
+  [`40158127269`](https://github.com/alphastorm/omp-oracle/actions/runs/40158127269) succeeded:
+  `verify` 03:25:06–03:26:50 UTC (104 s), `publish` 03:26:53–03:27:05 UTC (12 s), on
+  2026-10-25 UTC / 2026-10-24 local. The workflow packed 87 files (353.5 kB) with shasum
+  `3b2c027550e5682f0f20e21856772459e05bc802`, signed provenance, recorded Sigstore log index
+  **3449852722**, and printed `+ omp-oracle@0.4.8`. The
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.8) uses the dated
+  CHANGELOG section.
+- Registry metadata became visible after 133.89 s of polling (14 attempts; observed
+  2026-10-24T20:29:48-07:00): `latest` 0.4.8, 87 files, the same workflow shasum, and integrity
+  `sha512-WdPdhik+kNDw+Rwl8j6wNYqhEUY/y5CDRE0ezcNXPy0bMnzh0nddXHgSeHYhsEZhNAHYbe2hB087ypzAb7klpA==`
+  (matching the workflow's displayed prefix/suffix). Decoded SLSA provenance bound the exact
+  prep commit, `refs/tags/v0.4.8`, `.github/workflows/release.yml`, and run 40158127269 attempt 1.
+  A fresh consumer install with scripts disabled passed `npm audit signatures`: 2 verified
+  registry signatures and 1 verified attestation. The temporary consumer directory and GitHub
+  release-notes file were removed. Raw release, registry, provenance, signature and install
+  receipts are retained under `.artifacts/release-0.4.8/`; `/tmp/omp-oracle-proof` is retained.
+- MacBook activation: `omp plugin uninstall omp-oracle`, `omp plugin install omp-oracle@0.4.8`,
+  and `omp plugin list` confirmed 0.4.8 on Oh My Pi 18.12.6. Plugins worktree commit
+  `05f8519a71d0d4e59f0a0d0841823d6d7b585ba9` records the manifest and lockfile activation and
+  was pushed from `~/.omp/plugins`. Global agent-browser stayed at 0.39.1; the separate
+  plugins-manifest copy remains 0.35.0.
+- **sf-studio installation was NOT exercised**, by the lead's explicit instruction: the
+  founder's top-level OMP PID **54109**, started **2026-10-24 17:02:51 PDT**, was running and
+  was not stopped. Its baseline OMP is 18.12.6 and global agent-browser 0.39.1. A temporary
+  copy of `origin/omp-plugins` at `05f8519` passed `bun install --frozen-lockfile --dry-run`,
+  resolving omp-oracle 0.4.8; the temporary copy was removed. No real Studio `bun install`,
+  installed-entry-point preflight, or clean/even post-activation claim is made. After the
+  founder quits that session, the activation handoff is:
+
+  ```bash
+  ssh sf-studio 'bash -s' <<'EOF'
+  export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  if pgrep -u srs -f '(^|/)omp( |$)|[r]un-job.mjs|[d]iligence-chrome'; then
+    printf 'Quit the OMP session and wait for Oracle/browser work to stop first.\n'
+    exit 1
+  fi
+  git -C "$HOME/.omp/plugins" pull --ff-only &&
+  (cd "$HOME/.omp/plugins" && bun install --frozen-lockfile) &&
+  git -C "$HOME/.omp/plugins" status --short --branch &&
+  omp --cwd "$HOME/.omp/plugins" -p --auto-approve \
+    --session-dir /tmp/omp-oracle-studio-preflight-0.4.8/sessions \
+    --model anthropic/claude-haiku-5-5 --thinking low --no-extensions \
+    -e "$HOME/.omp/plugins/node_modules/omp-oracle/extensions/oracle/index.ts" \
+    "Call oracle_preflight only; do not submit or authenticate. Report readiness." < /dev/null
+  preflight_status=$?
+  if [ "$preflight_status" -eq 0 ]; then
+    rm -rf /tmp/omp-oracle-studio-preflight-0.4.8
+  fi
+  exit "$preflight_status"
+  EOF
+  ```
+
+- Installed-package Pro proof: fresh real-agent print session, using the same authorized cloud
+  driver and installed entry point, submitted `pro_standard` job
+  `4fe870cf-140e-472e-8ec0-9547bda160ea`. It completed in 38.017 s (51.40 s including the parent),
+  returned `OMP_ORACLE_POSTINSTALL_0_4_8_OK`, and recorded packageVersion 0.4.8 with installed
+  source path `~/.omp/plugins/node_modules/omp-oracle` and no gitHead. Worker logs read
+  `Instant (1 of 5); target Pro`, then `set to Pro (5 of 5)`, restoring the account's saved
+  tier to **Pro**. No diligence Chrome process was present before this job; the temporary
+  post-install session root was removed.
+- MacBook top-level OMP processes predating the installed package.json mtime
+  (2026-10-24 20:30:28 PDT): planning bridge PID 5081, started 20:26:43 in
+  `~/.omp/wt/planning-bridge-main`; gateway PID 23432, started 16:53:35 in
+  `~/Development/omp-session-gateway`; release/lead PID 70731, started 2026-10-23 09:59:56
+  in `~/Development/alpha-founder`. Any already-loaded Oracle extension in those sessions
+  requires restart to refresh. Relay and internal worker processes were excluded.
+- Not exercised: Studio activation as above, live `/oracle-auth`, Deep Research, Grok,
+  Windows native, a same-thread follow-up, and the configured early-return path against the
+  live provider (covered by native fixtures instead). No failed live ChatGPT job was
+  discarded or silently restaged; the only failed prerequisite was the diagnosed local
+  model driver before any Oracle submission.
+
 #### 0.4.7 (2026-10-20, `567facf`)
 
 - Scope: #6 (`fabd8f3`): releases publish from `.github/workflows/release.yml` through npm
