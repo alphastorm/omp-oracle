@@ -4,6 +4,11 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Security
+- the development-only `undici` dependency is overridden to `8.12.2` to fix [GHSA-xjj6-f33q-929c](https://github.com/advisories/GHSA-xjj6-f33q-929c), because `@earendil-works/pi-coding-agent` 1.3.0 pins the vulnerable `8.10.2`
+
 ## 0.4.8 - 2026-10-24
 
 ### Fixed
