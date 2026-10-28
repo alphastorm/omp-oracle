@@ -267,3 +267,29 @@ test('reasoning-time labels convert to seconds only when they carry a duration',
   assert.equal(durationLabelSeconds('Worked for 1h 2m'), 3720);
   assert.equal(durationLabelSeconds('Thought for a few seconds'), undefined);
 });
+
+// Observed live on 2026-10-28: ChatGPT's screen-reader turn headings gained a hidden print span, so
+// their textContent reads "ChatGPT said:ChatGPT" / "You said:You". The observation matched the
+// heading text exactly, saw no assistant turn, and a finished Deep Research job waited 80 minutes
+// for a turn it could not see. Headings are matched by prefix now.
+test('turn headings match by prefix so the hidden print-formatting suffix is ignored', async () => {
+  const { observeConversationExpression } = await import('./response-capture.mjs');
+  const reply = { cloneNode: () => ({ innerText: 'Launched.' }), innerText: 'Launched.' };
+  const heading = (text) => ({ textContent: text, nextElementSibling: reply });
+  const fakeDocument = (headings) => ({
+    querySelectorAll: (selector) => (selector.startsWith('h1') ? headings : []),
+    createElement: () => {
+      const host = { style: {}, child: undefined, appendChild(node) { host.child = node; }, remove() {} };
+      Object.defineProperty(host, 'innerText', { get: () => host.child?.innerText || '' });
+      return host;
+    },
+    body: { appendChild() {} },
+  });
+  const location = { href: 'https://chatgpt.com/c/abc123', pathname: '/c/abc123' };
+  const observe = (headings) => new Function('document', 'location',
+    'return ' + observeConversationExpression({ conversationId: 'abc123', stopSelector: '[data-testid="stop-button"]' }))(fakeDocument(headings), location);
+  for (const text of ['ChatGPT said:', 'ChatGPT said:ChatGPT', ' ChatGPT said:ChatGPT ']) {
+    assert.deepEqual(observe([heading('You said:You'), heading(text)]).messages, [{ text: 'Launched.' }], text);
+  }
+  assert.deepEqual(observe([heading('You said:You'), heading('Latest response')]).messages, []);
+});
