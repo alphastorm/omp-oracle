@@ -154,6 +154,79 @@ time they were written, not this fork; current support claims live in
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.9 (2026-10-28, `7ec22ac`)
+
+- Scope: [#21](https://github.com/alphastorm/omp-oracle/pull/21), squash `fac0e83`, matches
+  the ChatGPT screen-reader turn headings by prefix. Observed live on 2026-10-28 in an operator
+  Deep Research job (`c69e9833`, Winslow Foundry Lab): ChatGPT's headings gained a hidden
+  print-formatting span, so `textContent` read `ChatGPT said:ChatGPT`; the exact match saw no
+  assistant turn and a report that finished in 7 minutes sat in `awaiting_response` for 80
+  minutes. The installed 0.4.8 copy was patched in place with the identical bytes before the
+  pull request existed; the release-preparation commit is exactly
+  `7ec22ac7049938d0c5d490219c5537bb9335358c`, and it added the `### Fixed` entry #21 lacked.
+  The `## Unreleased` security override of dev-only `undici` to `8.12.2` ships with it.
+- Red before, green after, as recorded in #21: the new unit test drives the serialized
+  observation expression with a fake document; `ChatGPT said:ChatGPT` yielded `messages: []`
+  before the change (13 pass, 1 fail) and the reply afterwards (`test:oracle-helpers` 62/62,
+  `typecheck:worker-helpers` clean). Shared capture changed, so `npm run proof:capture`
+  (offline) covered the research-widget path and passed.
+- Live validation of the exact change, from the patched installed copy (byte-identical to
+  `main` at `fac0e83` and `7ec22ac`, confirmed with `diff`), before the prep commit: operator
+  Deep Research jobs `c69e9833` (completed only after the patch), `7f36b533` and `8ca65be3`
+  (Foundry Lab v2 research and sizing), `0ff4cabe`, `5402f795` and the same-thread follow-up
+  `2978e85d` (NetBox Labs); ChatGPT Pro same-thread follow-ups `c99218ae` → `b30437e9` →
+  `86b56076` (Foundry Lab v2) and `0f1b8c3c` → `d38e6951` → `2f7f8336` (NetBox Labs); every
+  job completed on its first observation. No isolated instant/follow-up smoke from source was
+  run in addition.
+- Preconditions: `main` clean and even with origin at `fac0e83`; upstream `main` still matched
+  recorded sync `d658a98`; Dependabot [#20](https://github.com/alphastorm/omp-oracle/pull/20)
+  (dev-dependencies group) and the design draft #17 were open and are not part of this
+  release. The proof model `nyc-n2/q38-ninfer` answered `/v1/models`. The Ubuntu smoke image
+  had been pruned and was rebuilt (`c33763ac8882`, Node 24.22.1, agent-browser 0.39.1). The
+  operator's pipeline (Winslow NetBox Labs delivery) finished its last ChatGPT turn at
+  15:51 UTC; the proof started after its keeper Chrome had quit.
+- Fresh live eight-preset proof accepted on `7ec22ac` in one runner invocation (348 s,
+  managed browser, driver `nyc-n2/q38-ninfer`): `pro_standard` `c58b4a45`, `pro_extended`
+  `5618235e`, `thinking_light` `55066753`, `thinking_standard` `e7778488`,
+  `thinking_extended` `74cf2062`, `thinking_heavy` `e76c0332`, `instant` `5e14c435`,
+  `instant_auto_switch` `f3ba5a77`; every job `complete`, each with one `slider reads` line,
+  no picker reopen and no stale-stop reload; `observedSelection.effortLabel` was `null` with
+  `effortControls: "absent"` after submission for all eight (the composer closes the slider),
+  while the worker logs record the stops (`Pro (5 of 5)` for both Pro presets, `Extra High
+  (4 of 5)` read before stepping to Instant). Deep Research is excluded from the proof by
+  design; it was exercised live by the operator jobs above.
+- `npm run release:check` passed on `7ec22ac` (148 s): local gate, proof check, doctor,
+  `pack:check` 87 files, Crabbox `platform-build` macOS 41970 ms / Ubuntu 33949 ms and
+  `real-extension` macOS 5244 ms / Ubuntu 4071 ms (runs `run-1793203344486-81sr68`,
+  `run-1793203339262-jboztn`).
+- Founder authorization by Ask (version, commit and file count named), then annotated tag
+  `v0.4.9` at `7ec22ac` pushed. Release run
+  [40722477865](https://github.com/alphastorm/omp-oracle/actions/runs/40722477865): `verify`
+  16:05:20–16:06:53 UTC, `publish` 16:06:55–16:07:17 UTC. `verify` pack: shasum
+  `889622d25d5ca4b22a76972c57398b0173ad7a08`, 87 files; `publish` printed `Signed provenance
+  statement`, transparency log index **3542851543**, and `+ omp-oracle@0.4.9`. The
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.9) uses the
+  dated CHANGELOG section.
+- Registry (answered after about 5 minutes): `dist.shasum` `889622d25d5ca4b22a76972c57398b0173ad7a08`
+  equals the `verify` pack, `dist.fileCount` 87, `dist-tags.latest` `0.4.9`; the SLSA
+  provenance names commit `7ec22ac7049938d0c5d490219c5537bb9335358c`, `refs/tags/v0.4.9`,
+  `.github/workflows/release.yml` and run 40722477865 attempt 1; a consumer
+  `npm audit signatures` reported 1 package with a verified attestation.
+- MacBook activation: `omp plugin uninstall omp-oracle`, `omp plugin install omp-oracle@0.4.9`,
+  `omp plugin list` confirmed 0.4.9 on Oh My Pi 18.13.3; the installed capture module equals
+  `main`. Plugins worktree commit `5bb4fb6` pushed. sf-studio: no oracle worker or diligence
+  Chrome was running (14 `omp` processes were); `bun install --frozen-lockfile --dry-run` on
+  the pushed manifest, then `git pull --ff-only` and `bun install --frozen-lockfile`; the
+  worktree ended clean and even; an isolated print-mode `oracle_preflight` from the installed
+  entry point reported ready.
+- Post-install job `34ff0892` (`pro_standard`, `package.json`, no agent-dir overrides):
+  `extensionProvenance.packageVersion` 0.4.9 from the installed `sourcePath`; worker log
+  `slider reads Instant (1 of 5)` then `set to Pro (5 of 5)`; response `OK 0.4.9`. The
+  account's saved tier is Pro again. Sessions predating the install on the MacBook: the
+  planning bridge (pid 1973, 26 Oct) and five interactive `omp` sessions started 01:00–09:12
+  local on 28 Oct, including the release session; sf-studio's 14 `omp` processes also predate
+  it. Not exercised: `/oracle-auth`, Grok, the relay transport.
+
 #### 0.4.8 (2026-10-24, `136ca83`)
 
 - Scope: [#18](https://github.com/alphastorm/omp-oracle/pull/18), squash `73653d3`, refreshes
