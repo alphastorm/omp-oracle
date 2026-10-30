@@ -3,14 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#060809">
 <meta name="robots" content="index,follow">
-<title>OMP Oracle — send the hard question to ChatGPT or Grok, keep working</title>
-<meta name="description" content="omp-oracle sends long-running work from Oh My Pi or pi to ChatGPT or Grok through the web app: a context-rich repository archive, an isolated browser session, durable background jobs, and a saved answer that wakes the session that asked.">
+<title>OMP Oracle — send the hard question. Keep working.</title>
+<meta name="description" content="Send the hard question to ChatGPT or Grok from Oh My Pi or pi. Keep working while OMP Oracle runs in the background. Read the answer when it lands on disk.">
 <link rel="canonical" href="https://alphastorm.github.io/omp-oracle/">
+<link rel="preload" href="fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<meta property="og:title" content="OMP Oracle — send the hard question to ChatGPT or Grok, keep working">
-<meta property="og:description" content="Asynchronous ChatGPT and Grok web-oracle jobs for Oh My Pi and pi: isolated browser auth, durable background jobs, project-context archives. Uses your own subscription, not an API key.">
+<meta property="og:title" content="OMP Oracle — send the hard question. Keep working.">
+<meta property="og:description" content="Asynchronous web oracles for coding agents. A context-rich repository archive, an isolated browser session, and an answer saved to disk. Your own ChatGPT or Grok account, not an API key.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://alphastorm.github.io/omp-oracle/">
 <meta property="og:image" content="https://alphastorm.github.io/omp-oracle/og.png">
@@ -20,149 +24,260 @@
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">
 {"@context": "https://schema.org", "@type": "SoftwareApplication",
- "name": "OMP Oracle",
- "alternateName": "omp-oracle",
- "applicationCategory": "DeveloperApplication",
+ "name": "OMP Oracle", "alternateName": "omp-oracle", "applicationCategory": "DeveloperApplication",
  "operatingSystem": "macOS, Linux, Windows",
- "description": "Extension for Oh My Pi and pi that sends hard, long-running work to ChatGPT or Grok through the web app: a context-rich repository archive, an isolated browser session, durable background jobs, and a saved answer that wakes the session that asked.",
- "url": "https://alphastorm.github.io/omp-oracle/",
- "codeRepository": "https://github.com/alphastorm/omp-oracle",
- "license": "https://github.com/alphastorm/omp-oracle/blob/main/LICENSE",
- "isBasedOn": "https://github.com/fitchmultz/pi-oracle",
- "keywords": "oh-my-pi, pi, coding agent, chatgpt, grok, oracle, code review, browser automation"}
+ "description": "Extension for Oh My Pi and pi that sends hard, long-running work to ChatGPT or Grok through the web app: a context-rich repository archive, an isolated browser session, and a saved answer with a best-effort wake-up to the asking session.",
+ "url": "https://alphastorm.github.io/omp-oracle/", "codeRepository": "https://github.com/alphastorm/omp-oracle",
+ "license": "https://github.com/alphastorm/omp-oracle/blob/main/LICENSE", "isBasedOn": "https://github.com/fitchmultz/pi-oracle"}
 </script>
-<style>
-  :root {
-    --ground: #060809; --ink-dark: #0B0E11; --surface: #0E1319; --border: #1C232B; --border-subtle: #161C22;
-    --ink: #E8ECEF; --body: #B6BEC7; --muted: #8A939D; --answer: #DE82B7; --answer-hover: #EDA4CC;
-  }
-  * { box-sizing: border-box; }
-  html { background: var(--ground); color: var(--body); }
-  body {
-    margin: 0; font: 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-  a { color: var(--answer); text-underline-offset: 3px; }
-  a:hover { color: var(--answer-hover); }
-  a:focus-visible { outline: 2px solid var(--answer); outline-offset: 2px; border-radius: 2px; }
-  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
-  code { background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 0.05em 0.35em; }
-  pre { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.2rem; overflow-x: auto; }
-  pre code { background: none; border: 0; padding: 0; }
-  header.site, main, footer { width: min(100% - 2.5rem, 46rem); margin: 0 auto; }
-  header.site { display: flex; align-items: center; gap: 0.75rem; padding: 1.4rem 0; border-bottom: 1px solid var(--border-subtle); }
-  header.site img { width: 28px; height: 28px; }
-  header.site .brand { font-weight: 600; letter-spacing: -0.015em; text-decoration: none; color: var(--ink); }
-  header.site nav { margin-left: auto; display: flex; gap: 1.1rem; font-size: 0.95rem; }
-  header.site nav a { color: var(--muted); text-decoration: none; }
-  header.site nav a:hover { color: var(--ink); }
-  main { padding: 3.5rem 0 4rem; }
-  .eyebrow { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--answer); margin: 0 0 1rem; }
-  h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.12; letter-spacing: -0.02em; color: var(--ink); margin: 0 0 1.2rem; font-weight: 600; }
-  h2 { font-size: 1.35rem; color: var(--ink); letter-spacing: -0.01em; margin: 3rem 0 0.8rem; font-weight: 600; }
-  .lede { font-size: 1.15rem; color: var(--body); margin: 0 0 2rem; }
-  .receipt { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.2rem 1.4rem; margin: 0 0 1.6rem; }
-  .receipt strong { color: var(--ink); }
-  .receipt pre { margin: 0.8rem 0 0; }
-  .cta { display: inline-block; background: var(--answer); color: var(--ink-dark); font-weight: 600; text-decoration: none; padding: 0.7rem 1.2rem; border-radius: 8px; margin: 0 0.6rem 0.6rem 0; }
-  .cta:hover { color: var(--ink-dark); background: var(--answer-hover); }
-  .cta.secondary { background: transparent; color: var(--ink); border: 1px solid var(--border); }
-  .cta.secondary:hover { background: var(--surface); }
-  ul { padding-left: 1.2rem; }
-  li { margin: 0.35rem 0; }
-  ol li { margin: 0.45rem 0; }
-  .family { display: flex; flex-wrap: wrap; gap: 0.6rem 1.4rem; margin: 0.6rem 0 0; padding: 0; list-style: none; }
-  footer { padding: 2rem 0 3rem; border-top: 1px solid var(--border-subtle); font-size: 0.92rem; color: var(--muted); }
-  @media (prefers-reduced-motion: no-preference) { a { transition: color 120ms; } }
-</style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <header class="site">
-  <img src="logo.svg" alt="" aria-hidden="true" width="28" height="28">
-  <a class="brand" href="">OMP Oracle</a>
-  <nav>
-    <a href="https://github.com/alphastorm/omp-oracle">Repository</a>
-    <a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/ARCHITECTURE.md">Architecture</a>
-    <a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/SECURITY.md">Security</a>
-    <a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/COMPATIBILITY.md">Compatibility</a>
-  </nav>
+  <div class="wrap">
+    <a class="brand" href="./"><img src="logo.svg" alt="" width="24" height="24">OMP Oracle</a>
+    <nav aria-label="Site">
+      <a href="#how-it-works">How it works</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#status">Status</a>
+      <a class="ext" href="https://github.com/alphastorm/omp-oracle/blob/main/docs/README.md">Docs</a>
+      <a class="ext" href="https://github.com/alphastorm/omp-oracle">GitHub</a>
+    </nav>
+  </div>
 </header>
-<main>
-<p class="eyebrow">Companion for Oh My Pi and pi · community project</p>
-<h1>Send the hard question to ChatGPT or Grok. Keep&nbsp;working.</h1>
-<p class="lede">Keep using <a href="https://github.com/can1357/oh-my-pi">Oh My Pi</a> or <code>pi</code> in your
-terminal. <strong><code>/oracle</code> packs a context-rich archive of the repository</strong>, hands it with
-your prompt to ChatGPT or Grok in an isolated browser session, and returns immediately. The answer is
-saved to disk, and the session that asked gets one wake-up when it lands. Your own subscription, not an
-API key.</p>
+<main id="main">
+<section class="hero" aria-labelledby="headline">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow">Asynchronous web oracles for coding agents</p>
+      <h1 id="headline"><span class="line">Send the hard question.</span> <span class="line answer">Keep working.</span></h1>
+      <p class="lede">Keep using Oh My Pi or <code>pi</code> in your terminal. <code>/oracle</code> packs a context-rich archive of the repository, hands it with your prompt to ChatGPT or Grok in an isolated browser session, and returns immediately. The answer is saved to disk, and the session that asked gets one wake-up when it lands.</p>
+      <div class="actions">
+        <a class="cta" href="#setup">Get started</a>
+        <a class="cta secondary" href="#how-it-works">How it works</a>
+      </div>
+      <ul class="facts" aria-label="Requirements">
+        <li class="label" aria-hidden="true">Requires</li>
+        <li>Oh My Pi or pi</li>
+        <li>ChatGPT or Grok subscription</li>
+        <li>Chrome or Chromium</li>
+        <li>Node ≥ 22.19</li>
+      </ul>
+      <p class="compatibility">Works with Oh My Pi and <code>pi</code>. Uses your own ChatGPT or Grok web account, not an API key.</p>
+    </div>
+    <figure class="visual">
+      <div class="terminal" aria-label="Illustrated Oracle job output">
+        <div class="terminal-bar"><span>One background job</span><span>ChatGPT</span></div>
+        <div class="terminal-body">
+          <div class="terminal-output">Oracle job dispatched: <span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span></div>
+          <div class="terminal-output">Response will be written to:<br><span class="path">/tmp/oracle-<span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span>/response.md</span></div>
+          <div class="terminal-output muted">Do not poll; the one-time completion wake-up arrives in this session. If the user asks for status before then, call oracle_read with jobId "<span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span>".</div>
+          <p class="interlude">you keep working</p>
+          <div class="terminal-output completion">Oracle job <span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span> is complete.</div>
+          <div class="terminal-output">response: <span class="path">/tmp/oracle-<span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span>/response.md</span></div>
+        </div>
+      </div>
+      <figcaption>Illustration built from the extension's real output lines; job id and timings are placeholders.</figcaption>
+    </figure>
+  </div>
+</section>
 
-<div class="receipt">
-<strong>Install.</strong> <code>pi-oracle</code> on npm is the upstream package and does not carry this
-fork's changes; remove it first if you have it.
-<pre><code>omp install omp-oracle        # Oh My Pi
-pi install npm:omp-oracle     # pi</code></pre>
-</div>
+<section id="how-it-works" aria-labelledby="workflow-heading">
+  <div class="wrap">
+    <div class="section-head">
+      <div><p class="eyebrow">How it works</p><h2 id="workflow-heading">A second opinion.<br>Not a blocked session.</h2></div>
+      <p>The host agent keeps control of context selection and safety checks. ChatGPT or Grok does the slow second-opinion work in the background.</p>
+    </div>
+    <ol class="timeline">
+      <li><span class="step-number">01</span><h3>Preflight</h3><p>Check local session and auth readiness before gathering context.</p></li>
+      <li><span class="step-number">02</span><h3>Pack</h3><p>Build a context-rich provider archive after default exclusions and pruning.</p></li>
+      <li><span class="step-number">03</span><h3>Isolated browser</h3><p>Upload the archive and prompt in a background provider web runtime.</p></li>
+      <li><span class="step-number">04</span><h3>Answer on disk</h3><p>Save the response and artifacts under <code>/tmp/oracle-&lt;job-id&gt;/</code>.</p></li>
+      <li><span class="step-number">05</span><h3>One wake-up</h3><p>Send one best-effort completion wake-up to the session that asked.</p></li>
+    </ol>
+    <p class="workflow-note">If the wake-up is missed, the result still lives on disk: <code>/oracle-read &lt;job-id&gt;</code>.</p>
+    <div class="provider-notes">
+      <p><strong>ChatGPT</strong> <code>.tar.zst</code> · up to 250 MiB</p>
+      <p><strong>Grok</strong> <code>.tar.gz</code> · up to 200 MiB</p>
+      <p class="small">Upload ceilings apply after default exclusions and pruning.</p>
+    </div>
+  </div>
+</section>
 
-<a class="cta" href="https://github.com/alphastorm/omp-oracle#build-and-run">Get started</a>
-<a class="cta secondary" href="https://github.com/alphastorm/omp-oracle/blob/main/docs/ARCHITECTURE.md">Read the architecture</a>
+<section id="privacy" aria-labelledby="privacy-heading">
+  <div class="wrap">
+    <div class="section-head">
+      <div><p class="eyebrow">The boundary</p><h2 id="privacy-heading">What leaves your machine.</h2></div>
+      <p>Exactly two things per job, under your own account. No telemetry, no hosted control plane.</p>
+    </div>
+    <div class="two-columns">
+      <div>
+        <h3>Leaves</h3>
+        <ul class="quiet-list">
+          <li><strong>Your prompt</strong><p>Sent to the selected provider through its web app.</p></li>
+          <li><strong>One project archive</strong><p>Inputs must resolve inside the project without symlink escapes.</p></li>
+          <li><strong>Under your account</strong><p>Provider-side handling follows your ChatGPT or Grok account and its data settings.</p></li>
+        </ul>
+      </div>
+      <div>
+        <h3>Stays</h3>
+        <ul class="quiet-list">
+          <li><strong>Your real Chrome profile</strong><p>Cookie import reads it once, read-only. It is never automated by default; the opt-in relay owns one pinned tab in your signed-in Chrome.</p></li>
+          <li><strong>Excluded files, by default</strong><p><code>.git</code>, tool state, <code>secrets/</code>, <code>.env*</code>, keys, and databases are excluded during directory expansion. Explicitly named paths are included as named.</p></li>
+          <li><strong>The answer and artifacts on disk</strong><p>The local job directory retains the result even if the wake-up is missed; cleanup and retention can remove it.</p></li>
+        </ul>
+      </div>
+    </div>
+    <p class="section-note">Default exclusions are a floor, not a guarantee. <a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/SECURITY.md">Read the security model</a> before sending private or regulated code.</p>
+  </div>
+</section>
 
-<h2>What a run looks like</h2>
-<ol>
-<li>The agent preflights local session and auth readiness before reading anything expensive.</li>
-<li>It gathers a context-rich slice of the repository and <code>oracle_submit</code> builds a provider archive
-(<code>.tar.zst</code> for ChatGPT, <code>.tar.gz</code> for Grok, capped at 250 MiB and 200 MiB).</li>
-<li>A detached worker clones an isolated, authenticated browser profile (or pins one tab in your signed-in
-Chrome through the opt-in relay) and uploads archive and prompt.</li>
-<li>The response and any artifacts are saved under <code>/tmp/oracle-&lt;job-id&gt;/</code>.</li>
-<li>The session that asked gets one best-effort wake-up; <code>/oracle-read &lt;job-id&gt;</code> works either way.</li>
-</ol>
+<section id="setup" aria-labelledby="setup-heading">
+  <div class="wrap">
+    <div class="section-head">
+      <div><p class="eyebrow">Get started</p><h2 id="setup-heading">Setup, once.</h2></div>
+      <p>Install for your host, import provider auth, then ask a small question against the real repository.</p>
+    </div>
+    <div class="setup-wrap">
+      <ol class="setup">
+        <li>
+          <h3>Install for your host</h3>
+          <p>Choose Oh My Pi or <code>pi</code>.</p>
+          <div class="install-options">
+            <div class="snippet" data-label="Oh My Pi"><pre><code>omp install omp-oracle        <span class="c"># Oh My Pi</span></code></pre></div>
+            <div class="snippet" data-label="pi"><pre><code>pi install npm:omp-oracle     <span class="c"># pi</span></code></pre></div>
+          </div>
+          <p><code>pi-oracle</code> on npm is the upstream package and does not carry this fork's changes. Remove it first with <code>omp plugin uninstall pi-oracle</code> or <code>pi remove npm:pi-oracle</code>.</p>
+        </li>
+        <li>
+          <h3>Sync provider auth</h3>
+          <div class="snippet" data-label="Agent session"><pre><code>/oracle-auth</code></pre></div>
+          <p>Imports cookies for your configured default provider into an isolated auth seed. Use <code>/oracle-auth grok</code> for Grok when ChatGPT is the default.</p>
+        </li>
+        <li>
+          <h3>Send your first question</h3>
+          <div class="snippet" data-label="Agent session"><pre><code>/oracle Read README.md and package.json. In five bullets, what does this package do?</code></pre></div>
+          <p>Keep working. Read the saved answer with <code>/oracle-read &lt;job-id&gt;</code> when it lands. Continue in the same provider thread with <code>/oracle-followup &lt;job-id&gt; &lt;request&gt;</code>.</p>
+        </li>
+      </ol>
+      <aside class="setup-aside" aria-label="Local requirements">
+        <h3>Before you start</h3>
+        <ul>
+          <li><span class="k">Browser</span><span>Google Chrome or Chromium, signed in to ChatGPT or Grok.</span></li>
+          <li><span class="k">Local tools</span><span><code>agent-browser</code> and <code>tar</code>; <code>zstd</code> for ChatGPT archives.</span></li>
+          <li><span class="k">Session</span><span>A persisted Oh My Pi or <code>pi</code> session. <code>--no-session</code> runs report oracle unavailable.</span></li>
+        </ul>
+        <a href="https://github.com/alphastorm/omp-oracle/blob/main/README.md#build-and-run">Full setup and requirements</a>
+      </aside>
+    </div>
+    <p class="section-note">Inspect with <code>/oracle-status</code>, cancel with <code>/oracle-cancel &lt;job-id&gt;</code>, and remove terminal jobs with <code>/oracle-clean &lt;job-id|all&gt;</code>. <a href="https://github.com/alphastorm/omp-oracle/blob/main/README.md#commands-and-tools">All commands and tools</a>.</p>
+  </div>
+</section>
 
-<h2>Use it when</h2>
-<ul>
-<li>You review broad repository changes before shipping and want a slower, larger second opinion that
-does not block the main agent turn.</li>
-<li>You have a real ChatGPT or Grok subscription and want to use it from the agent instead of paying for
-API tokens.</li>
-<li>Migration, architecture, or failure-mode analysis benefits from a large archive of the real code, and
-you may want to continue the same provider thread later.</li>
-</ul>
+<section id="fit" aria-labelledby="fit-heading">
+  <div class="wrap">
+    <p class="eyebrow">Choose the right tool</p>
+    <div class="two-columns fit-columns">
+      <div>
+        <h2 id="fit-heading">Use it when</h2>
+        <ul class="quiet-list">
+          <li>You review broad repository changes and want a slower, larger second opinion without blocking the main agent turn.</li>
+          <li>You have a ChatGPT or Grok web subscription and want to use it from the agent instead of paying per API token.</li>
+          <li>Migration, architecture, or failure-mode analysis benefits from a large archive of the real code and follow-ups in the same provider thread.</li>
+        </ul>
+      </div>
+      <div>
+        <h2>Use something else when</h2>
+        <ul class="quiet-list">
+          <li>The task is a short local coding change the host agent can do directly.</li>
+          <li>The project must not be uploaded to ChatGPT, Grok, or another web provider.</li>
+          <li>You need a hosted, multi-user, or API-key-based route; this is a single-operator local tool.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
 
-<h2>Use something else when</h2>
-<ul>
-<li>The task is a short local coding change the host agent can do directly.</li>
-<li>The project must never be uploaded to ChatGPT.com, Grok, or another web provider.</li>
-<li>You need a hosted, multi-user, or API-key-based route; this is a single-operator local tool.</li>
-</ul>
+<section id="status" aria-labelledby="status-heading">
+  <div class="wrap">
+    <div class="section-head">
+      <div><p class="eyebrow">Status</p><h2 id="status-heading">Experimental public beta.</h2></div>
+      <p>Experimental public beta, forked from <a href="https://github.com/fitchmultz/pi-oracle">fitchmultz/pi-oracle</a>. Provider UI, auth, model controls, and artifact downloads can drift.</p>
+    </div>
+    <!-- Release-pinned facts live together here. Update from COMPATIBILITY.md and RELEASE.md. -->
+    <dl class="status-ledger">
+      <div><dt>Package</dt><dd><a href="https://www.npmjs.com/package/omp-oracle"><code>omp-oracle 0.4.9</code> on npm</a>. The GitHub URL tracks <code>main</code>.</dd></div>
+      <div><dt>Hosts</dt><dd><code>pi 1.3.0</code> tested baseline. Oh My Pi recorded on <code>18.2.6</code>, <code>18.2.7</code>, <code>18.2.11</code>, <code>18.12.3</code>, <code>18.12.6</code>, and <code>18.13.3</code>. Both hosts are required by the release gate.</dd></div>
+      <div><dt>Platforms</dt><dd>macOS and Ubuntu Linux required by the release gate. Windows native declared and validated upstream, not re-qualified by this fork.</dd></div>
+      <div><dt>Runtime</dt><dd>Node <code>&gt;=22.19.0</code> to install and run; Node 24+ required by the release gate.</dd></div>
+      <div><dt>Last release proof</dt><dd><time datetime="2026-10-28">2026-10-28</time> — live eight-preset ChatGPT proof and the macOS / Ubuntu release gate passed. Grok, <code>/oracle-auth</code>, and the relay transport were not exercised in this release proof.</dd></div>
+      <div><dt>Providers</dt><dd>ChatGPT: <code>pro_standard</code>, <code>pro_extended</code>, <code>thinking_light</code>, <code>thinking_standard</code>, <code>thinking_extended</code>, <code>thinking_heavy</code>, <code>instant</code>, <code>instant_auto_switch</code>, plus <code>deep_research</code>. Grok: <code>heavy</code> only.<p class="small">Deep Research needs a shared Chrome transport and is excluded from the release preset proof; operator runs are recorded in the ledger.</p></dd></div>
+    </dl>
+    <p class="section-note"><a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/COMPATIBILITY.md">Exact compatibility and known limits</a> · <a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/RELEASE.md#evidence-ledger">Dated release evidence</a></p>
+  </div>
+</section>
 
-<h2>What leaves your machine</h2>
-<p>Exactly two things per job, under your own account: the prompt and one project archive. Archive inputs
-must resolve inside the project without symlink escapes; <code>.git</code>, tool state,
-<code>secrets/</code>, <code>.env*</code>, keys, and databases are excluded by default. Your real browser
-profile is read for cookies once, read-only, and never automated by default. There is no telemetry and no
-hosted control plane. Full model:
-<a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/SECURITY.md">security</a> ·
-<a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/COMPATIBILITY.md">exact support and limits</a>.</p>
-
-<h2>Status</h2>
-<p>Experimental public beta, forked from
-<a href="https://github.com/fitchmultz/pi-oracle"><code>fitchmultz/pi-oracle</code></a> with an
-existing-Chrome relay transport and Oh My Pi host compatibility added. <code>pi</code> 1.3.0 is the tested
-baseline (0.80.9 through 0.4.6); Oh My Pi 18.2.6 is observed loading the extension (upstream 0.7.20 build) and
-resolving this checkout as <code>omp-oracle</code>. The live ChatGPT proof for every preset and the Ubuntu
-packaged-install lane passed through the fork's build on 2026-09-20; the exact entries live in the
-<a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/RELEASE.md">release ledger</a>.</p>
-
-<h2>The OMP family</h2>
-<ul class="family">
-<li><a href="https://github.com/alphastorm/omp-ninfer">OMP NInfer</a> — durable local inference</li>
-<li><a href="https://carrythroughsystems.github.io/omp-session-gateway/">OMP Session Gateway</a> — every live session, one private mobile page</li>
-<li><a href="https://github.com/alphastorm/omp-oracle">OMP Oracle</a> — this project</li>
-</ul>
+<section id="family" aria-labelledby="family-heading">
+  <div class="wrap">
+    <p class="eyebrow">Companion projects</p>
+    <h2 id="family-heading">The OMP family.</h2>
+    <ul class="family">
+      <li><h3><a href="https://github.com/alphastorm/omp-ninfer">OMP NInfer <span aria-hidden="true">↗</span></a></h3><p>Durable local inference.</p></li>
+      <li><h3><a href="https://carrythroughsystems.github.io/omp-session-gateway/">OMP Session Gateway <span aria-hidden="true">↗</span></a></h3><p>Every live session, one private mobile page.</p></li>
+    </ul>
+  </div>
+</section>
 </main>
 <footer>
-  Community project; not affiliated with or endorsed by the Oh My Pi maintainers, the <code>pi-oracle</code>
-  maintainer, OpenAI, or xAI. Every claim on this page is bound to the
-  <a href="https://github.com/alphastorm/omp-oracle">repository</a> and its documentation.
+  <div class="wrap">
+    <a class="brand" href="./"><img src="logo.svg" alt="" width="20" height="20">OMP Oracle</a>
+    <ul class="links">
+      <li><a href="https://github.com/alphastorm/omp-oracle">GitHub</a></li>
+      <li><a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/README.md">Documentation</a></li>
+      <li><a href="https://github.com/alphastorm/omp-oracle/blob/main/CHANGELOG.md">Changelog</a></li>
+      <li><a href="https://github.com/alphastorm/omp-oracle/blob/main/SECURITY.md">Security policy</a></li>
+      <li><a href="https://github.com/alphastorm/omp-oracle/blob/main/LICENSE">MIT license</a></li>
+    </ul>
+    <p>Community project; not affiliated with or endorsed by the Oh My Pi maintainers, the <code>pi-oracle</code> maintainer, OpenAI, or xAI.</p>
+  </div>
 </footer>
+<script>
+// Progressive enhancement from the gateway site: copy runnable commands, without comment spans.
+// No network, storage, or analytics. The commands remain selectable without JavaScript.
+if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+  for (const snippet of document.querySelectorAll(".snippet")) {
+    const code = snippet.querySelector("code");
+    if (!code) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "copy-button";
+    button.textContent = "Copy";
+    button.setAttribute("aria-label", `Copy ${snippet.dataset.label} command`);
+    button.setAttribute("aria-live", "polite");
+    let timer = 0;
+    button.addEventListener("click", async () => {
+      const text = Array.from(code.childNodes, (node) => node.nodeType === Node.ELEMENT_NODE && node.classList.contains("c") ? "" : node.textContent)
+        .join("").split("\n").map((line) => line.replace(/\s+$/u, "")).filter((line) => line !== "").join("\n");
+      try {
+        await navigator.clipboard.writeText(text);
+        button.textContent = "Copied";
+        button.setAttribute("data-done", "");
+      } catch {
+        button.textContent = "Select and copy";
+        button.removeAttribute("data-done");
+      }
+      clearTimeout(timer);
+      timer = setTimeout(() => { button.textContent = "Copy"; button.removeAttribute("data-done"); }, 1600);
+    });
+    const bar = document.createElement("div");
+    bar.className = "snippet-bar";
+    const label = document.createElement("span");
+    label.className = "lang";
+    label.textContent = snippet.dataset.label;
+    bar.append(label, button);
+    snippet.prepend(bar);
+  }
+}
+</script>
 </body>
 </html>

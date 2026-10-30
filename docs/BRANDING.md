@@ -65,8 +65,13 @@ interactive elements, never as a fill.
 
 ## Type
 
-- **Public site:** system font stacks only — `system-ui, sans-serif` and `ui-monospace, monospace`.
-  No remote fonts, scripts, stylesheets, or CDNs.
+- **Public site:** self-hosted latin subsets in `site/fonts/` are first-party assets: Space Grotesk
+  (variable weight 300–700) for the wordmark and headings; JetBrains Mono (variable weight 100–800)
+  for eyebrows, pills, and code. Body text stays on the system sans stack. Both subsets come from
+  the OMP Session Gateway site; their OFL-1.1 license texts are in `licenses/fonts/space-grotesk/`
+  and `licenses/fonts/jetbrains-mono/`. No remote fonts, scripts, stylesheets, or CDNs. The only
+  executable site script is the inline copy-button enhancement for setup commands; it makes no
+  network, storage, or analytics calls.
 - **Exported artwork:** `assets/banner.html` and `assets/og.html` use Space Grotesk 500/600 and
   JetBrains Mono 400/500, imported from Google Fonts by `assets/brand.css` at render time. Never copy
   that import into the site.
@@ -97,7 +102,7 @@ package does not ship them.
 | `assets/banner.png` | rendered banner @2x (2560×640) |
 | `assets/og.html` | social preview source (1280×640) |
 | `assets/og.png` | GitHub social preview and site `og:image` (1280×640) |
-| `site/` | public site (`alphastorm.github.io/omp-oracle`), system font stacks only. `.github/workflows/pages.yml` stages `logo.svg`, `favicon.svg`, and `og.png` from `assets/` at deploy time, so `site/` never carries copies |
+| `site/` | public site (`alphastorm.github.io/omp-oracle`), first-party fonts as specified above. `.github/workflows/pages.yml` stages `logo.svg`, `favicon.svg`, and `og.png` from `assets/` at deploy time, so `site/` never carries copies |
 
 `npm run test:site`, part of `npm run verify:oracle`, fails when a site page references an asset the
 deployment would not serve, when a staged asset's source could change without redeploying the site,
