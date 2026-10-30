@@ -112,6 +112,9 @@ section { padding: clamp(56px, 8vw, 104px) 0; border-top: 1px solid var(--border
 .terminal-output { overflow-wrap: anywhere; }
 .terminal-output + .terminal-output { margin-top: 18px; }
 .terminal-output.muted { color: var(--muted); font-size: 13px; }
+.terminal-output.prompt { color: var(--body); }
+.terminal-output .caret { color: var(--answer); font-weight: 600; margin-right: 2px; }
+.terminal-output + .terminal-output.prompt { margin-top: 18px; }
 .job-id { display: inline-flex; max-width: 100%; min-width: 0; vertical-align: bottom; }
 .id-start { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .id-end { flex: none; }

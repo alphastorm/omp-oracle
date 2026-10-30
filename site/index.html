@@ -69,15 +69,16 @@
       <div class="terminal" aria-label="Illustrated Oracle job output">
         <div class="terminal-bar"><span>One background job</span><span>ChatGPT</span></div>
         <div class="terminal-body">
-          <div class="terminal-output">Oracle job dispatched: <span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span></div>
-          <div class="terminal-output">Response will be written to:<br><span class="path">/tmp/oracle-<span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span>/response.md</span></div>
-          <div class="terminal-output muted">Do not poll; the one-time completion wake-up arrives in this session. If the user asks for status before then, call oracle_read with jobId "<span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span>".</div>
+          <div class="terminal-output prompt"><span class="caret">›</span> /oracle Review the pending changes. Include the whole repo unless a narrower archive is clearly better.</div>
+          <div class="terminal-output">Oracle job dispatched: <span class="job-id"><span class="id-start">9b2e5d1c-7f3a-4c8e-b1d6-2a9f0e4c</span><span class="id-end">7d31</span></span><br>Archive: <span class="path">/tmp/oracle-<span class="job-id"><span class="id-start">9b2e5d1c-7f3a-4c8e-b1d6-2a9f0e4c</span><span class="id-end">7d31</span></span>/context-…tar.zst</span>Response will be written to: <span class="path">/tmp/oracle-<span class="job-id"><span class="id-start">9b2e5d1c-7f3a-4c8e-b1d6-2a9f0e4c</span><span class="id-end">7d31</span></span>/response.md</span></div>
+          <div class="terminal-output muted">Do not poll; the one-time completion wake-up arrives in this session.</div>
           <p class="interlude">you keep working</p>
-          <div class="terminal-output completion">Oracle job <span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span> is complete.</div>
-          <div class="terminal-output">response: <span class="path">/tmp/oracle-<span class="job-id"><span class="id-start">11111111-2222-4333-8444-55555555</span><span class="id-end">5555</span></span>/response.md</span></div>
+          <div class="terminal-output completion">Oracle job <span class="job-id"><span class="id-start">9b2e5d1c-7f3a-4c8e-b1d6-2a9f0e4c</span><span class="id-end">7d31</span></span> is complete.</div>
+          <div class="terminal-output prompt"><span class="caret">›</span> /oracle-read <span class="job-id"><span class="id-start">9b2e5d1c-7f3a-4c8e-b1d6-2a9f0e4c</span><span class="id-end">7d31</span></span></div>
+          <div class="terminal-output">status: complete<br>response: <span class="path">/tmp/oracle-<span class="job-id"><span class="id-start">9b2e5d1c-7f3a-4c8e-b1d6-2a9f0e4c</span><span class="id-end">7d31</span></span>/response.md</span></div>
         </div>
       </div>
-      <figcaption>Illustration built from the extension's real output lines; job id and timings are placeholders.</figcaption>
+      <figcaption>Illustration assembled from the extension's real output lines, shortened; the job id is a placeholder.</figcaption>
     </figure>
   </div>
 </section>
