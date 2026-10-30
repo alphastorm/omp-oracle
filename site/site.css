@@ -148,8 +148,10 @@ section { padding: clamp(56px, 8vw, 104px) 0; border-top: 1px solid var(--border
 .setup p { font-size: 15px; max-width: var(--measure); }
 .install-options { display: grid; gap: 10px; }
 .snippet { border: 1px solid var(--border); border-radius: 10px; background: var(--raised); overflow: hidden; }
+.snippet[data-label]::before { content: attr(data-label); display: block; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.snippet.has-copy-bar::before { display: none; }
 .snippet-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 8px 6px 16px; border-bottom: 1px solid var(--border); }
-.snippet-bar .lang { font: 500 11px/1.4 var(--font-mono); color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+.snippet[data-label]::before, .snippet-bar .lang { font: 500 11px/1.4 var(--font-mono); color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
 .copy-button { min-height: 32px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); color: var(--body); font: 500 12px/1 var(--font-mono); cursor: pointer; }
 .copy-button:hover { color: var(--ink); border-color: var(--muted); }
 .copy-button[data-done] { color: var(--ink); border-color: var(--muted); }
