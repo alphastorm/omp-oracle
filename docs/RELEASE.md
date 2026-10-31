@@ -154,6 +154,89 @@ time they were written, not this fork; current support claims live in
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.10 (2026-10-30, `b4b0d31`)
+
+- Scope: [#25](https://github.com/alphastorm/omp-oracle/pull/25), squash `1d3c5ab`, closes a
+  completion-detection gap observed live on 2026-10-30 in an operator ChatGPT Pro job
+  (`21363c38`, the fifth Pro turn of a long Mana AirOS conversation, a `pro_extended` same-thread
+  follow-up): the reply finished with its document attachment, yet the live tab produced no
+  completion signature for the whole 90-minute window and the job failed with `Timed out
+  waiting for ChatGPT response completion`; a fresh load of the same conversation (read-only
+  CDP running `observeConversationExpression`) showed all five complete turns and no stop
+  control. The stale-stop reload could not help because it ages only a visible stop control
+  over non-empty text. The worker now reloads the conversation after five minutes without any
+  completion signature (`nextMissingTurnState`; ChatGPT, non-Deep-Research, conversation URL
+  only; a reload never sends), records the reply's position when the completion timeout does
+  fire, and `oracle_read` `action=recollect` recovers such a timed-out job through the user
+  turn that carries its archive (`timedOutRecollectionBinding`: the saved index, or an
+  explicit `responseIndex` for jobs recorded before the index was saved, never moving a saved
+  one), transitioning it to `complete` with lifecycle source `oracle:recollect`. The
+  release-preparation commit is exactly `b4b0d31adf06a35fec3eb55e3aadb4b484670079`.
+- Red before, green after, as recorded in #25: the sanity suite drives both helpers (a missing
+  turn ages into a reload only after the full window and any signature resets it; a timed-out
+  job binds at the saved or explicit index, an explicit index never moves a saved one, a job
+  without any index, a non-timeout failure, an unaccepted prompt and a completed job are all
+  refused); `typecheck:worker-helpers`, `typecheck:worker-runtime`, `test:oracle-helpers`,
+  `sanity:oracle` and `test:docs` passed on the branch.
+- Live validation of the exact change before the prep commit, from the installed 0.4.9 copy
+  patched in place with the branch's three worker files (byte-identical to `a75a38f`, confirmed
+  with `diff`; originals kept beside them until this install replaced the package): the
+  recollection of `21363c38` (`responseIndex` 4, message `a8f38e22…`, turn sha `3275fb62…`)
+  completed in 4 s, wrote the 22,944-byte `response.md`, and the operator's delivery driver
+  consumed it on resume; the next operator job (`b6bff52d`, GreenLIB v5 `pro_extended`) completed
+  on its first observation under the patched worker. The missing-turn reload path itself was
+  not reproduced live (the condition occurred once, after 90 minutes, on a conversation that
+  was already complete when reloaded).
+- Preconditions: `main` clean and even with origin at `1d3c5ab`; upstream `main` still matched
+  recorded sync `d658a98`; Dependabot [#20](https://github.com/alphastorm/omp-oracle/pull/20)
+  and the design draft #17 were open and are not part of this release. The proof model
+  `nyc-n2/q38-ninfer` answered `/v1/models`. The Ubuntu smoke image `c33763ac8882` (built
+  2026-10-28 for 0.4.9) was present and its Dockerfile unchanged since. The operator's two
+  diligence windows had halted (05:08 and 05:22 UTC); no oracle worker, non-terminal job or
+  diligence Chrome was running when the proof started.
+- Fresh live eight-preset proof accepted on `b4b0d31` in one runner invocation (342 s, managed
+  browser, driver `nyc-n2/q38-ninfer`): `pro_standard` `37a54629`, `pro_extended` `b92848e3`,
+  `thinking_light` `2f48e256`, `thinking_standard` `3b3a0468`, `thinking_extended` `22cb2ef6`,
+  `thinking_heavy` `38327f6e`, `instant` `a4fdc0b1`, `instant_auto_switch` `4c22d088`; every
+  job `complete` in 30–38 s, each with one `slider reads` line, no picker reopen, no stale-stop
+  reload and no missing-turn reload; `observedSelection.effortLabel` `null` after submission
+  for all eight as in 0.4.9, while the worker logs record the stops (`Pro (5 of 5)` for both Pro
+  presets, `Medium (2 of 5)` for both light/standard thinking presets, `High (3 of 5)`, `Extra
+  High (4 of 5)`, `Instant (1 of 5)` twice). Deep Research is excluded from the proof by design;
+  its code did not change.
+- `npm run release:check` passed on `b4b0d31` (147 s): local gate, proof check, doctor,
+  `pack:check` 87 files, Crabbox `platform-build` macOS 41124 ms / Ubuntu 33066 ms and
+  `real-extension` macOS 4024 ms / Ubuntu 3381 ms (runs `run-1793427284397-nwammb`,
+  `run-1793427279061-rzemi2`).
+- Founder authorization by Ask (version, commit and file count named), then annotated tag
+  `v0.4.10` at `b4b0d31` pushed. Release run
+  [41175965956](https://github.com/alphastorm/omp-oracle/actions/runs/41175965956): `verify`
+  06:17:15–06:18:34 UTC, `publish` 06:18:37–06:19:09 UTC. `verify` pack: shasum
+  `b02c274307a06fe9ac651cfe397d5cb44cb44b80`, 87 files; `publish` printed `Signed provenance
+  statement`, transparency log index **3611292191**, and `+ omp-oracle@0.4.10`. The
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.10) uses the
+  dated CHANGELOG section.
+- Registry (answered after 90 s): `dist.shasum` `b02c274307a06fe9ac651cfe397d5cb44cb44b80`
+  equals the `verify` pack, `dist.fileCount` 87, `dist-tags.latest` `0.4.10`; the SLSA
+  provenance names commit `b4b0d31adf06a35fec3eb55e3aadb4b484670079`, `refs/tags/v0.4.10`,
+  `.github/workflows/release.yml` and run 41175965956 attempt 1; a consumer
+  `npm audit signatures` reported 1 package with a verified attestation.
+- MacBook activation: `omp plugin uninstall omp-oracle`, `omp plugin install omp-oracle@0.4.10`,
+  `omp plugin list` confirmed 0.4.10 on Oh My Pi 18.14.1; the installed worker equals `main`;
+  the in-place patch files were replaced by the install. Plugins worktree commit `827a555`
+  pushed. sf-studio (Oh My Pi 18.14.1): no oracle worker or diligence Chrome was running (the
+  auth gateway and two interactive `omp` sessions were); `bun install --frozen-lockfile
+  --dry-run` on the pushed manifest, then `git pull --ff-only` and `bun install
+  --frozen-lockfile`; the worktree ended clean and even; an isolated print-mode
+  `oracle_preflight` from the installed entry point reported ready.
+- Post-install job `add8c39c` (`pro_standard`, `package.json`, no agent-dir overrides):
+  `extensionProvenance.packageVersion` 0.4.10 from the installed `sourcePath`; worker log
+  `slider reads Instant (1 of 5)` then `set to Pro (5 of 5)`; response `OK 0.4.10`. The
+  account's saved tier is Pro again. Sessions predating the install on the MacBook: the
+  planning bridge (pid 1023, 28 Oct) and the release session itself (pid 35919, 19:33 local on
+  30 Oct); sf-studio's two interactive sessions also predate it. Not exercised: the
+  missing-turn reload live, `/oracle-auth`, Grok, the relay transport.
+
 #### 0.4.9 (2026-10-28, `7ec22ac`)
 
 - Scope: [#21](https://github.com/alphastorm/omp-oracle/pull/21), squash `fac0e83`, matches
