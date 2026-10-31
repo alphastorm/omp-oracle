@@ -53,7 +53,7 @@ import {
   stripChatGptResponseChrome,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
-import { composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
+import { composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash, timedOutRecollectionBinding } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
 import {
   buildConversationLeaseMetadata,
   buildRuntimeLeaseMetadata,
@@ -6438,6 +6438,38 @@ function testChatGptFlowHelpers(): void {
   assert(!grew.stale && grew.since === 10_000 + staleAfterMs, "text that changed restarts the window: a live turn is never reloaded mid-render");
   const cleared = nextStaleStopState(held, { stopControl: false, text: "PRESET instant OK", now: 10_000 + staleAfterMs, staleAfterMs });
   assert(!cleared.stale && cleared.since === undefined, "a cleared stop control resets the tracker");
+
+  // A turn that finished without the live page showing it: observed 2026-10-31, the fifth Pro
+  // turn of a long conversation completed while the live tab produced no completion signature
+  // for 90 minutes; a fresh load showed the complete turn. The absence of any signature ages
+  // into a bounded reload; a signature of any kind resets it.
+  const reloadAfterMs = 300_000;
+  const missing = nextMissingTurnState(undefined, { signature: false, now: 5_000, staleAfterMs: reloadAfterMs });
+  const stillMissing = nextMissingTurnState(missing, { signature: false, now: 5_000 + reloadAfterMs - 1, staleAfterMs: reloadAfterMs });
+  assert(missing.since === 5_000 && !missing.stale && stillMissing.since === 5_000 && !stillMissing.stale, "a missing turn keeps its first observation time until the reload window elapses");
+  const reload = nextMissingTurnState(stillMissing, { signature: false, now: 5_000 + reloadAfterMs, staleAfterMs: reloadAfterMs });
+  assert(reload.stale, "no completion signature for the whole window asks for a conversation reload");
+  const seen = nextMissingTurnState(stillMissing, { signature: true, now: 5_000 + reloadAfterMs, staleAfterMs: reloadAfterMs });
+  assert(!seen.stale && seen.since === undefined, "any completion signature resets the missing-turn tracker");
+
+  // Recollecting a job that timed out waiting for its reply binds the reply through the user
+  // turn that carries the job archive; the saved index wins, an explicit one serves jobs that
+  // predate the saved binding, and nothing else failed is recollectable.
+  const timedOutJob = { status: "failed", error: "Timed out waiting for ChatGPT response completion", promptSendState: "accepted", archivePath: "/tmp/oracle-j/context-j.tar.zst", conversationId: "abc" };
+  const basenameOf = (value: string) => value.slice(value.lastIndexOf("/") + 1);
+  const explicitBinding = timedOutRecollectionBinding(timedOutJob, { responseIndex: 4 }, basenameOf);
+  assert(explicitBinding?.responseIndex === 4 && explicitBinding.anchorFileName === "context-j.tar.zst" && explicitBinding.conversationId === "abc", "a timed-out job without a saved binding recollects at the explicit index through its archive anchor");
+  const savedBinding = timedOutRecollectionBinding({ ...timedOutJob, collectionBinding: { responseIndex: 2 } }, undefined, basenameOf);
+  assert(savedBinding?.responseIndex === 2, "the index saved by the timeout binds the recollection");
+  let moved = "";
+  try { timedOutRecollectionBinding({ ...timedOutJob, collectionBinding: { responseIndex: 2 } }, { responseIndex: 3 }, basenameOf); } catch (error) { moved = error instanceof Error ? error.message : String(error); }
+  assert(/cannot move the saved turn index/.test(moved), "an explicit index never moves a saved one");
+  let unbound = "";
+  try { timedOutRecollectionBinding(timedOutJob, undefined, basenameOf); } catch (error) { unbound = error instanceof Error ? error.message : String(error); }
+  assert(/needs its saved or an explicit responseIndex/.test(unbound), "a timed-out job without any index is refused, never guessed");
+  assert(timedOutRecollectionBinding({ ...timedOutJob, error: "ChatGPT response failed: network error" }, { responseIndex: 4 }, basenameOf) === undefined, "only the completion timeout is recollectable; other failures are not");
+  assert(timedOutRecollectionBinding({ ...timedOutJob, promptSendState: "pending" }, { responseIndex: 4 }, basenameOf) === undefined, "a prompt that was never accepted has no reply to recollect");
+  assert(timedOutRecollectionBinding({ ...timedOutJob, status: "complete" }, { responseIndex: 4 }, basenameOf) === undefined, "a completed job keeps the ordinary recollection path");
 }
 
 async function testRunnerAndSmokeFailureContracts(): Promise<void> {

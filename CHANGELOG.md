@@ -4,6 +4,12 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+
+- a ChatGPT turn that finished without the live page ever showing it timed out after the full completion window (2026-10-30, job `21363c38`: the fifth Pro turn of a long conversation completed with its document attachment, the live tab produced no completion signature for 90 minutes, and a fresh load of the same conversation showed the complete turn). The worker now reloads the conversation after five minutes without any completion signature (`nextMissingTurnState`, bounded like the stale-stop reload and never a send), records the reply's position when the completion timeout does fire, and `oracle_read` `action=recollect` recovers such a timed-out job through the user turn that carries its archive (`timedOutRecollectionBinding`; the saved index, or an explicit `responseIndex` for jobs recorded before the index was saved), marking it complete without resending anything
+
 ## 0.4.9 - 2026-10-28
 
 ### Fixed

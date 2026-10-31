@@ -32,3 +32,26 @@ export declare function nextStaleStopState(
   state: Partial<OracleStaleStopState> | undefined,
   input: { stopControl: boolean; text: string; now: number; staleAfterMs: number },
 ): OracleStaleStopState;
+
+export interface OracleMissingTurnState {
+  since: number | undefined;
+  stale: boolean;
+}
+
+export declare function nextMissingTurnState(
+  state: Partial<OracleMissingTurnState> | undefined,
+  input: { signature: boolean; now: number; staleAfterMs: number },
+): OracleMissingTurnState;
+
+export declare function timedOutRecollectionBinding(
+  job: {
+    status?: string;
+    error?: string;
+    promptSendState?: string;
+    archivePath?: string;
+    conversationId?: string;
+    collectionBinding?: { responseIndex?: number; messageId?: string; turnSha256?: string } | undefined;
+  },
+  explicit: { responseIndex?: number } | undefined,
+  basenameOf: (path: string) => string,
+): { conversationId: string | undefined; responseIndex: number; anchorFileName: string } | undefined;
