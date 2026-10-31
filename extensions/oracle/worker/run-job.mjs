@@ -79,7 +79,7 @@ import {
   stripChatGptResponseChrome,
   waitForStationaryControl,
 } from "./chatgpt-ui-helpers.mjs";
-import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash, timedOutRecollectionBinding } from "./chatgpt-flow-helpers.mjs";
+import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash, timedOutRecollectionBinding } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { assertNotKnownBrowserUserDataPath, assertSafeBrowserLaunchArg, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
@@ -2201,10 +2201,11 @@ const RELOAD_RECONCILE_POLL_MS = 1_000;
 // until the full completion timeout. Two minutes of unchanged non-empty text is far longer than
 // any pause between rendered tokens of a live turn, and a reload of a live turn is harmless.
 const STALE_STOP_CONTROL_MS = 120_000;
-// No completion signature at all for this long (no bound turn, or an empty one) reloads the
-// conversation so a turn that finished without the live page showing it is re-read
-// (see nextMissingTurnState). Long enough to leave a thinking phase alone between reloads.
+// No completion signature or generation evidence for this long reloads the conversation so a
+// turn that finished without the live page showing it is re-read (see nextMissingTurnState).
+// One fresh load recovered job 21363c38; after that, leave recovery to timeout/recollection.
 const MISSING_TURN_RELOAD_MS = 300_000;
+const MISSING_TURN_RELOAD_MAX = 1;
 
 async function reconcileStreamedTurn(job, responseIndex, streamedText) {
   const conversationUrl = job.chatUrl;
@@ -2264,6 +2265,8 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let staleStop;
   /** @type {import("./chatgpt-flow-helpers.d.mts").OracleMissingTurnState | undefined} */
   let missingTurn;
+  /** @type {import("./chatgpt-flow-helpers.d.mts").OracleMissingTurnReloadState | undefined} */
+  let missingTurnReload;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
@@ -2364,17 +2367,23 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     }
 
     if (!isGrokJob(job) && job.selection.tool !== "deep_research" && job.chatUrl && isConversationPathUrl(job.chatUrl)) {
-      missingTurn = nextMissingTurnState(missingTurn, { signature: Boolean(completionSignature), now: Date.now(), staleAfterMs: MISSING_TURN_RELOAD_MS });
+      missingTurn = nextMissingTurnState(missingTurn, { signature: Boolean(completionSignature), generating: hasStopStreaming, now: Date.now(), staleAfterMs: MISSING_TURN_RELOAD_MS });
       if (missingTurn.stale) {
-        await log(`No completed bound turn observed for ${Math.round((Date.now() - (missingTurn.since ?? Date.now())) / 1000)} s; reloading the conversation to re-read it`);
-        await agentBrowser(job, "open", job.chatUrl).catch(async (error) => {
-          await log(`Conversation reload failed, continuing to poll: ${error instanceof Error ? error.message : String(error)}`);
-        });
-        missingTurn = undefined;
-        lastCompletionSignature = "";
-        stableCount = 0;
-        await sleep(job.config.worker.pollMs);
-        continue;
+        missingTurnReload = nextMissingTurnReloadState(missingTurnReload, MISSING_TURN_RELOAD_MAX);
+        if (missingTurnReload.action === "limit") {
+          await log("Missing-turn reload already used for this job; polling until the completion timeout");
+        }
+        if (missingTurnReload.action === "reload") {
+          await log(`No completed bound turn observed for ${Math.round((Date.now() - (missingTurn.since ?? Date.now())) / 1000)} s; reloading the conversation to re-read it`);
+          await agentBrowser(job, "open", job.chatUrl).catch(async (error) => {
+            await log(`Conversation reload failed, continuing to poll: ${error instanceof Error ? error.message : String(error)}`);
+          });
+          missingTurn = undefined;
+          lastCompletionSignature = "";
+          stableCount = 0;
+          await sleep(job.config.worker.pollMs);
+          continue;
+        }
       }
     }
     if (completionSignature) {

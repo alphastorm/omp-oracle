@@ -40,8 +40,18 @@ export interface OracleMissingTurnState {
 
 export declare function nextMissingTurnState(
   state: Partial<OracleMissingTurnState> | undefined,
-  input: { signature: boolean; now: number; staleAfterMs: number },
+  input: { signature: boolean; generating: boolean; now: number; staleAfterMs: number },
 ): OracleMissingTurnState;
+
+export interface OracleMissingTurnReloadState {
+  count: number;
+  action: "reload" | "limit" | "poll";
+}
+
+export declare function nextMissingTurnReloadState(
+  state: OracleMissingTurnReloadState | undefined,
+  maxReloads: number,
+): OracleMissingTurnReloadState;
 
 export declare function timedOutRecollectionBinding(
   job: {

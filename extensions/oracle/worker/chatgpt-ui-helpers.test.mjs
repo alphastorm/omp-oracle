@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
+import * as flowHelpers from "./chatgpt-flow-helpers.mjs";
 import { mergeObservedSelection } from "./chatgpt-ui-helpers.mjs";
 import { classifyDeepResearchTurn, effortSelectionVisible, findDialogCloseEntry, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotHasUsableComposerControls, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel, waitForStationaryControl } from "./chatgpt-ui-helpers.mjs";
 
@@ -311,4 +312,64 @@ test("the stationary-control wait ends without animation frames and refuses a co
   } finally {
     Object.assign(globalThis, saved);
   }
+});
+
+test("missing-turn generation evidence prevents staleness for ten minutes", () => {
+  let state;
+  for (let now = 0; now <= 600_000; now += 30_000) {
+    state = flowHelpers.nextMissingTurnState(state, { signature: false, generating: true, now, staleAfterMs: 300_000 });
+    assert.deepEqual(state, { since: undefined, stale: false }, `generation at ${now} ms is not a missing turn`);
+  }
+});
+
+test("missing-turn resets discard idle time when generation or a signature appears", () => {
+  const staleAfterMs = 300_000;
+  for (const evidence of [{ signature: false, generating: true }, { signature: true, generating: false }]) {
+    const first = flowHelpers.nextMissingTurnState(undefined, { signature: false, generating: false, now: 0, staleAfterMs });
+    const reset = flowHelpers.nextMissingTurnState(first, { ...evidence, now: staleAfterMs - 1, staleAfterMs });
+    assert.deepEqual(reset, { since: undefined, stale: false });
+    const idle = flowHelpers.nextMissingTurnState(reset, { signature: false, generating: false, now: staleAfterMs, staleAfterMs });
+    assert.deepEqual(idle, { since: staleAfterMs, stale: false }, "a new idle window starts after generation or completion evidence");
+    const held = flowHelpers.nextMissingTurnState(idle, { signature: false, generating: false, now: 2 * staleAfterMs - 1, staleAfterMs });
+    assert.deepEqual(held, { since: staleAfterMs, stale: false });
+  }
+});
+
+test("missing-turn idle time becomes stale at the threshold and restarts after a reload", () => {
+  const staleAfterMs = 300_000;
+  const first = flowHelpers.nextMissingTurnState(undefined, { signature: false, generating: false, now: 5_000, staleAfterMs });
+  const held = flowHelpers.nextMissingTurnState(first, { signature: false, generating: false, now: 5_000 + staleAfterMs - 1, staleAfterMs });
+  assert.deepEqual(first, { since: 5_000, stale: false });
+  assert.deepEqual(held, first);
+  const stale = flowHelpers.nextMissingTurnState(held, { signature: false, generating: false, now: 5_000 + staleAfterMs, staleAfterMs });
+  assert.deepEqual(stale, { since: 5_000, stale: true });
+  const reloaded = flowHelpers.nextMissingTurnState(undefined, { signature: false, generating: false, now: 5_000 + staleAfterMs + 1, staleAfterMs });
+  assert.deepEqual(reloaded, { since: 5_000 + staleAfterMs + 1, stale: false });
+});
+
+test("missing-turn reload budget permits one attempt and reports exhaustion once per job", () => {
+  const first = flowHelpers.nextMissingTurnReloadState(undefined, 1);
+  assert.deepEqual(first, { count: 1, action: "reload" });
+  let state = flowHelpers.nextMissingTurnReloadState(first, 1);
+  assert.deepEqual(state, { count: 1, action: "limit" });
+  for (let poll = 0; poll < 10; poll += 1) {
+    state = flowHelpers.nextMissingTurnReloadState(state, 1);
+    assert.deepEqual(state, { count: 1, action: "poll" });
+  }
+  assert.deepEqual(flowHelpers.nextMissingTurnReloadState(undefined, 1), first, "a different job has its own reload budget");
+});
+
+test("stale-stop recovery still requires unchanged non-empty text for its full window", () => {
+  const staleAfterMs = 120_000;
+  const thinking = flowHelpers.nextStaleStopState(undefined, { stopControl: true, text: "", now: 0, staleAfterMs });
+  assert.deepEqual(thinking, { text: "", since: undefined, stale: false });
+  assert.deepEqual(flowHelpers.nextStaleStopState(thinking, { stopControl: true, text: "", now: 600_000, staleAfterMs }), thinking);
+  const first = flowHelpers.nextStaleStopState(thinking, { stopControl: true, text: "Reply", now: 10_000, staleAfterMs });
+  const held = flowHelpers.nextStaleStopState(first, { stopControl: true, text: "Reply", now: 10_000 + staleAfterMs - 1, staleAfterMs });
+  assert.deepEqual(held, { text: "Reply", since: 10_000, stale: false });
+  const stale = flowHelpers.nextStaleStopState(held, { stopControl: true, text: "Reply", now: 10_000 + staleAfterMs, staleAfterMs });
+  assert.deepEqual(stale, { text: "Reply", since: 10_000, stale: true });
+  const grew = flowHelpers.nextStaleStopState(stale, { stopControl: true, text: "Reply continued", now: 10_000 + staleAfterMs, staleAfterMs });
+  assert.deepEqual(grew, { text: "Reply continued", since: 10_000 + staleAfterMs, stale: false });
+  assert.deepEqual(flowHelpers.nextStaleStopState(stale, { stopControl: false, text: "Reply", now: 10_000 + staleAfterMs, staleAfterMs }), thinking);
 });

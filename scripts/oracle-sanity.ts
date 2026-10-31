@@ -6439,17 +6439,17 @@ function testChatGptFlowHelpers(): void {
   const cleared = nextStaleStopState(held, { stopControl: false, text: "PRESET instant OK", now: 10_000 + staleAfterMs, staleAfterMs });
   assert(!cleared.stale && cleared.since === undefined, "a cleared stop control resets the tracker");
 
-  // A turn that finished without the live page showing it: observed 2026-10-31, the fifth Pro
+  // A turn that finished without the live page showing it: observed 2026-10-30, the fifth Pro
   // turn of a long conversation completed while the live tab produced no completion signature
-  // for 90 minutes; a fresh load showed the complete turn. The absence of any signature ages
-  // into a bounded reload; a signature of any kind resets it.
+  // for 90 minutes; a fresh load showed the complete turn. Only the absence of both a signature
+  // and generation evidence ages into a bounded reload; either kind of evidence resets it.
   const reloadAfterMs = 300_000;
-  const missing = nextMissingTurnState(undefined, { signature: false, now: 5_000, staleAfterMs: reloadAfterMs });
-  const stillMissing = nextMissingTurnState(missing, { signature: false, now: 5_000 + reloadAfterMs - 1, staleAfterMs: reloadAfterMs });
+  const missing = nextMissingTurnState(undefined, { signature: false, generating: false, now: 5_000, staleAfterMs: reloadAfterMs });
+  const stillMissing = nextMissingTurnState(missing, { signature: false, generating: false, now: 5_000 + reloadAfterMs - 1, staleAfterMs: reloadAfterMs });
   assert(missing.since === 5_000 && !missing.stale && stillMissing.since === 5_000 && !stillMissing.stale, "a missing turn keeps its first observation time until the reload window elapses");
-  const reload = nextMissingTurnState(stillMissing, { signature: false, now: 5_000 + reloadAfterMs, staleAfterMs: reloadAfterMs });
+  const reload = nextMissingTurnState(stillMissing, { signature: false, generating: false, now: 5_000 + reloadAfterMs, staleAfterMs: reloadAfterMs });
   assert(reload.stale, "no completion signature for the whole window asks for a conversation reload");
-  const seen = nextMissingTurnState(stillMissing, { signature: true, now: 5_000 + reloadAfterMs, staleAfterMs: reloadAfterMs });
+  const seen = nextMissingTurnState(stillMissing, { signature: true, generating: false, now: 5_000 + reloadAfterMs, staleAfterMs: reloadAfterMs });
   assert(!seen.stale && seen.since === undefined, "any completion signature resets the missing-turn tracker");
 
   // Recollecting a job that timed out waiting for its reply binds the reply through the user
