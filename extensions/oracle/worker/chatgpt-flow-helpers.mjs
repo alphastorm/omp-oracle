@@ -155,22 +155,36 @@ export function nextStaleStopState(state, { stopControl, text, now, staleAfterMs
 }
 
 /**
- * A finished turn the live page never shows. Observed 2026-10-31: the fifth Pro turn of a long
+ * A finished turn the live page never shows. Observed 2026-10-30: the fifth Pro turn of a long
  * conversation finished (with its document attachment), the live tab yielded no completion
  * signature for 90 minutes and the completion timeout fired, while a fresh load of the same
  * conversation showed the complete turn. `nextStaleStopState` cannot help there: it ages only a
- * visible stop control over non-empty text. This state ages the absence of any completion
- * signature; once it has lasted `staleAfterMs`, the caller reloads the conversation to re-read it
- * (a reload never sends; a generation still running simply re-renders as running). Any signature
- * resets the state.
+ * visible stop control over non-empty text. This state ages only time with neither a completion
+ * signature nor generation evidence; once it has lasted `staleAfterMs`, the caller may reload
+ * the conversation to re-read it, at most once per job. A signature or visible Stop/streaming
+ * control resets the timer, preserving long Pro generations. A reload never sends.
  * @param {Partial<OracleMissingTurnState> | undefined} state
- * @param {{ signature: boolean; now: number; staleAfterMs: number }} input
+ * @param {{ signature: boolean; generating: boolean; now: number; staleAfterMs: number }} input
  * @returns {OracleMissingTurnState}
  */
-export function nextMissingTurnState(state, { signature, now, staleAfterMs }) {
-  if (signature) return { since: undefined, stale: false };
+export function nextMissingTurnState(state, { signature, generating, now, staleAfterMs }) {
+  if (signature || generating) return { since: undefined, stale: false };
   const since = typeof state?.since === "number" ? state.since : now;
   return { since, stale: now - since >= staleAfterMs };
+}
+
+/**
+ * Spend a missing-turn reload attempt, or report the exhausted per-job budget once. The caller
+ * keeps this state across timer resets and spends the attempt even if navigation fails.
+ * @param {import("./chatgpt-flow-helpers.d.mts").OracleMissingTurnReloadState | undefined} state
+ * @param {number} maxReloads
+ * @returns {import("./chatgpt-flow-helpers.d.mts").OracleMissingTurnReloadState}
+ */
+export function nextMissingTurnReloadState(state, maxReloads) {
+  const count = state?.count ?? 0;
+  if (count < maxReloads) return { count: count + 1, action: "reload" };
+  if (state?.action === "limit" || state?.action === "poll") return { count, action: "poll" };
+  return { count, action: "limit" };
 }
 
 /**

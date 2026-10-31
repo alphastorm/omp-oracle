@@ -4,6 +4,12 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+
+- the missing-turn recovery introduced in 0.4.10 reloaded during every long Pro generation (2026-10-31 jobs reloaded 1–2× each; a Cloudflare challenge followed a day of resumes). Generation evidence now resets the missing-turn timer, just like a completion signature, and each job attempts at most one missing-turn reload before polling until its completion timeout and leaving recovery to recollection. The stale-stop reload is unchanged.
+
 ## 0.4.10 - 2026-10-30
 
 ### Fixed
