@@ -153,3 +153,46 @@ export function nextStaleStopState(state, { stopControl, text, now, staleAfterMs
   const since = state?.text === text && typeof state.since === "number" ? state.since : now;
   return { text, since, stale: now - since >= staleAfterMs };
 }
+
+/**
+ * A finished turn the live page never shows. Observed 2026-10-31: the fifth Pro turn of a long
+ * conversation finished (with its document attachment), the live tab yielded no completion
+ * signature for 90 minutes and the completion timeout fired, while a fresh load of the same
+ * conversation showed the complete turn. `nextStaleStopState` cannot help there: it ages only a
+ * visible stop control over non-empty text. This state ages the absence of any completion
+ * signature; once it has lasted `staleAfterMs`, the caller reloads the conversation to re-read it
+ * (a reload never sends; a generation still running simply re-renders as running). Any signature
+ * resets the state.
+ * @param {Partial<OracleMissingTurnState> | undefined} state
+ * @param {{ signature: boolean; now: number; staleAfterMs: number }} input
+ * @returns {OracleMissingTurnState}
+ */
+export function nextMissingTurnState(state, { signature, now, staleAfterMs }) {
+  if (signature) return { since: undefined, stale: false };
+  const since = typeof state?.since === "number" ? state.since : now;
+  return { since, stale: now - since >= staleAfterMs };
+}
+
+/**
+ * Whether a job whose capture never completed may be recollected, and with which binding.
+ * A job that timed out waiting for its response (the prompt was accepted, the reply may have
+ * finished in the conversation) is recollectable through the user turn that carries its own
+ * archive: `job.collectionBinding.responseIndex` saved by the timeout, or an explicit
+ * `responseIndex` for a job recorded before that was saved. The explicit index must not move a
+ * saved one. Returns `undefined` for any other failed job.
+ * @param {{ status?: string; error?: string; promptSendState?: string; archivePath?: string; conversationId?: string;
+ *   collectionBinding?: { responseIndex?: number; messageId?: string; turnSha256?: string } | undefined }} job
+ * @param {{ responseIndex?: number } | undefined} explicit
+ * @param {(path: string) => string} basenameOf
+ * @returns {{ conversationId: string | undefined; responseIndex: number; anchorFileName: string } | undefined}
+ */
+export function timedOutRecollectionBinding(job, explicit, basenameOf) {
+  if (job.status !== "failed" || !/^Timed out waiting for (?:ChatGPT|Grok) response completion$/.test(job.error || "")) return undefined;
+  if (job.promptSendState !== "accepted" || !job.archivePath) return undefined;
+  const saved = Number.isInteger(job.collectionBinding?.responseIndex) ? job.collectionBinding.responseIndex : undefined;
+  const requested = Number.isInteger(explicit?.responseIndex) && explicit.responseIndex >= 0 ? explicit.responseIndex : undefined;
+  if (saved !== undefined && requested !== undefined && saved !== requested) throw new Error("Recollection cannot move the saved turn index.");
+  const responseIndex = saved ?? requested;
+  if (responseIndex === undefined) throw new Error("Recollecting a timed-out job needs its saved or an explicit responseIndex.");
+  return { conversationId: job.conversationId, responseIndex, anchorFileName: basenameOf(job.archivePath) };
+}

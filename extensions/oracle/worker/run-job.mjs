@@ -79,7 +79,7 @@ import {
   stripChatGptResponseChrome,
   waitForStationaryControl,
 } from "./chatgpt-ui-helpers.mjs";
-import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash, timedOutRecollectionBinding } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { assertNotKnownBrowserUserDataPath, assertSafeBrowserLaunchArg, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
@@ -2201,6 +2201,10 @@ const RELOAD_RECONCILE_POLL_MS = 1_000;
 // until the full completion timeout. Two minutes of unchanged non-empty text is far longer than
 // any pause between rendered tokens of a live turn, and a reload of a live turn is harmless.
 const STALE_STOP_CONTROL_MS = 120_000;
+// No completion signature at all for this long (no bound turn, or an empty one) reloads the
+// conversation so a turn that finished without the live page showing it is re-read
+// (see nextMissingTurnState). Long enough to leave a thinking phase alone between reloads.
+const MISSING_TURN_RELOAD_MS = 300_000;
 
 async function reconcileStreamedTurn(job, responseIndex, streamedText) {
   const conversationUrl = job.chatUrl;
@@ -2258,6 +2262,8 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let failedObservations = 0;
   /** @type {import("./chatgpt-flow-helpers.d.mts").OracleStaleStopState | undefined} */
   let staleStop;
+  /** @type {import("./chatgpt-flow-helpers.d.mts").OracleMissingTurnState | undefined} */
+  let missingTurn;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
@@ -2357,6 +2363,20 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       });
     }
 
+    if (!isGrokJob(job) && job.selection.tool !== "deep_research" && job.chatUrl && isConversationPathUrl(job.chatUrl)) {
+      missingTurn = nextMissingTurnState(missingTurn, { signature: Boolean(completionSignature), now: Date.now(), staleAfterMs: MISSING_TURN_RELOAD_MS });
+      if (missingTurn.stale) {
+        await log(`No completed bound turn observed for ${Math.round((Date.now() - (missingTurn.since ?? Date.now())) / 1000)} s; reloading the conversation to re-read it`);
+        await agentBrowser(job, "open", job.chatUrl).catch(async (error) => {
+          await log(`Conversation reload failed, continuing to poll: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        missingTurn = undefined;
+        lastCompletionSignature = "";
+        stableCount = 0;
+        await sleep(job.config.worker.pollMs);
+        continue;
+      }
+    }
     if (completionSignature) {
       if (completionSignature === lastCompletionSignature) stableCount += 1;
       else stableCount = 1;
@@ -2386,6 +2406,11 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     await sleep(job.config.worker.pollMs);
   }
 
+  // The reply may still finish in the conversation: keep its position so recollection can
+  // bind it through the user turn that carries this job's archive, never by resubmitting.
+  if (!isGrokJob(job) && job.conversationId) {
+    await mutateJob((latest) => ({ ...latest, collectionBinding: latest.collectionBinding ?? { conversationId: job.conversationId, responseIndex: baselineAssistantCount }, recollectionNeeded: true })).catch(() => undefined);
+  }
   throw new Error(`Timed out waiting for ${isGrokJob(job) ? "Grok" : "ChatGPT"} response completion`);
 }
 
@@ -2959,10 +2984,15 @@ async function runRecollection() {
   // Separate entrypoint: never reaches configure/upload/composer/send or the submit queue.
   await withLock(ORACLE_STATE_DIR, "recollect", jobId, { processPid: process.pid }, async () => {
     currentJob = await readJob();
-    if (currentJob.status !== "complete") throw new Error("Recollection requires an already completed job.");
     const explicit = process.argv[4] ? JSON.parse(process.argv[4]) : undefined;
-    let binding = currentJob.collectionBinding;
-    if (!binding?.messageId && !binding?.turnSha256) {
+    // A job that timed out waiting for its reply is recollected through its archive anchor and,
+    // on success, becomes complete; nothing is ever resent.
+    const timedOut = timedOutRecollectionBinding(currentJob, explicit, basename);
+    if (currentJob.status !== "complete" && !timedOut) throw new Error("Recollection requires an already completed job.");
+    let binding = timedOut ?? currentJob.collectionBinding;
+    if (timedOut) {
+      // anchored positional binding; the exact identity is learned by captureBoundTurn below
+    } else if (!binding?.messageId && !binding?.turnSha256) {
       if (!explicit && Number.isInteger(binding?.responseIndex) && currentJob.archivePath) {
         // A positional binding saved by a capture that failed: the user turn carrying this job's own
         // archive identifies the exchange, and its reply must still sit at the saved index.
@@ -3041,6 +3071,16 @@ async function runRecollection() {
       if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
       await collectBoundResult(currentJob, binding);
       await mutateJob((job) => ({ ...job, recollectionError: undefined }));
+      if (timedOut) {
+        const artifactFailureCount = currentJob.artifactFailureCount || 0;
+        currentJob = await mutateJob((job) => transitionOracleJobPhase(job, artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete", {
+          at: new Date().toISOString(),
+          source: "oracle:recollect",
+          message: "The reply had finished in the conversation; recollected after the completion timeout, nothing was resent.",
+          patch: { error: undefined, generationStatus: "completed", recollectionNeeded: undefined, responsePath: currentJob.responsePath, responseFormat: "text/plain", artifactFailureCount, completedAt: new Date().toISOString() },
+        }));
+        await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
+      }
     } catch (thrown) {
       if (shuttingDown) return;
       await assertManagedBrowserUnchanged(currentJob).catch(() => undefined);
