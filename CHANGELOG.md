@@ -10,6 +10,10 @@ history is kept below the divider.
 
 - the development-only `minimatch` dependency is overridden to `^11.0.1` to fix [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), because `@earendil-works/pi-coding-agent` 1.4.0 pins the vulnerable `10.2.6`; the published package does not change
 
+### Fixed
+
+- ChatGPT model configuration recognizes bare-effort buttons case-insensitively, including removable chips, and turn observation, capture, and recollection recognize assistant headings by `data-conversation-role="assistant"` as well as their existing text prefix (ported from upstream `pi-oracle` 0.7.23).
+
 ## 0.4.11 - 2026-10-31
 
 ### Fixed
