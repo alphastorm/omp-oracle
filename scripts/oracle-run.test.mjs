@@ -7,8 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { parseOracleRunArgs, summarizeOracleRunResult } from "../extensions/oracle/shared/oracle-run-helpers.mjs";
-import { requestShapeError } from "../extensions/oracle/lib/run-command.js";
+import { parseOracleRunArgs, requestShapeError, summarizeOracleRunResult } from "../extensions/oracle/shared/oracle-run-helpers.mjs";
 
 // /oracle-run is the driver control path: the host executes the registered tool from a JSON request, no model turn.
 // Never call oracle_auth or a dispatching oracle_submit here: browser/provider qualification is a separate gate.
