@@ -1,5 +1,5 @@
 // Purpose: Execute one registered oracle tool from a slash command, with no model in the loop.
-// Responsibilities: Validate the JSON request against the tool's own parameter schema, write the dispatch marker before the tool runs,
+// Responsibilities: Check the JSON request's shape (the tool schema's keys and required fields), write the dispatch marker before the tool runs,
 // and persist the exact tool result for the calling program.
 // Scope: Deterministic host-side control path for drivers that otherwise had to ask a model to type the tool call; the tools themselves are unchanged.
 // Usage: Registered by the extension entrypoint once the programmatic tool definitions are captured; drivers invoke it as `omp -p "/oracle-run …"`.
@@ -8,14 +8,11 @@ import { closeSync, existsSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
-import { Check } from "typebox/value";
-import { parseOracleRunArgs, summarizeOracleRunResult, type OracleRunInvocation, type OracleRunSummary } from "../shared/oracle-run-helpers.mjs";
+import { parseOracleRunArgs, requestShapeError, summarizeOracleRunResult, type OracleRunInvocation, type OracleRunSummary } from "../shared/oracle-run-helpers.mjs";
 import { asRecord } from "./tools.js";
 
 export type OracleRunToolDefinition = {
   name: string;
-  parameters?: TSchema;
   prepareArguments?: (args: unknown) => unknown;
   execute(
     toolCallId: string,
@@ -65,11 +62,10 @@ export async function runOracleTool(
   if (!definition) throw new Error(`Oracle tool oracle_${invocation.operation} is not registered`);
   if (existsSync(invocation.resultPath)) throw new Error(`Result already exists; inspect it before any further operation: ${invocation.resultPath}`);
   const request = await readRequest(invocation.requestPath);
+  const shapeError = requestShapeError(invocation.operation, request);
+  if (shapeError) throw new Error(`Request does not match the oracle_${invocation.operation} request shape (${shapeError}): ${invocation.requestPath}`);
   const prepared = asRecord(definition.prepareArguments ? definition.prepareArguments(request) : request);
   if (!prepared) throw new Error(`Prepared oracle_${invocation.operation} arguments are not an object`);
-  if (definition.parameters !== undefined && !Check(definition.parameters, prepared)) {
-    throw new Error(`Request does not match the oracle_${invocation.operation} parameter schema: ${invocation.requestPath}`);
-  }
   if (invocation.markerPath) {
     writeExclusive(invocation.markerPath, `${JSON.stringify({ operation: invocation.operation, dispatch_state: "may_have_been_sent", at: new Date().toISOString() })}\n`);
     fsyncDirectory(dirname(invocation.markerPath));
