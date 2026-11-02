@@ -158,6 +158,95 @@ time they were written, not this fork; current support claims live in
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.13 (2026-11-02, `d0724e1`)
+
+- Scope: [#31](https://github.com/alphastorm/omp-oracle/pull/31), squash `8d556fa`, the
+  install fix for 0.4.12: the plugin installer's extension validation failed on
+  `Cannot find package 'typebox' imported from …/lib/run-command.ts` because the host rewrites
+  the bare `typebox` specifier onto its bundled copy but not the `typebox/value` subpath. The
+  `/oracle-run` request shape is now checked explicitly in `shared/oracle-run-helpers.mjs`
+  (`requestShapeError`: the schema's keys and required fields, non-empty prompt/files/jobId) and
+  the module imports nothing from `typebox`. Red-before/green-after unit cases are in the PR;
+  the installer path itself is not reproducible locally (`omp plugin install <dir>` links and
+  skips validation; `-e <packed tree>` loaded 0.4.12), so the registry install below is the proof.
+- Prep commit `d0724e1` (`chore(release): prepare omp-oracle 0.4.13`). No runtime change since
+  0.4.12's live validation; the proof lane re-ran on this commit.
+- Preset proof on `d0724e1` (8/8, 311 s): `b7f919df` pro_standard 42.7 s, `0ab1759d`
+  pro_extended 37.9 s, `f59f2c21` thinking_light 37.9 s, `2ab90cce` thinking_standard 38.5 s,
+  `7e0472c5` thinking_extended 38.2 s, `219be53c` thinking_heavy 38.1 s, `01cd3346` instant
+  38.0 s, `1ab66421` instant_auto_switch 38.7 s. The usual local proof model drove the proof.
+- `release:check` green: `verify:oracle`, capture proof, preset check, Crabbox macOS
+  (platform-build 41.4 s, real-extension 4.5 s) and Ubuntu (32.6 s, 3.5 s); run ids
+  `run-1793645114341-fxbn8n`, `run-1793645127586-bv6mdv`, `run-1793645155745-xszibf`,
+  `run-1793645160191-wg3a76`. Gate `pack:check`: 90 files.
+- Release: `v0.4.13` at `d0724e1` pushed. Release run
+  [41505709021](https://github.com/alphastorm/omp-oracle/actions/runs/41505709021): `verify`
+  18:59:25–19:00:56Z, `publish` 19:00:58–19:01:16Z; `verify` pack shasum
+  `bbd79697fc9bac5ea6fe195f128bf9ae59320ebd`, integrity `sha512-imlJF6s/Otj7r…ociOEoCXSoFVQ==`,
+  90 files; `publish` logged `Signed provenance statement`, transparency log index
+  **3647166140**, and `+ omp-oracle@0.4.13`. The
+  [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.13) uses the
+  CHANGELOG section; the 0.4.12 release notes now carry a superseded notice.
+- Registry (visible after about 180 s): `dist.shasum` equal to the `verify` pack shasum,
+  `dist.fileCount` 90, `dist-tags.latest` `0.4.13`; the SLSA provenance names commit
+  `d0724e1938f0a4717ebedb2991d052099e278599`, `refs/tags/v0.4.13`,
+  `.github/workflows/release.yml`, run attempt 1. Consumer check: `npm audit signatures`
+  reported 2 verified registry signatures and 1 verified attestation.
+- MacBook activation: `omp plugin uninstall omp-oracle`, `omp plugin install omp-oracle@0.4.13`
+  passed extension validation; `omp plugin list` confirmed 0.4.13 on Oh My Pi 18.15.0. Plugins
+  worktree commit `c76e72d` pushed. Second workstation: `git pull --ff-only` and
+  `bun install --frozen-lockfile` (worktree clean and even with origin), then a model-free
+  `/oracle-run preflight` from the installed entry point reported `ready: true` on the managed
+  profile (no browser launched, nothing sent).
+- Post-install job `d005d5b5` on the MacBook's real agent dir through the installed
+  `/oracle-run submit` (`pro_standard`, `package.json`, 59 s): complete,
+  `extensionProvenance.packageVersion` 0.4.13 with the installed `sourcePath`, slider
+  `Instant` → `set to Pro (5 of 5)`, marker echoed; the account's saved tier is Pro.
+- Sessions predating the install keep the old extension code until restarted: 3 on the MacBook
+  (including the release session) and 2 on the second workstation.
+- Not exercised: no live `/oracle-auth` run, no Deep Research job (capture covered by the
+  offline proof; no Deep Research code changed in 0.4.12 or 0.4.13).
+
+#### 0.4.12 (2026-11-02, `b35a593`) — published, superseded by 0.4.13
+
+- Scope: [#30](https://github.com/alphastorm/omp-oracle/pull/30), squash `f628e2a`:
+  `/oracle-run <preflight|submit|read> <request.json> <result.json> [<marker.json>]`, the
+  model-free tool execution path for driver programs (the host executes the registered tool from
+  a JSON request, creates the dispatch marker with `O_EXCL` immediately before the tool runs and
+  writes the exact result; a model no longer retypes the call). Motivation: on 2026-11-02 a
+  driver's control agent retyped one path in its JavaScript cell, left the marker and no result
+  for a completed job, and the driver fenced it as ambiguous.
+- Upstream re-check: `bd91a5a` (`596d8b7`, #72 release automation, and the 0.7.23 chore); no
+  runtime file changed; nothing ported (`docs/UPSTREAM.md`).
+- Live pre-release validation from source on `f628e2a`, driven by `/oracle-run` itself (no model
+  in the loop; isolated root, operator's managed profile): `505562fb` instant 35 s (marker
+  echoed, `collectionBinding.responseIndex` 0), `fbc8dd5e` same-thread follow-up 66 s (same
+  `chatUrl`, `followUpToJobId` bound, `responseIndex` 1, response is a fenced `yaml` block —
+  the #28 capture/heading change), `acc68e37` pro_standard 42 s then `5073eea0` instant 35 s
+  (the #29 slider step off Pro: one read each, no picker reopen, no stale stop).
+  `npm run proof:capture` passed offline (research widget, citations, recollection).
+- Prep commit `b35a593`. Preset proof on it (8/8, 348 s): `5c7dc956` pro_standard 47.2 s,
+  `7163fa71` pro_extended 46.5 s, `310abd0e` thinking_light 41.7 s, `615aff92`
+  thinking_standard 44.2 s, `f4cb3b8d` thinking_extended 41.3 s, `a81d964b` thinking_heavy
+  41.5 s, `0b03a763` instant 44.0 s, `66145aeb` instant_auto_switch 41.7 s; one slider read
+  per job, no reopen, no stale stop. The runner's parent process was interrupted mid-run by an
+  unrelated kernel interrupt; the proof process itself ran to completion and wrote the proof
+  file. `release:check` green (Crabbox macOS platform-build 42.5 s / real-extension 4.5 s,
+  Ubuntu 35.9 s / 3.8 s; run ids `run-1793643563880-owd2zd`, `run-1793643570651-b0osdz`).
+- Release: `v0.4.12` at `b35a593`. Release run
+  [41499821771](https://github.com/alphastorm/omp-oracle/actions/runs/41499821771): `verify`
+  18:21:42–18:23:13Z, `publish` 18:23:15–18:23:28Z; pack shasum
+  `d461de0f8e3e078b2149dbb10e37ea7a9df93e17`, integrity `sha512-1fj884srbXhMM…mRH4Ria5pnHig==`,
+  90 files; transparency log index **3646441407**; `+ omp-oracle@0.4.12`. Registry visible
+  after about 345 s with the matching shasum; provenance names commit
+  `b35a593b90882216c2f7c5a0a317c2ee88bdd2d7`, `refs/tags/v0.4.12`; `npm audit signatures`
+  reported 1 verified attestation.
+- **Install failed**: `omp plugin install omp-oracle@0.4.12` on the MacBook was rolled back by
+  the installer's extension validation (`Cannot find package 'typebox' imported from
+  …/lib/run-command.ts`); 0.4.11 was reinstalled and stayed active until 0.4.13. No second
+  workstation install, no post-install job. The package remains on npm; its GitHub release notes
+  point to 0.4.13.
+
 #### 0.4.11 (2026-10-31, `5f97054`)
 
 - Scope: [#26](https://github.com/alphastorm/omp-oracle/pull/26), squash `79dfc40`, bounds the
