@@ -36,6 +36,11 @@ request. For the full validation ladder, see [Test plan](docs/TEST_PLAN.md#which
 (`test:docs`), the three typecheck projects (`typecheck`, `typecheck:worker-helpers`,
 `typecheck:worker-runtime`), the sanity harness (`sanity:oracle`), and `npm pack --dry-run`.
 
+The root `tsconfig.json` only references those three projects (`tsconfig.extension.json`,
+`tsconfig.worker-helpers.json`, `tsconfig.worker-runtime.json`), so editors and language servers,
+which find only a file named `tsconfig.json`, check each file with its own project's options; the
+typecheck scripts compile each project directly.
+
 ## Documentation changes
 
 - Pinned literals in `scripts/oracle-sanity.ts` (`README.md`, `docs/ARCHITECTURE.md`,

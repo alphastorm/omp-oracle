@@ -1,16 +1,8 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
-    "strict": true,
-    "skipLibCheck": true,
-    "noEmit": true,
-    "allowImportingTsExtensions": true,
-    "resolveJsonModule": true,
-    "verbatimModuleSyntax": true,
-    "types": ["node"]
-  },
-  "include": ["extensions/**/*.ts", "extensions/**/*.d.mts", "scripts/**/*.ts", "scripts/**/*.d.ts"]
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.extension.json" },
+    { "path": "./tsconfig.worker-helpers.json" },
+    { "path": "./tsconfig.worker-runtime.json" }
+  ]
 }
