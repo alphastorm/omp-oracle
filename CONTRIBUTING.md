@@ -24,7 +24,7 @@ request. For the full validation ladder, see [Test plan](docs/TEST_PLAN.md#which
 
 | Change type | Required validation |
 | --- | --- |
-| Docs-only | `npm run verify:oracle`, which runs the documentation link check (`npm run test:docs`) and the sanity harness's pinned documentation literals (`scripts/oracle-sanity.ts`). |
+| Docs-only | `npm run verify:oracle`, which runs the documentation link check (`npm run test:docs`) and the sanity harness's retained documentation contracts (`scripts/oracle-sanity.ts`). |
 | Runtime or extension code | `npm run verify:oracle` plus an isolated local-extension session using the `instant` or `thinking_light` preset per [Isolated `pi` session smoke](docs/TEST_PLAN.md#isolated-pi-session-smoke), asking the exercised agent for friction feedback. |
 | Platform-sensitive (archive packing, process cleanup, runtime or browser profile handling, package metadata, Crabbox harness) | `npm run smoke:platform:doctor` and a focused Crabbox run (`node scripts/platform-smoke.mjs run --target <target> --suite <suite>`); see [Platform smoke](docs/PLATFORM_SMOKE.md). |
 | Model-selection or ChatGPT UI | Live loaded-extension proof across the eight canonical model presets (`npm run release:proof:chatgpt-presets:run` and `npm run release:proof:chatgpt-presets`); see [Release](docs/RELEASE.md#chatgpt-preset-proof). |
@@ -35,6 +35,9 @@ request. For the full validation ladder, see [Test plan](docs/TEST_PLAN.md#which
 (`test:oracle-helpers`), the site coherence test (`test:site`), the documentation link check
 (`test:docs`), the three typecheck projects (`typecheck`, `typecheck:worker-helpers`,
 `typecheck:worker-runtime`), the sanity harness (`sanity:oracle`), and `npm pack --dry-run`.
+The main sanity and poller suites share `scripts/oracle-sanity-support.ts`; tool schemas and
+runtime contracts are exercised behaviorally. Keep the remaining source-only behavior pins until
+behavioral replacements exist, but do not add source-text pins for behavior already tested.
 
 The root `tsconfig.json` only references those three projects (`tsconfig.extension.json`,
 `tsconfig.worker-helpers.json`, `tsconfig.worker-runtime.json`), so editors and language servers,
@@ -43,8 +46,8 @@ typecheck scripts compile each project directly.
 
 ## Documentation changes
 
-- Pinned literals in `scripts/oracle-sanity.ts` (`README.md`, `docs/ARCHITECTURE.md`,
-  `docs/OPERATIONS.md`, and `docs/TEST_PLAN.md`) must stay verbatim. If you change a command,
+- Retained documentation and prompt wording pins in `scripts/oracle-sanity.ts` (`README.md`, `docs/ARCHITECTURE.md`,
+  `docs/OPERATIONS.md`, `docs/TEST_PLAN.md`, and `prompts/`) must stay verbatim. If you change a command,
   tool, limit, or preset, update `README.md` and the relevant `docs/` page in the same change.
 - Headings and explicit HTML anchors that other documentation pages or the public site link must
   keep their text. `npm run test:docs` (`scripts/docs-links.test.mjs`) verifies that every
@@ -63,7 +66,7 @@ typecheck scripts compile each project directly.
 | `extensions/oracle/shared/` | Shared process, state, job, and observability helpers |
 | [`prompts/oracle.md`](prompts/oracle.md) | Hidden `/oracle` command-dispatch workflow |
 | [`prompts/oracle-followup.md`](prompts/oracle-followup.md) | Hidden `/oracle-followup` command-dispatch workflow |
-| `scripts/oracle-sanity*` | Local sanity harness, including documentation contracts |
+| `scripts/oracle-sanity*` | Behavioral/schema sanity, shared fixtures, and retained source/documentation contracts |
 | `scripts/platform-smoke*` | Crabbox macOS, Ubuntu, and Windows release smoke gate |
 | `site/` | Public website source; the Pages deploy stages its mark, favicon, and social preview from `assets/` |
 | `assets/` | Brand mark, favicon, and the banner and social-preview sources with their renders ([Branding](docs/BRANDING.md)) |
