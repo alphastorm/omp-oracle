@@ -6,10 +6,10 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { chmod, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import {
   resolveOracleSubmitPreset,
@@ -74,7 +74,7 @@ export async function waitForCondition<T>(
 }
 
 export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `"'"'`)}'`;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 export async function writeExecutableScript(path: string, content: string): Promise<void> {
@@ -133,6 +133,15 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
 export function readProcessStartedAt(pid: number | undefined): string | undefined {
   if (!pid || pid <= 0) return undefined;
   try {
+    if (process.platform === "win32") {
+      const startedAt = execFileSync("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`,
+      ], { encoding: "utf8" }).trim();
+      return startedAt || undefined;
+    }
     const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
     return startedAt || undefined;
   } catch {
@@ -178,6 +187,32 @@ export async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+export async function waitForPath(path: string, timeoutMs = 2_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await pathExists(path)) return true;
+    await sleep(50);
+  }
+  return pathExists(path);
+}
+
+export async function waitForJobState(
+  jobId: string,
+  predicate: (job: NonNullable<ReturnType<typeof readJob>>) => boolean,
+  timeoutMs = 5_000,
+): Promise<NonNullable<ReturnType<typeof readJob>>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = readJob(jobId);
+    if (job && predicate(job)) return job;
+    await sleep(50);
+  }
+
+  const last = readJob(jobId);
+  if (last && predicate(last)) return last;
+  throw new Error(`Timed out waiting for oracle job ${jobId} to reach the expected state`);
+}
+
 export async function removeDirRobust(path: string, options?: { attempts?: number; delayMs?: number }): Promise<void> {
   const attempts = options?.attempts ?? 5;
   const delayMs = options?.delayMs ?? 50;
@@ -199,18 +234,6 @@ export async function resetOracleStateDir(): Promise<void> {
   await stopAllPollers();
   await waitForAllPollersToQuiesce().catch(() => undefined);
   await removeDirRobust(getOracleStateDir());
-}
-
-export async function waitForTmpStateDir(parentDir: string, finalName: string, timeoutMs: number): Promise<string> {
-  return waitForCondition(async () => {
-    const entries = await readdir(parentDir).catch(() => [] as string[]);
-    const match = entries.find((name) => name.startsWith(`.tmp-${finalName}.`));
-    return match ? join(parentDir, match) : undefined;
-  }, {
-    timeoutMs,
-    intervalMs: 25,
-    description: `in-flight .tmp-* dir for ${finalName}`,
-  });
 }
 
 export function hashedOracleStatePath(kind: string, key: string, rootDir: string): string {
@@ -268,14 +291,6 @@ const TEST_ASSISTANT_USAGE: AssistantMessage["usage"] = {
   },
 };
 
-export function appendUserMessage(sessionManager: Pick<SessionManager, "appendMessage">, text: string): string {
-  return sessionManager.appendMessage({
-    role: "user",
-    content: text,
-    timestamp: Date.now(),
-  });
-}
-
 export function appendAssistantMessage(
   sessionManager: Pick<SessionManager, "appendMessage">,
   text: string,
@@ -316,16 +331,6 @@ export function createPollerCtx(sessionManager: SessionManager, cwd = process.cw
   } as unknown as PollerTestContext;
 }
 
-type AssistantSessionEntry = Extract<SessionEntry, { type: "message" }> & { message: AssistantMessage };
-
-export function findNotificationEntry(sessionManager: Pick<SessionManager, "getEntries">, jobId: string): AssistantSessionEntry | undefined {
-  const entry = sessionManager.getEntries().find((candidate) => {
-    if (candidate.type !== "message" || candidate.message.role !== "assistant") return false;
-    return candidate.message.responseId === `oracle-notification:${jobId}`;
-  });
-  return entry as AssistantSessionEntry | undefined;
-}
-
 export interface ToolDefinitionLike {
   name: string;
   execute?: (...args: unknown[]) => unknown;
@@ -352,6 +357,7 @@ export interface PiHarness extends ExtensionAPI {
   commands: Map<string, CommandDefinitionLike>;
   handlers: Map<string, (event: unknown, ctx: ExtensionContext) => unknown>;
   sentMessages: SentMessageLike[];
+  sentMessageOptions: unknown[];
   sentUserMessages: Array<{ content: unknown; options?: unknown }>;
 }
 
@@ -360,12 +366,14 @@ export function createPiHarness(): PiHarness {
   const commands = new Map<string, CommandDefinitionLike>();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const sentMessages: SentMessageLike[] = [];
+  const sentMessageOptions: unknown[] = [];
   const sentUserMessages: Array<{ content: unknown; options?: unknown }> = [];
   return {
     tools,
     commands,
     handlers,
     sentMessages,
+    sentMessageOptions,
     sentUserMessages,
     registerTool(definition: ToolDefinitionLike) {
       tools.set(definition.name, definition);
@@ -376,8 +384,9 @@ export function createPiHarness(): PiHarness {
     on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
       handlers.set(event, handler);
     },
-    sendMessage(message: SentMessageLike) {
+    sendMessage(message: SentMessageLike, options?: unknown) {
       sentMessages.push(message);
+      sentMessageOptions.push(options);
     },
     sendUserMessage(content: unknown, options?: unknown) {
       sentUserMessages.push({ content, options });
@@ -459,6 +468,9 @@ export async function createJobForTest(
   );
   const created = readJob(jobId);
   assert(created, "test job should exist after creation");
+  assert(created.extensionProvenance?.schemaVersion === 1, "created oracle jobs should record extension provenance for release proof");
+  assert(created.extensionProvenance?.packageName === "omp-oracle", "extension provenance should record the package name");
+  assert(created.extensionProvenance?.sourcePath === join(import.meta.dirname, ".."), "extension provenance should record the loaded extension source root");
   await writeFile(created.archivePath, "sanity archive\n", { mode: 0o600 });
   return jobId;
 }

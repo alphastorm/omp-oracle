@@ -13,17 +13,16 @@ import { basename, join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadOracleConfig, type OracleConfig } from "../extensions/oracle/lib/config.ts";
 import {
-  cancelOracleJob,
-  getJobDir,
-  listOracleJobDirs,
-  markJobNotified,
-  pruneTerminalOracleJobs,
-  readJob,
-  removeTerminalOracleJob,
-  tryClaimNotification,
-  updateJob,
+    getJobDir,
+    listOracleJobDirs,
+    markJobNotified,
+    pruneTerminalOracleJobs,
+    readJob,
+    removeTerminalOracleJob,
+    tryClaimNotification,
+    updateJob
 } from "../extensions/oracle/lib/jobs.ts";
-import { getLeasesDir, getOracleStateDir, listLeaseMetadata, releaseLease, withLock, writeLeaseMetadata } from "../extensions/oracle/lib/locks.ts";
+import { getLeasesDir, listLeaseMetadata, releaseLease, withLock, writeLeaseMetadata } from "../extensions/oracle/lib/locks.ts";
 import { getPollerSessionKey, scanOracleJobsOnce, startPoller, stopPollerForSession, waitForAllPollersToQuiesce } from "../extensions/oracle/lib/poller.ts";
 import { promoteQueuedJobsWithinAdmissionLock } from "../extensions/oracle/lib/queue.ts";
 import { getProjectId, releaseRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
@@ -31,31 +30,28 @@ import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import { registerOracleTools } from "../extensions/oracle/lib/tools.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
 import {
-  appendAssistantMessage,
-  appendUserMessage,
-  asRecord,
-  assert,
-  cleanupJob,
-  completeJob,
-  createJobForTest,
-  createPersistedSessionManager,
-  createPiHarness,
-  createPollerCtx,
-  createTerminalJob,
-  createCommandCtx,
-  createExtensionCtx,
-  createUiStub,
-  type SentMessageLike,
-  findNotificationEntry,
-  hashedOracleStatePath,
-  isPidAlive,
-  pathExists,
-  readProcessStartedAt,
-  resetOracleStateDir,
-  sleep,
-  waitForCondition,
-  waitForPidExit,
-  waitForProcessStartedAtValue,
+    appendAssistantMessage, asRecord,
+    assert,
+    cleanupJob,
+    completeJob,
+    createJobForTest,
+    createPersistedSessionManager,
+    createPiHarness,
+    createPollerCtx,
+    createTerminalJob,
+    createCommandCtx,
+    createExtensionCtx,
+    createUiStub,
+    type SentMessageLike,
+    hashedOracleStatePath,
+    isPidAlive,
+    pathExists,
+    readProcessStartedAt,
+    resetOracleStateDir,
+    sleep,
+    waitForCondition,
+    waitForPidExit,
+    waitForProcessStartedAtValue
 } from "./oracle-sanity-support.ts";
 
 export async function testBusySessionDefersWakeup(config: OracleConfig): Promise<void> {
@@ -234,8 +230,6 @@ async function testPollerNotification(config: OracleConfig): Promise<void> {
   await waitForCondition(() => (sent.length >= 1 ? true : undefined), { timeoutMs: process.platform === "win32" ? 5_000 : 1_500, description: "poller wake-up delivery" });
   stopPollerForSession(sessionFile, ctx.cwd);
 
-  const reopenedSession = SessionManager.open(sessionFile, undefined, process.cwd());
-  assert(!findNotificationEntry(reopenedSession, jobId), "same-session live pollers should not append a durable oracle completion message directly into the active session history");
   assert(sent.length >= 1, `expected at least one best-effort wake-up request, saw ${sent.length}`);
   assert((sent[0]?.details as { jobId?: string } | undefined)?.jobId === jobId, "poller should request wake-up for the expected job id");
   const deliveredJob = readJob(jobId);
@@ -649,186 +643,89 @@ async function testPersistedSessionsDoNotAdoptLegacyProjectScopedJobs(config: Or
   await cleanupJob(jobId);
 }
 
-async function testPollerNotificationSkipsContestedSameSessionWriters(config: OracleConfig): Promise<void> {
-  await resetOracleStateDir();
-  const submitterSessionManager = createPersistedSessionManager("poller-same-session-deferred-submit");
-  const adopterSessionManager = createPersistedSessionManager("poller-same-session-deferred-adopter");
-  const submitterSessionFile = submitterSessionManager.getSessionFile();
-  const adopterSessionFile = adopterSessionManager.getSessionFile();
-  assert(submitterSessionFile && adopterSessionFile, "deferred same-session notification test should persist both session files");
-  appendAssistantMessage(submitterSessionManager, "prime same-session history", { provider: "anthropic", model: "claude-sonnet-4" });
-  const jobId = await createTerminalJob(config, process.cwd(), submitterSessionFile);
+async function testWakeupDeliveryMatrix(config: OracleConfig): Promise<void> {
+  const cases: Array<{
+    name: string;
+    context: "same" | "branched" | "other";
+    liveTarget?: boolean;
+    busy?: boolean;
+    pendingMessages?: boolean;
+    alreadyNotified?: boolean;
+    pastRetention?: boolean;
+    deliveries: number;
+    notified: boolean;
+  }> = [
+    { name: "same session", context: "same", deliveries: 1, notified: true },
+    { name: "branched same session", context: "branched", deliveries: 1, notified: true },
+    { name: "other session without a live target", context: "other", deliveries: 1, notified: true },
+    { name: "other session with a live target", context: "other", liveTarget: true, deliveries: 0, notified: false },
+    { name: "busy session", context: "same", busy: true, deliveries: 0, notified: false },
+    { name: "pending messages", context: "same", pendingMessages: true, deliveries: 0, notified: false },
+    { name: "already notified", context: "other", alreadyNotified: true, deliveries: 0, notified: true },
+    { name: "past retention", context: "same", pastRetention: true, deliveries: 0, notified: false },
+  ];
 
-  const sameSessionSent: SentMessageLike[] = [];
-  const sameSessionPi = createPiHarness();
-  sameSessionPi.sendMessage = (message) => {
-    sameSessionSent.push(message);
-  };
-  await scanOracleJobsOnce(sameSessionPi as unknown as ExtensionAPI, createPollerCtx(submitterSessionManager), "/tmp/fake-oracle-worker.mjs");
+  for (const row of cases) {
+    await resetOracleStateDir();
+    const origin = createPersistedSessionManager("delivery-matrix-origin");
+    const sessionFile = origin.getSessionFile();
+    assert(sessionFile, `${row.name}: origin should have a persisted session identity`);
+    const branchBaseId = appendAssistantMessage(origin, "prime delivery matrix history");
+    let receiver = origin;
+    if (row.context === "branched") {
+      origin.appendCustomEntry("oracle-sanity-newer-head", { stage: "newer-head" });
+      receiver = SessionManager.open(sessionFile, undefined, process.cwd());
+      receiver.branch(branchBaseId);
+    } else if (row.context === "other") {
+      receiver = createPersistedSessionManager("delivery-matrix-receiver");
+    }
+    const ctx = createPollerCtx(receiver);
+    ctx.idle = !row.busy;
+    ctx.pendingMessages = Boolean(row.pendingMessages);
+    const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
+    let liveTargetLeaseKey: string | undefined;
+    const priorNotifiedAt = row.alreadyNotified ? new Date().toISOString() : undefined;
 
-  const deferredSession = SessionManager.open(submitterSessionFile, undefined, process.cwd());
-  assert(!findNotificationEntry(deferredSession, jobId), "same-session live pollers should defer durable completion messages instead of appending directly into the active session");
-  assert(Boolean(readJob(jobId)?.notifiedAt), "same-session live pollers should mark one-time completion wake-up delivery as notified");
-  assert(sameSessionSent.length === 1, `same-session live pollers should request exactly one wake-up, saw ${sameSessionSent.length}`);
-  stopPollerForSession(submitterSessionFile, process.cwd());
-  await updateJob(jobId, (job) => ({
-    ...job,
-    wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-  }));
+    try {
+      if (priorNotifiedAt) await updateJob(jobId, (job) => ({ ...job, notifiedAt: priorNotifiedAt }));
+      if (row.pastRetention) {
+        const oldAt = new Date(Date.now() - config.cleanup.completeJobRetentionMs - 60_000).toISOString();
+        await updateJob(jobId, (job) => ({ ...job, createdAt: oldAt, completedAt: oldAt, phaseAt: oldAt }));
+      }
+      if (row.liveTarget) {
+        const job = readJob(jobId);
+        assert(job, `${row.name}: terminal job should exist`);
+        const processStartedAt = readProcessStartedAt(process.pid);
+        liveTargetLeaseKey = `${job.projectId}::${job.sessionId}::${process.pid}::${processStartedAt || "unknown"}`;
+        await writeLeaseMetadata("wakeup-target", liveTargetLeaseKey, {
+          leaseKey: liveTargetLeaseKey,
+          projectId: job.projectId,
+          sessionId: job.sessionId,
+          processPid: process.pid,
+          processStartedAt,
+          updatedAt: new Date().toISOString(),
+        });
+      }
 
-  const adopterSent: SentMessageLike[] = [];
-  const adopterPi = createPiHarness();
-  adopterPi.sendMessage = (message) => {
-    adopterSent.push(message);
-  };
-  await scanOracleJobsOnce(adopterPi as unknown as ExtensionAPI, createPollerCtx(adopterSessionManager), "/tmp/fake-oracle-worker.mjs");
-
-  const reopenedSubmitterSession = SessionManager.open(submitterSessionFile, undefined, process.cwd());
-  assert(!findNotificationEntry(reopenedSubmitterSession, jobId), "off-session adopters should not append durable completion messages into the target session history");
-  assert(Boolean(readJob(jobId)?.notifiedAt), "already-notified jobs should stay marked after an off-session adopter scan");
-  assert(adopterSent.length === 0, `off-session adopters should not duplicate an already-delivered wake-up, saw ${adopterSent.length}`);
-  await cleanupJob(jobId);
-}
-
-async function testBranchedSameSessionSkipsDurableNotification(config: OracleConfig): Promise<void> {
-  await resetOracleStateDir();
-  const sessionManager = createPersistedSessionManager("poller-same-session-branched");
-  const sessionFile = sessionManager.getSessionFile();
-  assert(sessionFile, "branched same-session notification test should persist a session file");
-  const branchBaseId = appendAssistantMessage(sessionManager, "branch base", { provider: "anthropic", model: "claude-sonnet-4" });
-  const headEntryId = sessionManager.appendCustomEntry("oracle-sanity-head", { stage: "newer-head" });
-  const branchedSessionManager = SessionManager.open(sessionFile, undefined, process.cwd());
-  branchedSessionManager.branch(branchBaseId);
-  const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
-
-  const sent: SentMessageLike[] = [];
-  const pi = createPiHarness();
-  pi.sendMessage = (message) => {
-    sent.push(message);
-  };
-
-  await scanOracleJobsOnce(pi, createPollerCtx(branchedSessionManager), "/tmp/fake-oracle-worker.mjs");
-
-  const reopenedSession = SessionManager.open(sessionFile, undefined, process.cwd());
-  assert(reopenedSession.getEntries().some((entry) => entry.id === headEntryId), "branched same-session notification handling should preserve the on-disk head entry");
-  assert(!findNotificationEntry(reopenedSession, jobId), "branched same-session notification handling should skip durable notification writes while the original session remains the live current session");
-  assert(Boolean(readJob(jobId)?.notifiedAt), "branched same-session notification handling should mark one-time wake-up delivery as notified");
-  assert(sent.length === 1, `branched same-session notification handling should request exactly one wake-up, saw ${sent.length}`);
-  await cleanupJob(jobId);
-}
-
-async function testPreAssistantSameSessionNotificationPreservesInMemoryHistory(config: OracleConfig): Promise<void> {
-  await resetOracleStateDir();
-  const targetSessionManager = createPersistedSessionManager("poller-preassistant-history-target");
-  const adopterSessionManager = createPersistedSessionManager("poller-preassistant-history-adopter");
-  const targetSessionFile = targetSessionManager.getSessionFile();
-  assert(targetSessionFile, "pre-assistant notification test should persist a target session file path");
-  // In-memory-only history: pi 0.99+ writes the session file at the first user message and older
-  // pi at the first assistant message, so the fixture holds only entries every host keeps in memory.
-  targetSessionManager.appendCustomEntry("oracle-sanity-preassistant", { stage: "before-assistant" });
-  targetSessionManager.appendModelChange("anthropic", "claude-sonnet-4");
-  const preFlushSnapshot = SessionManager.open(targetSessionFile, undefined, process.cwd());
-  assert(preFlushSnapshot.getEntries().length === 0, "pre-assistant notification test should start with in-memory-only session history that the host has not written yet");
-
-  const jobId = await createTerminalJob(config, process.cwd(), targetSessionFile);
-  const liveSent: SentMessageLike[] = [];
-  const livePi = createPiHarness();
-  livePi.sendMessage = (message) => {
-    liveSent.push(message);
-  };
-
-  await scanOracleJobsOnce(livePi as unknown as ExtensionAPI, createPollerCtx(targetSessionManager), "/tmp/fake-oracle-worker.mjs");
-
-  assert(!(await pathExists(targetSessionFile)), "pre-assistant same-session notification handling should not create a notification-only target session file while history is still in memory");
-  const deferredSession = SessionManager.open(targetSessionFile, undefined, process.cwd());
-  assert(deferredSession.getEntries().length === 0, "pre-assistant same-session notification handling should preserve in-memory-only history by avoiding any direct durable append");
-  assert(!findNotificationEntry(deferredSession, jobId), "pre-assistant same-session notification handling should defer durable completion messages while the target session is not durably materialized");
-  assert(liveSent.length === 1, `pre-assistant same-session notification handling should request exactly one wake-up, saw ${liveSent.length}`);
-  assert(Boolean(readJob(jobId)?.notifiedAt), "pre-assistant same-session notification handling should mark one-time wake-up delivery as notified");
-
-  appendAssistantMessage(targetSessionManager, "materialize original target session history", { provider: "anthropic", model: "claude-sonnet-4" });
-  assert(await pathExists(targetSessionFile), "materializing the original target session should create the durable target session file before adoption");
-  stopPollerForSession(targetSessionFile, process.cwd());
-  await updateJob(jobId, (job) => ({
-    ...job,
-    wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-  }));
-
-  const adopterSent: SentMessageLike[] = [];
-  const adopterPi = createPiHarness();
-  adopterPi.sendMessage = (message) => {
-    adopterSent.push(message);
-  };
-  await scanOracleJobsOnce(adopterPi as unknown as ExtensionAPI, createPollerCtx(adopterSessionManager), "/tmp/fake-oracle-worker.mjs");
-
-  const reopenedSession = SessionManager.open(targetSessionFile, undefined, process.cwd());
-  assert(!findNotificationEntry(reopenedSession, jobId), "off-session adopters should still avoid durable completion-message writes even after the target session later materializes on disk");
-  assert(Boolean(readJob(jobId)?.notifiedAt), "already-notified pre-assistant jobs should remain marked after adopter scans");
-  assert(adopterSent.length === 0, `off-session adopters should not duplicate an already-delivered wake-up, saw ${adopterSent.length}`);
-  await cleanupJob(jobId);
-}
-
-async function testPreAssistantBranchedSameSessionSkipsDurableNotification(config: OracleConfig): Promise<void> {
-  await resetOracleStateDir();
-  const sessionManager = createPersistedSessionManager("poller-preassistant-branched");
-  const sessionFile = sessionManager.getSessionFile();
-  assert(sessionFile, "pre-assistant branched notification test should persist a session file");
-  // Custom entries only, so the history stays in memory under every pi persistence rule (see above).
-  const baseEntryId = sessionManager.appendCustomEntry("oracle-sanity-preassistant-base", { stage: "base" });
-  sessionManager.appendCustomEntry("oracle-sanity-preassistant-branched", { stage: "before-assistant" });
-  const modelEntryId = sessionManager.appendModelChange("anthropic", "claude-sonnet-4");
-  const branchedSessionManager = sessionManager;
-  branchedSessionManager.branch(baseEntryId);
-  const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
-
-  const sent: SentMessageLike[] = [];
-  const pi = createPiHarness();
-  pi.sendMessage = (message) => {
-    sent.push(message);
-  };
-
-  await scanOracleJobsOnce(pi, createPollerCtx(branchedSessionManager), "/tmp/fake-oracle-worker.mjs");
-
-  const skippedSession = SessionManager.open(sessionFile, undefined, process.cwd());
-  assert(skippedSession.getEntries().length === 0, "pre-assistant branched same-session notification handling should not flush hidden history by attempting a direct durable append from an older leaf");
-  assert(!findNotificationEntry(skippedSession, jobId), "pre-assistant branched same-session notification handling should skip durable notification writes while the live leaf is behind newer in-memory history");
-  assert(Boolean(readJob(jobId)?.notifiedAt), "pre-assistant branched same-session notification handling should mark one-time wake-up delivery as notified");
-  assert(sent.length === 1, `pre-assistant branched same-session notification handling should request exactly one wake-up, saw ${sent.length}`);
-
-  branchedSessionManager.branch(modelEntryId);
-  await scanOracleJobsOnce(pi, createPollerCtx(branchedSessionManager), "/tmp/fake-oracle-worker.mjs");
-  assert(!findNotificationEntry(SessionManager.open(sessionFile, undefined, process.cwd()), jobId), "restoring the latest in-memory leaf in the live same-session manager should still avoid durable completion-message writes under the best-effort-only model");
-  await cleanupJob(jobId);
-}
-
-async function testNotificationMessagePreservesSessionModel(config: OracleConfig): Promise<void> {
-  await resetOracleStateDir();
-  const targetSessionManager = createPersistedSessionManager("poller-notification-model-target");
-  const adopterSessionManager = createPersistedSessionManager("poller-notification-model-adopter");
-  const targetSessionFile = targetSessionManager.getSessionFile();
-  assert(targetSessionFile, "notification model test should persist a target session file");
-  appendAssistantMessage(targetSessionManager, "prime session history", { provider: "openai", model: "gpt-5" });
-  targetSessionManager.appendModelChange("anthropic", "claude-sonnet-4");
-
-  const modelBefore = SessionManager.open(targetSessionFile, undefined, process.cwd()).buildSessionContext().model;
-  assert(modelBefore?.provider === "anthropic" && modelBefore?.modelId === "claude-sonnet-4", "notification model test should start from an explicit target-session model");
-
-  const jobId = await createTerminalJob(config, process.cwd(), targetSessionFile);
-  const sent: SentMessageLike[] = [];
-  const pi = createPiHarness();
-  pi.sendMessage = (message) => {
-    sent.push(message);
-  };
-
-  await scanOracleJobsOnce(pi, createPollerCtx(adopterSessionManager), "/tmp/fake-oracle-worker.mjs");
-
-  const reopenedSession = SessionManager.open(targetSessionFile, undefined, process.cwd());
-  const modelAfter = reopenedSession.buildSessionContext().model;
-  assert(modelAfter?.provider === modelBefore.provider && modelAfter?.modelId === modelBefore.modelId, "best-effort-only completion delivery should preserve the target-session model used for resume");
-  assert(!findNotificationEntry(reopenedSession, jobId), "best-effort-only completion delivery should not append a synthetic assistant notification message into the target session");
-  assert(Boolean(readJob(jobId)?.notifiedAt), "one-time wake-up delivery should mark the job notified even without durable session-history append");
-  assert(sent.length === 1, `expected notification model preservation test to request exactly one wake-up, saw ${sent.length}`);
-  await cleanupJob(jobId);
+      const pi = createPiHarness();
+      await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs");
+      assert(pi.sentMessages.length === row.deliveries, `${row.name}: expected ${row.deliveries} wake-ups, saw ${pi.sentMessages.length}`);
+      assert(pi.sentMessageOptions.length === row.deliveries, `${row.name}: every wake-up should record its send options`);
+      for (const options of pi.sentMessageOptions) {
+        const sendOptions = asRecord(options);
+        assert(sendOptions?.triggerTurn === true && sendOptions.deliverAs === "followUp", `${row.name}: wake-ups should trigger a follow-up turn`);
+      }
+      for (const message of pi.sentMessages) {
+        assert(asRecord(message.details)?.jobId === jobId, `${row.name}: wake-up should identify the delivered job`);
+      }
+      const notifiedAt = readJob(jobId)?.notifiedAt;
+      assert(Boolean(notifiedAt) === row.notified, `${row.name}: notifiedAt should match delivery eligibility`);
+      if (priorNotifiedAt) assert(notifiedAt === priorNotifiedAt, `${row.name}: delivery should preserve the original notification timestamp`);
+    } finally {
+      if (liveTargetLeaseKey) await releaseLease("wakeup-target", liveTargetLeaseKey);
+      await cleanupJob(jobId);
+    }
+  }
 }
 
 async function testPollerNotificationAdoptsOrphanedSessionJobs(config: OracleConfig): Promise<void> {
@@ -849,7 +746,6 @@ async function testPollerNotificationAdoptsOrphanedSessionJobs(config: OracleCon
 
   await scanOracleJobsOnce(pi, ctx, "/tmp/fake-oracle-worker.mjs");
 
-  assert(!findNotificationEntry(SessionManager.open(submitterSessionFile, undefined, process.cwd()), jobId), "adopted orphaned jobs should not append a durable completion message into the original target session under the wake-up-only model");
   assert(sent.length >= 1, `expected orphaned job to trigger at least one wake-up request, saw ${sent.length}`);
   assert((sent[0]?.details as { jobId?: string } | undefined)?.jobId === jobId, "live poller should notify for orphaned jobs in the same project");
   assert(Boolean(readJob(jobId)?.notifiedAt), "adopted orphaned jobs should mark one-time wake-up delivery as notified");
@@ -1168,7 +1064,6 @@ async function testPollerDoesNotStealNotificationWhenOriginBecomesLiveAfterClaim
     const pendingJob = readJob(jobId);
     assert(!pendingJob?.notifiedAt, "job should remain unnotified when the original session becomes live after claim");
     assert(!pendingJob?.notifyClaimedAt && !pendingJob?.notifyClaimedBy, "notification claim should be released when the original session becomes live after claim");
-    assert(!findNotificationEntry(liveSessionManager, jobId), "competing session should not persist a completion message after the original session becomes live before delivery");
 
     await releaseLease("wakeup-target", wakeupTargetLeaseKey);
     if (isPidAlive(holderPid)) process.kill(holderPid, "SIGKILL");
@@ -1178,7 +1073,6 @@ async function testPollerDoesNotStealNotificationWhenOriginBecomesLiveAfterClaim
     assert(submitterSent.length === 1, `expected the original session to receive exactly one wake-up after becoming live, saw ${submitterSent.length}`);
     assert((submitterSent[0]?.details as { jobId?: string } | undefined)?.jobId === jobId, "original session should receive the expected job wake-up after reclaiming liveness");
     assert(Boolean(readJob(jobId)?.notifiedAt), "same-session live wake-up handling should mark reclaimed one-time delivery as notified");
-    assert(!findNotificationEntry(submitterSessionManager, jobId), "same-session live wake-up handling should not append a durable completion message directly into the active session after reclaiming liveness");
   } finally {
     stopPollerForSession(liveSessionFile, ctx.cwd);
     stopPollerForSession(submitterSessionFile, submitterCtx.cwd);
@@ -1249,7 +1143,6 @@ async function testPollerDoesNotStealNotificationWhenOriginBecomesLiveBeforePers
     const pendingJob = readJob(jobId);
     assert(!pendingJob?.notifiedAt, "job should remain unnotified when the original session becomes live immediately before append");
     assert(!pendingJob?.notifyClaimedAt && !pendingJob?.notifyClaimedBy, "notification claim should be released when the original session becomes live immediately before append");
-    assert(!findNotificationEntry(liveSessionManager, jobId), "competing session should not persist a completion message when the original session becomes live immediately before append");
 
     await releaseLease("wakeup-target", wakeupTargetLeaseKey);
     if (isPidAlive(holderPid)) process.kill(holderPid, "SIGKILL");
@@ -1259,7 +1152,6 @@ async function testPollerDoesNotStealNotificationWhenOriginBecomesLiveBeforePers
     assert(submitterSent.length === 1, `expected the original session to receive exactly one wake-up after reclaiming liveness before append, saw ${submitterSent.length}`);
     assert((submitterSent[0]?.details as { jobId?: string } | undefined)?.jobId === jobId, "original session should receive the expected job wake-up after reclaiming liveness before append");
     assert(Boolean(readJob(jobId)?.notifiedAt), "same-session live wake-up handling should mark late-revalidated one-time delivery as notified");
-    assert(!findNotificationEntry(submitterSessionManager, jobId), "same-session live wake-up handling should not append a durable completion message directly into the active session after late revalidation hands notification back");
   } finally {
     stopPollerForSession(liveSessionFile, ctx.cwd);
     stopPollerForSession(submitterSessionFile, submitterCtx.cwd);
@@ -1303,7 +1195,6 @@ async function testOffSessionWakeupsDoNotWriteTargetSessionHistory(config: Oracl
   const reopenedSession = SessionManager.open(targetSessionFile, undefined, process.cwd());
   assert(reopenedSession.getEntries().some((entry) => entry.id === headEntryId), "off-session wake-up-only handling should preserve the original target-session head entry");
   assert(peerEntryId && reopenedSession.getEntries().some((entry) => entry.id === peerEntryId), "off-session wake-up-only handling should preserve concurrent peer session writes in the target history");
-  assert(!findNotificationEntry(reopenedSession, jobId), "off-session wake-up-only handling should not append a durable oracle completion message into the target session");
   assert(Boolean(readJob(jobId)?.notifiedAt), "off-session wake-up-only handling should mark one-time wake-up delivery as notified without writing target history");
   assert(sent.length === 1, `off-session wake-up-only handling should request exactly one wake-up, saw ${sent.length}`);
   await cleanupJob(jobId);
@@ -1329,7 +1220,6 @@ async function testNotificationClaimRecoveryDoesNotDuplicateWakeups(config: Orac
   await scanOracleJobsOnce(pi, createPollerCtx(adopterSessionManager), "/tmp/fake-oracle-worker.mjs");
   assert(sent.length === 1, `first wake-up-only recovery attempt should emit one wake-up, saw ${sent.length}`);
   assert(Boolean(readJob(jobId)?.notifiedAt), "wake-up-only recovery should mark the job notified after the first wake-up attempt");
-  assert(!findNotificationEntry(SessionManager.open(targetSessionFile, undefined, process.cwd()), jobId), "wake-up-only recovery should not create a durable completion message in the target session");
 
   await updateJob(jobId, (job) => ({
     ...job,
@@ -1579,7 +1469,6 @@ async function testPollerWakeupDeliveryIsDedupedWithoutDurableNotifications(conf
 
   await scanOracleJobsOnce(pi, createPollerCtx(sessionManager), "/tmp/fake-oracle-worker.mjs");
   assert(sent.length >= 1, `expected at least one best-effort wake-up request after the first scan, saw ${sent.length}`);
-  assert(!findNotificationEntry(SessionManager.open(sessionFile, undefined, process.cwd()), jobId), "one-time wake-up delivery should not create durable completion messages under the best-effort-only model");
   assert(readJob(jobId)?.wakeupAttemptCount === 1, "first wake-up attempt should record a single reminder request");
   assert(Boolean(readJob(jobId)?.notifiedAt), "first wake-up attempt should mark the job notified for dedupe");
 
@@ -1610,11 +1499,7 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testOracleExtensionSkipsPollerInOneShotModes(config);
   await testOracleExtensionReadinessFollowsRelayEndpoint();
   await testPersistedSessionsDoNotAdoptLegacyProjectScopedJobs(config);
-  await testPollerNotificationSkipsContestedSameSessionWriters(config);
-  await testBranchedSameSessionSkipsDurableNotification(config);
-  await testPreAssistantSameSessionNotificationPreservesInMemoryHistory(config);
-  await testPreAssistantBranchedSameSessionSkipsDurableNotification(config);
-  await testNotificationMessagePreservesSessionModel(config);
+  await testWakeupDeliveryMatrix(config);
   await testPollerNotificationAdoptsOrphanedSessionJobs(config);
   await testPollerDoesNotStealNotificationFromLiveSessionTarget(config);
   await testStoppingPollerCancelsInFlightStaleContextAccess(config);

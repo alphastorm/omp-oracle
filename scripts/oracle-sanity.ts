@@ -12,190 +12,174 @@ import { createRequire } from "node:module";
 import { hostname, tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { basename, delimiter, dirname, join } from "node:path";
-import { ProjectTrustStore, SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
+import type { TSchema } from "typebox";
 import {
-  coerceOracleSubmitPresetId,
-  DEFAULT_CONFIG,
-  formatOracleAuthConfigRemediation,
-  formatOracleAuthConfigSummary,
-  getOracleConfigLoadDetails,
-  loadOracleConfig,
-  ORACLE_SUBMIT_PRESETS,
-  resolveOracleArchiveFormat,
-  resolveOracleConfigForProvider,
-  resolveOracleGrokMode,
-  resolveOracleSubmitPreset,
-  type OracleConfig,
-  type OracleSubmitPresetId,
+    coerceOracleSubmitPresetId,
+    DEFAULT_CONFIG,
+    formatOracleAuthConfigRemediation,
+    formatOracleAuthConfigSummary,
+    getOracleConfigLoadDetails,
+    loadOracleConfig,
+    ORACLE_SUBMIT_PRESETS,
+    resolveOracleArchiveFormat,
+    resolveOracleConfigForProvider,
+    resolveOracleGrokMode,
+    resolveOracleSubmitPreset,
+    type OracleConfig,
+    type OracleSubmitPresetId,
 } from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies, type ImportedAuthCookie } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "../extensions/oracle/worker/chromium-cookie-source.mjs";
 import { parseSnapshotEntries } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import {
-  buildAllowedChatGptOrigins,
-  buildAssistantCompletionSignature,
-  deriveAssistantCompletionSignature,
-  effortSelectionVisible,
-  matchesCompactIntelligenceControlLabel,
-  matchesCompactIntelligenceOpenerLabel,
-  matchesModelConfigurationOpener,
-  matchesRequestedModelControlLabel,
-  powerSliderClosedIntoSelection,
-  snapshotCanSafelySkipModelConfiguration,
-  snapshotHasClosedCompactSelection,
-  snapshotHasModelConfigurationUi,
-  snapshotHasModelOpener,
-  snapshotHasUsableComposerControls,
-  snapshotStronglyMatchesRequestedModel,
-  snapshotWeaklyMatchesRequestedModel,
-  stripChatGptResponseChrome,
+    buildAllowedChatGptOrigins,
+    buildAssistantCompletionSignature,
+    deriveAssistantCompletionSignature,
+    effortSelectionVisible,
+    matchesCompactIntelligenceControlLabel,
+    matchesCompactIntelligenceOpenerLabel,
+    matchesModelConfigurationOpener,
+    matchesRequestedModelControlLabel,
+    powerSliderClosedIntoSelection,
+    snapshotCanSafelySkipModelConfiguration,
+    snapshotHasClosedCompactSelection,
+    snapshotHasModelConfigurationUi,
+    snapshotHasModelOpener,
+    snapshotHasUsableComposerControls,
+    snapshotStronglyMatchesRequestedModel,
+    snapshotWeaklyMatchesRequestedModel,
+    stripChatGptResponseChrome,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
 import { composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash, timedOutRecollectionBinding } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
 import {
-  buildConversationLeaseMetadata,
-  buildRuntimeLeaseMetadata,
-  compareQueuedOracleJobs,
-  hasAdmissionBlockingWorker,
-  jobBlocksAdmission,
-  runQueuedJobPromotionPass,
+    buildConversationLeaseMetadata,
+    buildRuntimeLeaseMetadata,
+    compareQueuedOracleJobs,
+    hasAdmissionBlockingWorker,
+    jobBlocksAdmission,
+    runQueuedJobPromotionPass,
 } from "../extensions/oracle/shared/job-coordination-helpers.mjs";
 import {
-  buildOracleStatusText,
-  buildOracleWakeupNotificationContent,
-  formatOracleJobSummary,
-  formatOracleSubmitResponse,
+    buildOracleStatusText,
+    buildOracleWakeupNotificationContent,
+    formatOracleJobSummary,
+    formatOracleSubmitResponse,
 } from "../extensions/oracle/shared/job-observability-helpers.mjs";
 import {
-  appendOracleJobLifecycleEvent,
-  applyOracleJobCleanupWarnings,
-  clearOracleJobCleanupState,
-  getLatestOracleJobLifecycleEvent,
-  markOracleJobCreated,
-  markOracleJobNotified,
-  markOracleJobWakeupSettled,
-  noteOracleJobWakeupRequested,
-  transitionOracleJobPhase,
+    appendOracleJobLifecycleEvent,
+    applyOracleJobCleanupWarnings,
+    clearOracleJobCleanupState,
+    getLatestOracleJobLifecycleEvent,
+    markOracleJobCreated,
+    markOracleJobNotified,
+    markOracleJobWakeupSettled,
+    noteOracleJobWakeupRequested,
+    transitionOracleJobPhase,
 } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import type { OracleLifecycleTrackedJobLike } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import {
-  assertNotKnownBrowserUserDataPath,
-  browserUserDataDirsForPlatform,
-  chromiumKeychainSupportedOnPlatform,
-  defaultCloneStrategyForPlatform,
-  detectDefaultBrowserProfileSource,
-  detectDefaultLinuxChromeExecutablePath,
-  knownBrowserUserDataPathMatch,
-  knownBrowserUserDataPathMatchDetails,
-  scrubSweetCookieSafeStoragePasswordEnv,
-  sweetCookieSafeStoragePasswordScrubbedEnv,
+    assertNotKnownBrowserUserDataPath,
+    browserUserDataDirsForPlatform,
+    chromiumKeychainSupportedOnPlatform,
+    defaultCloneStrategyForPlatform,
+    detectDefaultBrowserProfileSource,
+    detectDefaultLinuxChromeExecutablePath,
+    knownBrowserUserDataPathMatch,
+    knownBrowserUserDataPathMatchDetails,
+    scrubSweetCookieSafeStoragePasswordEnv,
+    sweetCookieSafeStoragePasswordScrubbedEnv,
 } from "../extensions/oracle/shared/browser-profile-helpers.mjs";
 import { closeAgentBrowserSession, isTrackedProcessAlive, runCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../extensions/oracle/shared/process-helpers.mjs";
 import {
-  acquireLock as acquireWorkerStateLock,
-  createLease as createWorkerStateLease,
-  ORACLE_METADATA_WRITE_GRACE_MS as WORKER_METADATA_WRITE_GRACE_MS,
-  readLeaseMetadata as readWorkerStateLeaseMetadata,
-  releaseLease as releaseWorkerStateLease,
-  releaseLock as releaseWorkerStateLock,
+    acquireLock as acquireWorkerStateLock,
+    createLease as createWorkerStateLease,
+    ORACLE_METADATA_WRITE_GRACE_MS as WORKER_METADATA_WRITE_GRACE_MS,
+    readLeaseMetadata as readWorkerStateLeaseMetadata,
+    releaseLease as releaseWorkerStateLease,
+    releaseLock as releaseWorkerStateLock,
 } from "../extensions/oracle/worker/state-locks.mjs";
 import {
-  cancelOracleJob,
-  createJob,
-  getJobDir,
-  getOracleJobsDir,
-  hasDurableWorkerHandoff,
-  isActiveOracleJob,
-  listOracleJobDirs,
-  markJobNotified,
-  pruneTerminalOracleJobs,
-  ORACLE_WAKEUP_POST_SEND_RETENTION_MS,
-  readExtensionProvenance,
-  readJob,
-  reconcileStaleOracleJobs,
-  removeTerminalOracleJob,
-  resolveArchiveInputs,
-  shouldAdvanceQueueAfterCancellation,
-  shouldPruneTerminalJob,
-  tryClaimNotification,
-  updateJob,
-  withJobPhase,
+    cancelOracleJob,
+    createJob,
+    getJobDir,
+    getOracleJobsDir,
+    hasDurableWorkerHandoff,
+    isActiveOracleJob,
+    listOracleJobDirs, pruneTerminalOracleJobs,
+    ORACLE_WAKEUP_POST_SEND_RETENTION_MS,
+    readExtensionProvenance,
+    readJob,
+    reconcileStaleOracleJobs,
+    removeTerminalOracleJob,
+    resolveArchiveInputs,
+    shouldAdvanceQueueAfterCancellation,
+    shouldPruneTerminalJob, updateJob,
+    withJobPhase
 } from "../extensions/oracle/lib/jobs.ts";
 import {
-  acquireLock,
-  getLeasesDir,
-  getLocksDir,
-  getOracleStateDir,
-  listLeaseMetadata,
-  ORACLE_METADATA_WRITE_GRACE_MS,
-  ORACLE_TMP_STATE_DIR_GRACE_MS,
-  readLeaseMetadata,
-  releaseLease,
-  releaseLock,
-  sweepStaleLocks,
-  withGlobalReconcileLock,
-  writeLeaseMetadata,
+    acquireLock,
+    getLeasesDir,
+    getLocksDir,
+    getOracleStateDir,
+    listLeaseMetadata,
+    ORACLE_METADATA_WRITE_GRACE_MS,
+    ORACLE_TMP_STATE_DIR_GRACE_MS,
+    readLeaseMetadata,
+    releaseLease,
+    releaseLock,
+    sweepStaleLocks,
+    withGlobalReconcileLock,
+    writeLeaseMetadata,
 } from "../extensions/oracle/lib/locks.ts";
-import { getPollerSessionKey, scanOracleJobsOnce, startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
+import { scanOracleJobsOnce } from "../extensions/oracle/lib/poller.ts";
 import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLock } from "../extensions/oracle/lib/queue.ts";
 import {
-  acquireConversationLease,
-  acquireRuntimeLease,
-  assertOracleSubmitPrerequisites,
-  cloneSeedProfileToRuntime,
-  getProjectId,
-  releaseConversationLease,
-  releaseRuntimeLease,
-  tryAcquireConversationLease,
-  tryAcquireRuntimeLease,
+    acquireConversationLease,
+    acquireRuntimeLease,
+    assertOracleSubmitPrerequisites,
+    cloneSeedProfileToRuntime,
+    getProjectId,
+    releaseConversationLease,
+    releaseRuntimeLease,
+    tryAcquireConversationLease,
+    tryAcquireRuntimeLease,
 } from "../extensions/oracle/lib/runtime.ts";
 import { createArchiveForTesting, mergeArchiveEntryGroupsForTesting, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/archive.ts";
 import { classifyOracleReadinessError, getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools, resolveChatGptConversationReference } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
-import platformSmokeConfig from "../platform-smoke.config.mjs";
 import { runPollerSanitySuite } from "./oracle-sanity-poller-suite.ts";
-import { createCommandCtx, createExtensionCtx, createPiHarness, removeDirRobust, resetOracleStateDir } from "./oracle-sanity-support.ts";
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
-}
-
-function assertThrows(block: () => void, failureMessage: string, expectedSubstring: string): void {
-  try {
-    block();
-  } catch (error) {
-    const text = error instanceof Error ? error.message : String(error);
-    if (!text.includes(expectedSubstring)) {
-      throw new Error(
-        `${failureMessage}: expected error message to include ${JSON.stringify(expectedSubstring)}, got ${JSON.stringify(text)}`,
-      );
-    }
-    return;
-  }
-  throw new Error(`${failureMessage}: expected throw`);
-}
-
-async function assertRejects(block: () => Promise<unknown>, failureMessage: string, expectedSubstring: string): Promise<void> {
-  try {
-    await block();
-  } catch (error) {
-    const text = error instanceof Error ? error.message : String(error);
-    if (!text.includes(expectedSubstring)) {
-      throw new Error(
-        `${failureMessage}: expected error message to include ${JSON.stringify(expectedSubstring)}, got ${JSON.stringify(text)}`,
-      );
-    }
-    return;
-  }
-  throw new Error(`${failureMessage}: expected rejection`);
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
+import {
+    asRecord,
+    assert,
+    assertRejects,
+    assertThrows,
+    cleanupJob,
+    completeJob,
+    createCommandCtx,
+    createExtensionCtx,
+    createJobForTest,
+    createPersistedSessionManager,
+    createPiHarness,
+    createTerminalJob,
+    createUiStub,
+    hashedOracleStatePath,
+    isPidAlive,
+    pathExists, removeDirRobust,
+    resetOracleStateDir,
+    runProcess,
+    shellQuote,
+    sleep,
+    waitForJobState,
+    waitForPath,
+    waitForPidExit,
+    waitForProcessStartedAtValue,
+    writeActiveJob,
+    writeExecutableScript
+} from "./oracle-sanity-support.ts";
 
 function listArchiveEntries(archivePath: string): string[] {
   if (process.platform === "win32") {
@@ -210,59 +194,6 @@ function listArchiveEntries(archivePath: string): string[] {
   return execFileSync("sh", ["-c", command], { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
 }
 
-async function writeExecutableScript(path: string, content: string): Promise<void> {
-  await writeFile(path, content, { encoding: "utf8", mode: 0o755 });
-  await chmod(path, 0o755);
-}
-
-async function runProcess(
-  command: string,
-  args: string[],
-  options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
-): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options?.cwd,
-      env: options?.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let killTimer: NodeJS.Timeout | undefined;
-
-    if ((options?.timeoutMs ?? 0) > 0) {
-      killTimer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 2_000).unref?.();
-      }, options?.timeoutMs);
-      killTimer.unref?.();
-    }
-
-    child.stdout.on("data", (data) => {
-      stdout += String(data);
-    });
-    child.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    child.on("error", (error) => {
-      if (killTimer) clearTimeout(killTimer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      if (killTimer) clearTimeout(killTimer);
-      resolve({ code, stdout, stderr, timedOut });
-    });
-  });
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
 function findPresetId(
   predicate: (preset: (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]) => boolean,
   failureMessage: string,
@@ -273,8 +204,12 @@ function findPresetId(
   return match[0];
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function testShellQuote(): Promise<void> {
+  if (process.platform === "win32") return; // shellQuote is only used with POSIX shells.
+  for (const input of ["", "plain", "single'quote", "'leading and trailing'", "spaces ' quotes \" $HOME `literal`\nnext line"]) {
+    const result = await runProcess("sh", ["-c", `printf %s ${shellQuote(input)}`]);
+    assert(result.code === 0 && result.stdout === input, `shellQuote should round-trip ${JSON.stringify(input)}: ${result.stderr}`);
+  }
 }
 
 async function testBrowserProfileHelpers(): Promise<void> {
@@ -400,66 +335,6 @@ async function testBrowserProfileHelpers(): Promise<void> {
   }
 }
 
-function readProcessStartedAt(pid: number | undefined): string | undefined {
-  if (!pid || pid <= 0) return undefined;
-  try {
-    if (process.platform === "win32") {
-      const startedAt = execFileSync("powershell.exe", [
-        "-NoLogo",
-        "-NoProfile",
-        "-Command",
-        `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`,
-      ], { encoding: "utf8" }).trim();
-      return startedAt || undefined;
-    }
-    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
-    return startedAt || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isPidAlive(pid: number | undefined): boolean {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForPidExit(pid: number | undefined, timeoutMs = 5_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isPidAlive(pid)) return true;
-    await sleep(100);
-  }
-  return !isPidAlive(pid);
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForPath(path: string, timeoutMs = 2_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await pathExists(path)) return true;
-    await sleep(50);
-  }
-  return pathExists(path);
-}
-
-function hashedOracleStatePath(kind: string, key: string, rootDir: string): string {
-  return join(rootDir, `${kind}-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`);
-}
-
 function assertIsolatedSanityEnvironment(): void {
   const jobsEnv = process.env.PI_ORACLE_JOBS_DIR?.trim();
   const stateEnv = process.env.PI_ORACLE_STATE_DIR?.trim();
@@ -481,16 +356,6 @@ async function ensureNoActiveJobs(): Promise<void> {
   if (activeJobs.length > 0) {
     throw new Error(`Refusing to run oracle sanity checks while active jobs exist in the configured jobs dir: ${activeJobs.map((job) => job.id).join(", ")}`);
   }
-}
-
-async function writeActiveJob(id: string): Promise<void> {
-  const dir = getJobDir(id);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await writeFile(join(dir, "job.json"), `${JSON.stringify({ id, status: "submitted" }, null, 2)}\n`, { mode: 0o600 });
-}
-
-async function cleanupJob(id: string): Promise<void> {
-  await removeDirRobust(getJobDir(id));
 }
 
 async function testRuntimeConversationLeases(config: OracleConfig): Promise<void> {
@@ -552,187 +417,6 @@ async function testRuntimeConversationLeases(config: OracleConfig): Promise<void
   await releaseRuntimeLease("runtime-a");
   await cleanupJob(jobA);
   await cleanupJob(jobB);
-}
-
-async function createJobForTest(
-  config: OracleConfig,
-  cwd: string,
-  sessionId: string,
-  options?: {
-    requestSource?: "tool" | "command";
-    initialState?: "queued" | "submitted";
-    followUpToJobId?: string;
-    chatUrl?: string;
-    preset?: OracleSubmitPresetId;
-  },
-) {
-  const jobId = `sanity-job-${randomUUID()}`;
-  const runtime = {
-    runtimeId: `runtime-${randomUUID()}`,
-    runtimeSessionName: `oracle-runtime-${randomUUID()}`,
-    runtimeProfileDir: `/tmp/oracle-runtime-${randomUUID()}`,
-    seedGeneration: new Date().toISOString(),
-  };
-  const preset = options?.preset ?? config.defaults.preset;
-  await createJob(
-    jobId,
-    {
-      prompt: "sanity",
-      files: ["docs/ARCHITECTURE.md"],
-      selection: resolveOracleSubmitPreset(preset),
-      requestSource: options?.requestSource ?? "tool",
-      followUpToJobId: options?.followUpToJobId,
-      chatUrl: options?.chatUrl,
-    },
-    cwd,
-    sessionId,
-    config,
-    runtime,
-    { initialState: options?.initialState ?? "submitted" },
-  );
-  const created = readJob(jobId);
-  assert(created, "test job should exist after creation");
-  assert(created.extensionProvenance?.schemaVersion === 1, "created oracle jobs should record extension provenance for release proof");
-  assert(created.extensionProvenance?.packageName === "omp-oracle", "extension provenance should record the package name");
-  assert(created.extensionProvenance?.sourcePath === join(import.meta.dirname, ".."), "extension provenance should record the loaded extension source root");
-  await writeFile(created.archivePath, "sanity archive\n", { mode: 0o600 });
-  return jobId;
-}
-
-async function createTerminalJob(config: OracleConfig, cwd: string, sessionId: string, requestSource: "tool" | "command" = "tool") {
-  const jobId = await createJobForTest(config, cwd, sessionId, { requestSource });
-  const completedAt = new Date().toISOString();
-  await updateJob(jobId, (job) => ({
-    ...job,
-    ...withJobPhase("complete", {
-      status: "complete",
-      completedAt,
-      responsePath: join(getJobDir(job.id), "response.md"),
-      responseFormat: "text/plain",
-    }, completedAt),
-  }));
-  return jobId;
-}
-
-function createUiStub() {
-  return {
-    notifications: [] as Array<{ message: string; level: string }>,
-    statuses: [] as Array<{ key: string; value: string }>,
-    setStatus(key: string, value: string) {
-      this.statuses.push({ key, value });
-    },
-    theme: { fg: (_name: string, text: string) => text },
-    notify(message: string, level: string) {
-      this.notifications.push({ message, level });
-    },
-  };
-}
-
-function createPersistedSessionManager(name: string) {
-  return SessionManager.create(process.cwd(), join(tmpdir(), `oracle-sanity-sessions-${name}-${randomUUID()}`));
-}
-
-const TEST_ASSISTANT_USAGE: AssistantMessage["usage"] = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    total: 0,
-  },
-};
-
-function appendUserMessage(sessionManager: Pick<SessionManager, "appendMessage">, text: string): string {
-  return sessionManager.appendMessage({
-    role: "user",
-    content: text,
-    timestamp: Date.now(),
-  });
-}
-
-function appendAssistantMessage(
-  sessionManager: Pick<SessionManager, "appendMessage">,
-  text: string,
-  options?: { api?: AssistantMessage["api"]; provider?: AssistantMessage["provider"]; model?: string; responseId?: string },
-): string {
-  return sessionManager.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text }],
-    api: options?.api ?? "openai-responses",
-    provider: options?.provider ?? "openai",
-    model: options?.model ?? "gpt-5",
-    responseId: options?.responseId,
-    usage: { ...TEST_ASSISTANT_USAGE, cost: { ...TEST_ASSISTANT_USAGE.cost } },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  });
-}
-
-function createPollerCtx(sessionManager: SessionManager) {
-  return {
-    cwd: process.cwd(),
-    mode: "tui" as const,
-    sessionManager,
-    hasUI: true,
-    ui: createUiStub(),
-    isIdle: () => true,
-    hasPendingMessages: () => false,
-  };
-}
-
-type AssistantSessionEntry = Extract<SessionEntry, { type: "message" }> & { message: AssistantMessage };
-
-function findNotificationEntry(sessionManager: Pick<SessionManager, "getEntries">, jobId: string): AssistantSessionEntry | undefined {
-  const entry = sessionManager.getEntries().find((candidate) => {
-    if (candidate.type !== "message" || candidate.message.role !== "assistant") return false;
-    return candidate.message.responseId === `oracle-notification:${jobId}`;
-  });
-  return entry as AssistantSessionEntry | undefined;
-}
-
-async function completeJob(jobId: string, status: "complete" | "failed" | "cancelled" = "complete") {
-  const completedAt = new Date().toISOString();
-  await updateJob(jobId, (job) => ({
-    ...job,
-    ...withJobPhase(status === "complete" ? "complete" : status, {
-      status,
-      completedAt,
-      responsePath: join(getJobDir(job.id), "response.md"),
-      responseFormat: "text/plain",
-    }, completedAt),
-  }));
-}
-
-async function waitForProcessStartedAtValue(pid: number | undefined, timeoutMs = 2_000): Promise<string | undefined> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const startedAt = readProcessStartedAt(pid);
-    if (startedAt) return startedAt;
-    await sleep(50);
-  }
-  return readProcessStartedAt(pid);
-}
-
-async function waitForJobState(
-  jobId: string,
-  predicate: (job: NonNullable<ReturnType<typeof readJob>>) => boolean,
-  timeoutMs = 5_000,
-): Promise<NonNullable<ReturnType<typeof readJob>>> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const job = readJob(jobId);
-    if (job && predicate(job)) return job;
-    await sleep(50);
-  }
-
-  const last = readJob(jobId);
-  if (last && predicate(last)) return last;
-  throw new Error(`Timed out waiting for oracle job ${jobId} to reach the expected state`);
 }
 
 async function testCleanupPendingRecoveryUnblocksAdmission(config: OracleConfig): Promise<void> {
@@ -3438,7 +3122,6 @@ async function testQueuedPromotionSkipsConversationBlockedJobs(config: OracleCon
   await cleanupJob(blockedQueuedId);
 }
 
-
 function encryptChromiumCookieValue(value: string, password: string, options: { hashPrefix?: boolean } = {}): Buffer {
   const key = pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
   const iv = Buffer.alloc(16, 0x20);
@@ -3884,53 +3567,9 @@ async function testTerminalJobPruningAndCleanup(config: OracleConfig): Promise<v
   await cleanupJob(retainedJobId);
 }
 
-async function testLifecycleEventCutover(): Promise<void> {
-  const extensionSource = await readFile(new URL("../extensions/oracle/index.ts", import.meta.url), "utf8");
-  assert(extensionSource.includes('pi.on("session_start"'), "oracle extension should bind session_start");
-  assert(!extensionSource.includes('pi.on("session_switch"'), "oracle extension must not bind removed session_switch event");
-  assert(!extensionSource.includes('pi.on("session_fork"'), "oracle extension must not bind removed session_fork event");
-  assert(extensionSource.includes('ctx.mode === "print" || ctx.mode === "json"'), "oracle extension should use Pi 0.78 mode metadata to skip background polling in one-shot modes");
-  assert(extensionSource.includes("hasPersistedSessionFile(sessionFile)"), "oracle extension should refuse to start poller routing when the current session has no persisted identity");
-  assert(extensionSource.includes("oracle: unavailable"), "oracle extension should mark oracle unavailable when no persisted session identity exists");
-  assert(extensionSource.includes("if (ctx.hasUI) ctx.ui.notify"), "oracle extension should surface startup-maintenance failures through available session UI as well as stderr");
-}
-
-async function testOraclePromptTemplateCutover(): Promise<void> {
-  const indexSource = await readFile(new URL("../extensions/oracle/index.ts", import.meta.url), "utf8");
-  const commandsSource = await readFile(new URL("../extensions/oracle/lib/commands.ts", import.meta.url), "utf8");
-  const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
-  const archiveSource = await readFile(new URL("../extensions/oracle/lib/archive.ts", import.meta.url), "utf8");
-  const configSource = await readFile(new URL("../extensions/oracle/lib/config.ts", import.meta.url), "utf8");
-  const jobsSource = await readFile(new URL("../extensions/oracle/lib/jobs.ts", import.meta.url), "utf8");
-  const pollerSource = await readFile(new URL("../extensions/oracle/lib/poller.ts", import.meta.url), "utf8");
-  const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
-  const locksSource = await readFile(new URL("../extensions/oracle/lib/locks.ts", import.meta.url), "utf8");
-  const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
-  const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
-  const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
-  const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
-  const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
-  const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
-  const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
-  const supportSource = await readFile(new URL("./oracle-sanity-support.ts", import.meta.url), "utf8");
-  const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
-  const followUpPromptSource = await readFile(new URL("../prompts/oracle-followup.md", import.meta.url), "utf8");
-  const designSource = await readFile(new URL("../docs/ARCHITECTURE.md", import.meta.url), "utf8");
-  const recoveryDrillSource = await readFile(new URL("../docs/TEST_PLAN.md", import.meta.url), "utf8");
-  const operationsSource = await readFile(new URL("../docs/OPERATIONS.md", import.meta.url), "utf8");
-  const readmeSource = await readFile(new URL("../README.md", import.meta.url), "utf8");
-  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
-    files?: string[];
-    pi?: { prompts?: string[]; extensions?: string[] };
-    engines?: { node?: string };
-    os?: string[];
-    scripts?: Record<string, string | undefined> & { test?: string; prepublishOnly?: string; "typecheck:worker-helpers"?: string; "verify:oracle"?: string };
-    devDependencies?: Record<string, string | undefined>;
-    peerDependencies?: Record<string, string | undefined>;
-    peerDependenciesMeta?: Record<string, { optional?: boolean } | undefined>;
-  };
+function testOracleToolSchemas(): void {
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
+  registerOracleTools(pi, "/tmp/fake-oracle-worker.mjs");
   const preflightTool = pi.tools.get("oracle_preflight");
   const authTool = pi.tools.get("oracle_auth");
   const submitTool = pi.tools.get("oracle_submit");
@@ -3959,14 +3598,81 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     ["Thinking-standard", "thinking_standard"],
     ["Instant Auto-switch to Thinking Enabled", "instant_auto_switch"],
   ];
+  const preflightSchema = preflightTool.parameters as TSchema;
+  const authSchema = authTool.parameters as TSchema;
+  const submitSchema = submitTool.parameters as TSchema;
+  assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
+  assert(Check(preflightSchema, { provider: "grok" }), "oracle_preflight should accept optional provider selection");
+  assert(!Check(preflightSchema, { provider: "unsupported" }), "oracle_preflight should reject providers outside the Google-compatible StringEnum schema");
+  assert(Check(preflightSchema, { followUpJobId: "sanity-job" }), "oracle_preflight should accept optional follow-up job id selection");
+  assert(Check(preflightSchema, { provider: "chatgpt", chatGptConversationId: "6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6" }), "oracle_preflight should accept optional existing ChatGPT conversation id selection");
+  assert(Check(authSchema, {}), "oracle_auth should accept an empty object");
+  assert(asRecord(preflightProperties?.provider)?.type === "string", "oracle_preflight should expose optional provider selection for provider-specific readiness checks");
+  assert(asRecord(preflightProperties?.followUpJobId)?.type === "string", "oracle_preflight should expose optional follow-up job id selection for same-thread readiness checks");
+  assert(asRecord(preflightProperties?.chatGptConversationId)?.type === "string", "oracle_preflight should expose optional existing ChatGPT conversation id selection for browser-created threads");
+  assert(!Array.isArray((asRecord(preflightTool.parameters)?.required)), "oracle_preflight should not require caller arguments");
+  assert(asRecord(authProperties?.provider)?.type === "string", "oracle_auth should expose optional provider selection for provider-specific auth refresh");
+  assert(!Array.isArray((asRecord(authTool.parameters)?.required)), "oracle_auth should not require caller arguments");
+  assert(asRecord(submitProperties.preset)?.type === "string", "oracle submit preset schema should validate preset as a string before execute-time normalization");
+  assert(asRecord(submitProperties.chatGptConversationId)?.type === "string", "oracle submit schema should expose optional existing ChatGPT conversation id targeting");
+  assert(
+    Check(submitSchema, { prompt: "sanity", files: ["README.md"], provider: "chatgpt", chatGptConversationId: "6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6" }),
+    "oracle_submit tool-call validation should accept an explicit existing ChatGPT conversation id",
+  );
+  assert(
+    !Check(submitSchema, { prompt: "sanity", files: ["README.md"], chatGptConversationId: "   " }),
+    "oracle_submit tool-call validation should reject blank existing ChatGPT conversation ids",
+  );
+  const normalizedExistingChat = resolveChatGptConversationReference("6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", DEFAULT_CONFIG);
+  assert(normalizedExistingChat?.chatUrl === "https://chatgpt.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", "oracle_submit should normalize raw existing ChatGPT conversation ids to a conversation URL");
+  const normalizedExistingChatUrl = resolveChatGptConversationReference("https://chat.openai.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6?model=gpt", DEFAULT_CONFIG);
+  assert(normalizedExistingChatUrl?.chatUrl === "https://chat.openai.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", "oracle_submit should preserve allowed ChatGPT URL origins while stripping query/hash for existing thread targeting");
+  for (const [presetAlias, presetId] of representativePresetAliases) {
+    assert(
+      Check(submitSchema, { prompt: "sanity", files: ["README.md"], preset: presetAlias }),
+      `oracle_submit tool-call validation should accept preset alias ${presetAlias}`,
+    );
+    assert(
+      coerceOracleSubmitPresetId(presetAlias) === presetId,
+      `oracle_submit execute-time preset normalization should coerce ${presetAlias} to ${presetId}`,
+    );
+  }
+  assert(
+    !Check(submitSchema, { prompt: "sanity", files: ["README.md"], preset: 123 }),
+    "oracle_submit tool-call validation should reject non-string preset values",
+  );
+  assert(
+    !Check(submitSchema, { prompt: "sanity", files: ["README.md"], provider: "grok", mode: "unsupported" }),
+    "oracle_submit tool-call validation should reject modes outside the Google-compatible StringEnum schema",
+  );
+  assert(
+    !Check(submitSchema, { prompt: "sanity", files: ["   "] }),
+    "oracle_submit tool-call validation should reject blank archive input strings instead of widening them to whole-repo archives",
+  );
+  assert(!("modelFamily" in submitProperties), "oracle submit tool schema should not expose legacy modelFamily input");
+  assert(!("effort" in submitProperties), "oracle submit tool schema should not expose legacy effort input");
+  assert(!("autoSwitchToThinking" in submitProperties), "oracle submit tool schema should not expose legacy autoSwitchToThinking input");
+  assert(conversationIdFromUrl("https://chatgpt.com/c/chatgpt-abc") === "chatgpt-abc" && conversationIdFromUrl("https://grok.com/chat/grok-abc") === "grok-abc", "conversation helpers should parse both ChatGPT and Grok conversation URL ids");
+}
 
-  assert(indexSource.includes('pi.on("input"'), "/oracle should be intercepted before TUI prompt-template expansion so verbose internals stay hidden");
-  assert(indexSource.includes('["print", "json", "rpc"].includes(ctx.mode)'), "oracle prompt fallback should keep print/json/rpc prompt-template expansion available");
-  assert(indexSource.includes('ctx.mode !== "tui"'), "oracle prompt interceptor should leave non-TUI modes to use prompt-template expansion");
-  assert(indexSource.includes('display: false'), "oracle dispatch instructions should be injected as a hidden custom message");
-  assert(indexSource.includes('pi.sendUserMessage(formatOracleUserCommand'), "oracle TUI interceptor should persist the compact slash request as a real user message for prompt-history reloads");
-  assert(indexSource.includes('pi.on("before_agent_start"'), "oracle TUI interceptor should inject hidden dispatch instructions on the reinjected user-message turn");
-  assert(indexSource.includes('Preparing oracle job… running preflight'), "oracle command should show compact user-facing status before hidden dispatch");
+async function testOraclePromptTemplateCutover(): Promise<void> {
+  const commandsSource = await readFile(new URL("../extensions/oracle/lib/commands.ts", import.meta.url), "utf8");
+  const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
+  const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
+  const followUpPromptSource = await readFile(new URL("../prompts/oracle-followup.md", import.meta.url), "utf8");
+  const designSource = await readFile(new URL("../docs/ARCHITECTURE.md", import.meta.url), "utf8");
+  const recoveryDrillSource = await readFile(new URL("../docs/TEST_PLAN.md", import.meta.url), "utf8");
+  const operationsSource = await readFile(new URL("../docs/OPERATIONS.md", import.meta.url), "utf8");
+  const readmeSource = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
+    files?: string[];
+    pi?: { prompts?: string[]; extensions?: string[] };
+    engines?: { node?: string };
+    os?: string[];
+    peerDependencies?: Record<string, string | undefined>;
+    peerDependenciesMeta?: Record<string, { optional?: boolean } | undefined>;
+  };
+
   assert(promptSource.includes("You are preparing an /oracle job."), "/oracle internal dispatch prompt should contain the oracle dispatch instructions");
   assert(followUpPromptSource.includes("You are preparing an `/oracle-followup` job."), "/oracle-followup prompt template should contain follow-up dispatch instructions");
   assert(followUpPromptSource.includes("Call `oracle_preflight` immediately"), "/oracle-followup prompt should require an immediate oracle_preflight guard");
@@ -4054,11 +3760,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("retry once with a smaller archive"), "oracle submit tool guidance should tell agents to retry archive-too-large failures once");
   assert(toolsSource.includes("After a successful or queued oracle_submit, stop"), "oracle submit tool guidance should only stop after successful/queued submit results, not retryable oversize failures");
   assert(toolsSource.includes("Use context-rich archives when they fit"), "oracle tool guidance should tell agents to use the available archive budget when it helps");
-  assert(toolsSource.includes('name: "oracle_auth"'), "oracle tools should register an agent-facing oracle_auth tool");
   assert(toolsSource.includes("use files='.' for broad repo-wide asks"), "oracle tool guidance should align with whole-repo archive defaults");
   assert(toolsSource.includes("Default exclusions already skip common bulky outputs"), "oracle tool guidance should summarize default archive exclusions");
-  assert(toolsSource.includes("resolveOracleSubmitPreset"), "oracle submit should resolve preset via config helper");
-  assert(toolsSource.includes("coerceOracleSubmitPresetId"), "oracle submit should normalize preset label aliases before resolving the canonical preset id");
   assert(toolsSource.includes("ORACLE_SUBMIT_PRESETS registry"), "oracle submit tool description should point preset discovery to the canonical registry");
   assert(!toolsSource.includes("see `preset` field for canonical ids"), "oracle submit tool description should not imply the free-form preset schema exposes canonical ids");
   assert(toolsSource.includes("For ChatGPT, use preset only when the user requests model control"), "oracle tool guidance should say preset is the ChatGPT selector");
@@ -4107,266 +3810,43 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(readmeSource.includes(`\`${presetId}\``), `README should list preset id ${presetId}`);
     assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);
   }
-  const preflightSchema = preflightTool.parameters as import("typebox").TSchema;
-  const authSchema = authTool.parameters as import("typebox").TSchema;
-  const submitSchema = submitTool.parameters as import("typebox").TSchema;
-  assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
-  assert(Check(preflightSchema, { provider: "grok" }), "oracle_preflight should accept optional provider selection");
-  assert(!Check(preflightSchema, { provider: "unsupported" }), "oracle_preflight should reject providers outside the Google-compatible StringEnum schema");
-  assert(Check(preflightSchema, { followUpJobId: "sanity-job" }), "oracle_preflight should accept optional follow-up job id selection");
-  assert(Check(preflightSchema, { provider: "chatgpt", chatGptConversationId: "6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6" }), "oracle_preflight should accept optional existing ChatGPT conversation id selection");
-  assert(Check(authSchema, {}), "oracle_auth should accept an empty object");
-  assert(asRecord(preflightProperties?.provider)?.type === "string", "oracle_preflight should expose optional provider selection for provider-specific readiness checks");
-  assert(asRecord(preflightProperties?.followUpJobId)?.type === "string", "oracle_preflight should expose optional follow-up job id selection for same-thread readiness checks");
-  assert(asRecord(preflightProperties?.chatGptConversationId)?.type === "string", "oracle_preflight should expose optional existing ChatGPT conversation id selection for browser-created threads");
-  assert(!Array.isArray((asRecord(preflightTool.parameters)?.required)), "oracle_preflight should not require caller arguments");
-  assert(asRecord(authProperties?.provider)?.type === "string", "oracle_auth should expose optional provider selection for provider-specific auth refresh");
-  assert(!Array.isArray((asRecord(authTool.parameters)?.required)), "oracle_auth should not require caller arguments");
-  assert(asRecord(submitProperties.preset)?.type === "string", "oracle submit preset schema should validate preset as a string before execute-time normalization");
-  assert(asRecord(submitProperties.chatGptConversationId)?.type === "string", "oracle submit schema should expose optional existing ChatGPT conversation id targeting");
-  assert(
-    Check(submitSchema, { prompt: "sanity", files: ["README.md"], provider: "chatgpt", chatGptConversationId: "6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6" }),
-    "oracle_submit tool-call validation should accept an explicit existing ChatGPT conversation id",
-  );
-  assert(
-    !Check(submitSchema, { prompt: "sanity", files: ["README.md"], chatGptConversationId: "   " }),
-    "oracle_submit tool-call validation should reject blank existing ChatGPT conversation ids",
-  );
-  const normalizedExistingChat = resolveChatGptConversationReference("6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", DEFAULT_CONFIG);
-  assert(normalizedExistingChat?.chatUrl === "https://chatgpt.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", "oracle_submit should normalize raw existing ChatGPT conversation ids to a conversation URL");
-  const normalizedExistingChatUrl = resolveChatGptConversationReference("https://chat.openai.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6?model=gpt", DEFAULT_CONFIG);
-  assert(normalizedExistingChatUrl?.chatUrl === "https://chat.openai.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", "oracle_submit should preserve allowed ChatGPT URL origins while stripping query/hash for existing thread targeting");
-  for (const [presetAlias, presetId] of representativePresetAliases) {
-    assert(
-      Check(submitSchema, { prompt: "sanity", files: ["README.md"], preset: presetAlias }),
-      `oracle_submit tool-call validation should accept preset alias ${presetAlias}`,
-    );
-    assert(
-      coerceOracleSubmitPresetId(presetAlias) === presetId,
-      `oracle_submit execute-time preset normalization should coerce ${presetAlias} to ${presetId}`,
-    );
-  }
-  assert(
-    !Check(submitSchema, { prompt: "sanity", files: ["README.md"], preset: 123 }),
-    "oracle_submit tool-call validation should reject non-string preset values",
-  );
-  assert(
-    !Check(submitSchema, { prompt: "sanity", files: ["README.md"], provider: "grok", mode: "unsupported" }),
-    "oracle_submit tool-call validation should reject modes outside the Google-compatible StringEnum schema",
-  );
-  assert(
-    !Check(submitSchema, { prompt: "sanity", files: ["   "] }),
-    "oracle_submit tool-call validation should reject blank archive input strings instead of widening them to whole-repo archives",
-  );
-  assert(!("modelFamily" in submitProperties), "oracle submit tool schema should not expose legacy modelFamily input");
-  assert(!("effort" in submitProperties), "oracle submit tool schema should not expose legacy effort input");
-  assert(!("autoSwitchToThinking" in submitProperties), "oracle submit tool schema should not expose legacy autoSwitchToThinking input");
-  assert(runtimeSource.includes("Oracle requires a persisted pi session"), "runtime should surface a clear error when oracle is used without a persisted session identity");
-  assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
-  assert(runtimeSource.includes("resolveWorkspaceRoot"), "runtime should derive project identity from a stable workspace root instead of the raw current working directory");
-  assert(runtimeSource.includes('"AGENTS.md"'), "runtime workspace-root detection should recognize project markers like AGENTS.md before widening to unrelated ancestor git roots");
-  assert(runtimeSource.includes("Configured oracle browser executable does not exist"), "runtime submit preflight should surface missing configured browser executables clearly");
-  assert(runtimeSource.includes("Oracle prerequisite not found on PATH"), "runtime submit preflight should surface missing local dependencies clearly");
-  assert(runtimeSource.includes('await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles")'), "runtime submit preflight should validate runtime profile directory writability before submit");
-  assert(runtimeSource.includes('await assertWritableDirectory(getOracleJobsDir(), "jobs")'), "runtime submit preflight should validate the canonical jobs directory helper before submit");
-  assert(runtimeSource.includes("assertOracleSubmitPrerequisites"), "runtime should expose a submit-side preflight helper for locally knowable blockers");
-  assert(runtimeSource.includes("Oracle auth seed profile is not readable"), "runtime submit preflight should surface unreadable auth seed profiles clearly");
-  assert(toolsSource.includes("const projectCwd = getProjectId(ctx.cwd);"), "oracle submit should derive a stable workspace-root cwd before loading config or resolving archives");
-  assert(toolsSource.includes("loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isOracleProjectTrusted(ctx) })"), "oracle submit should load config from the stable workspace-root cwd while checking trust against the session cwd");
-  assert(toolsSource.includes("resolveArchiveInputs(projectCwd, params.files)"), "oracle submit should resolve archive inputs from the stable workspace-root cwd");
-  assert(toolsSource.includes("createArchive(projectCwd, params.files, tempArchivePath"), "oracle submit should build archives from the stable workspace-root cwd");
-  assert(toolsSource.includes("resolveOracleProviderArchivePlan(selection.provider)"), "oracle submit should select archive format, extension, and size limit from the resolved provider archive plan");
-  assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
-  assert(toolsSource.includes("await assertOracleSubmitPrerequisites(config, provider);"), "oracle submit should preflight locally knowable blockers against the selected provider before archiving or persisting jobs");
-  assert(toolsSource.includes("buildOracleToolErrorResult"), "oracle tools should centralize structured error payload creation");
-  assert(toolsSource.includes('pi.on("tool_result"'), "oracle tools should register a tool_result hook so structured oracle errors still surface with isError=true");
-  assert(toolsSource.includes("job: redactJobDetails(job"), "oracle submit should now return structured job details under details.job");
-  assert(!toolsSource.includes("details: {\n            jobId:"), "oracle submit should no longer expose legacy top-level detail fields like jobId instead of details.job");
-  assert(toolsSource.includes("artifactsPath: `${getJobDir(current.id)}/artifacts`"), "oracle read should derive artifact paths from the configured jobs dir instead of hard-coding /tmp");
-  assert(toolsSource.includes("source: \"oracle_read\""), "oracle read should pass explicit settlement provenance when a terminal job has been manually read");
-  assert(commandsSource.includes('registerCommand("oracle-read"'), "oracle commands should register a user-facing oracle-read command");
-  assert(commandsSource.includes("source: \"oracle_status\""), "oracle status should pass explicit settlement provenance when a terminal job has been manually inspected");
-  assert(commandsSource.includes("source: \"oracle_read_command\""), "oracle-read should settle further wake-up retries through explicit command provenance");
-  assert(commandsSource.includes("Recent jobs:"), "oracle-status should help users discover job ids when no explicit id is given");
-  assert(commandsSource.includes("ctx.mode === \"print\""), "oracle commands should emit stdout-friendly output in pi print mode");
-  assert(commandsSource.includes("oracle-command-output"), "oracle commands should emit displayed custom messages when no UI is available, such as pi JSON mode");
-  assert(commandsSource.includes("Usage: /oracle-cancel <job-id>"), "oracle cancel command should require an explicit job id instead of silently cancelling the latest job");
-  assert(jobsSource.includes("requirePersistedSessionFile(originSessionFile, \"create oracle jobs\")"), "oracle jobs should require a persisted session identity at creation time");
   assert(toolsSource.includes("obvious credentials/private data"), "oracle tool guidance should mention default exclusion of obvious credentials/private data");
   assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "oracle prompt should describe whole-repo auto-pruning when archives are still too large");
   assert(promptSource.includes("outside obvious source roots like `src/` and `lib/`"), "oracle prompt should describe the source-root guard for auto-pruning");
   assert(toolsSource.includes("After a successful or queued oracle_submit, stop"), "oracle tool guidance should explain queued oracle submissions as successful waits");
-  assert(toolsSource.includes('if (latest?.status === "queued" && queuedSubmissionDurable)'), "oracle submit should preserve queued jobs only after the archive and metadata persist durably");
-  assert(toolsSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt)"), "oracle submit should terminate a spawned worker if persisting worker metadata fails");
-  assert(toolsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel tool should only promote queued jobs after a clean cancellation");
-  assert(toolsSource.includes("formatOracleSubmitResponse"), "oracle tools should format submit responses through the shared observability helper");
-  assert(toolsSource.includes("formatOracleJobSummary"), "oracle tools should format oracle_read output through the shared observability helper");
-  assert(sharedJobCoordinationSource.includes("if (job.workerPid) return true;"), "durable worker handoff should require a persisted worker pid");
-  assert(!sharedJobCoordinationSource.includes('if (job.status === "waiting") return true;'), "worker phase alone should not count as a durable handoff without a persisted pid");
-  assert(queueSource.includes("runQueuedJobPromotionPass"), "queued promotion should delegate the shared orchestration pass instead of keeping a divergent loop inline");
-  assert(queueSource.includes("transitionOracleJobPhase"), "queued promotion should apply lifecycle transitions through the shared lifecycle helper");
-  assert(queueSource.includes("await terminateWorkerPid(worker.pid, worker.startedAt)"), "queued promotion should terminate a spawned worker if persisting worker metadata fails");
-  assert(locksSource.includes("state-coordination-helpers.mjs"), "typed lock wrappers should delegate to the shared state coordination helper module");
-  assert(sharedStateSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "locks/leases should use a bounded grace window before reclaiming metadata-less state dirs left behind by crashes");
-  assert(sharedStateSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "locks/leases should use a longer grace for in-flight .tmp-* dirs so concurrent sweep cannot delete another process's atomic publish");
-  assert(!sharedStateSource.includes("127.0.0.1:7328"), "shipped lock helpers should not contain hidden localhost telemetry endpoints");
-  assert(!sharedStateSource.includes("PI_ORACLE_DEBUG_LOCK_PAUSE_AFTER_MKDIR_MS"), "shipped lock helpers should not contain test-only post-mkdir sleep hooks");
-  assert(sharedStateSource.includes("createStateDirAtomically"), "locks/leases should publish new state dirs atomically so first creation never exposes a final dir without metadata");
-  assert(sharedStateSource.includes(".tmp-"), "lock/lease first-publish temp dirs should use a hidden prefix that lease readers never mistake for final published state dirs");
-  assert(sharedStateSource.includes("await rename(tempPath, finalPath);"), "locks/leases should atomically rename fully populated temp dirs into place for first publish");
-  assert(sharedStateSource.includes("await rename(tempPath, targetPath);"), "lock/lease metadata rewrites should stay atomic via temp-file rename so concurrent readers never observe partial JSON");
-  assert(sharedStateSource.includes("maybeReclaimIncompleteStateDir"), "locks/leases should reclaim metadata-less state dirs left behind after mkdir succeeds but metadata write never completes");
-  assert(sharedStateSource.includes("if (await maybeReclaimIncompleteStateDir(path)) continue;"), "lock/lease acquisition should retry after reclaiming stale metadata-less state dirs");
-  assert(!sharedStateSource.includes("await writeFile(join(path, \"metadata.json\")"), "lock/lease metadata should not be written in-place because wake-up routing depends on readers seeing only complete JSON");
-  assert(pollerSource.includes("writeLeaseMetadata"), "poller should publish durable wake-up-target leases for cross-process notification routing");
-  assert(pollerSource.includes("if (!hasPersistedOriginSession(job)) return false;"), "poller should refuse to route wake-ups for legacy jobs that do not have a persisted origin session identity");
-  assert(pollerSource.includes("getWakeupTargetLeaseKey"), "poller should key wake-up targets per process so one process cannot clear another session target");
-  assert(pollerSource.includes("processStartedAt"), "poller wake-up target leases should persist process identity to defend against PID reuse");
-  assert(pollerSource.includes("!jobHasLiveWakeupTarget(job, liveWakeupTargets)"), "poller should adopt completed jobs whose original session no longer has a live wake-up target");
-  assert(pollerSource.includes("await hooks.beforeNotificationClaim?.(jobId);"), "poller should support a hook immediately before claiming notification ownership so stale-snapshot retry races can be regression-tested");
-  assert(pollerSource.includes("const preNotifyLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should re-check live wake-up targets after claiming a notification and before notifying another session");
-  assert(pollerSource.includes("if (shouldPruneTerminalJob(job, now)) return false;"), "poller should exclude already-prunable terminal jobs from wake-up candidacy");
-  assert(pollerSource.includes("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should re-check live wake-up targets again immediately before sending a best-effort wake-up");
-  assert(pollerSource.includes("recordNotificationTarget(jobId, notificationClaimant"), "poller should persist the intended wake-up target before sending a best-effort completion reminder");
-  assert(pollerSource.includes("buildOracleWakeupNotificationContent"), "poller wake-up turns should format content through the shared observability helper");
-  assert(pollerSource.includes("buildOracleStatusText"), "poller status updates should format session status through the shared observability helper");
-  assert(pollerSource.includes('counts.active > 0') && pollerSource.includes('snapshot.ui.theme.fg("success", statusText)'), "poller should color running oracle jobs as success");
-  assert(pollerSource.includes("stopAllPollers"), "poller module should expose a way for the sanity harness to stop all background pollers before isolated-state teardown");
-  assert(pollerSource.includes("waitForAllPollersToQuiesce"), "poller module should expose a way for the sanity harness to wait for in-flight scans before teardown");
-  assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
-  assert(pollerSource.includes("const deliverable = readJob(jobId);"), "poller should re-read the job immediately before send so deleted/pruned jobs cannot emit stale wake-ups");
-  assert(pollerSource.includes("if (!notedWakeup) {"), "poller should tolerate a job disappearing before the wake-up send path");
-  assert(pollerSource.includes("responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath))"), "poller wake-up turns should hide missing response paths when no response file was actually written");
-  assert(sharedObservabilitySource.includes("Use /oracle-read"), "poller wake-up content should direct receivers to /oracle-read as the primary saved-result path");
-  assert(sharedObservabilitySource.includes("/oracle-status"), "poller wake-up content should still mention /oracle-status as the metadata-oriented fallback path");
-  assert(sharedObservabilitySource.includes("oracle_read({ jobId:"), "poller wake-up content should still mention oracle_read for agent callers who need tool output in-turn");
-  assert(!pollerSource.includes("Read response:"), "poller wake-up content should no longer steer receivers toward raw response-file reads as the primary action");
-  assert(pollerSource.includes("getJobDir(job.id)"), "poller wake-up content should derive artifact/response paths from the configured oracle jobs dir instead of hard-coding /tmp");
-  assert(pollerSource.includes("beforeNotificationPersist"), "poller should support a last-moment revalidation hook before wake-up delivery for regression coverage");
-  assert(!pollerSource.includes("manager.setSessionFile(sessionFile)"), "poller should not discard live in-memory session history by reloading the current session manager before completion delivery");
-  assert(!pollerSource.includes("appendMessage(buildNotificationMessage(job, notificationModel))"), "poller should not append synthetic assistant completion messages into session history");
-  assert(supportSource.includes("await stopAllPollers();"), "sanity support should stop active pollers before removing the isolated oracle state dir");
-  assert(supportSource.includes("await waitForAllPollersToQuiesce()"), "sanity support should wait for in-flight poller scans before removing the isolated oracle state dir");
-  assert(!pollerSource.includes("reopenAndVerifyNotification"), "poller should no longer rely on post-append session-history verification for completion delivery");
-  assert(!pollerSource.includes("findExistingNotificationRecord"), "poller should not rely on durable session-history notification recovery under the wake-up-only model");
-  assert(pollerSource.includes("ORACLE_WAKEUP_REMINDER_CUSTOM_TYPE"), "poller should deliver completion reminders via a dedicated best-effort wake-up custom message type");
-  assert(pollerSource.includes("await noteWakeupRequested(jobId)"), "poller should track bounded best-effort wake-up reminder attempts");
-  assert(jobsSource.includes("if (!hasPersistedOriginSession(current)) return undefined;"), "notification claims should reject legacy jobs that do not have a persisted origin session identity");
-  assert(jobsSource.includes("if (shouldPruneTerminalJob(current, nowMs)) return undefined;"), "notification claims should reject already-prunable jobs under the job lock so stale candidates cannot wake after prune eligibility");
-  assert(jobsSource.includes("if (!shouldRequestWakeup(current, nowMs)) return undefined;"), "notification claims should re-check wake-up retry eligibility under the job lock to block stale second claimants");
-  assert(jobsSource.includes("notificationSessionFile"), "jobs should persist the durable session file path for wake-up-target tracking");
-  assert(jobsSource.includes("job-lifecycle-helpers.mjs"), "jobs should delegate lifecycle mutation ownership to the shared lifecycle helper module");
-  assert(jobsSource.includes("recordNotificationTarget"), "jobs should persist the intended notification target before best-effort wake-up delivery so retries can recover idempotently");
-  assert(jobsSource.includes("wakeupSettledSource"), "wake-up settlement should persist provenance for later RCA attribution");
-  assert(jobsSource.includes("wakeupObservedAt"), "pre-send manual observation should be recorded separately from wake-up settlement");
-  assert(sharedLifecycleSource.includes("beforeFirstAttempt && !options.allowBeforeFirstAttempt"), "pre-send manual observations should not silently suppress the first wake-up attempt");
-  assert(sharedLifecycleSource.includes("wakeupSettledBeforeFirstAttempt"), "wake-up settlement should record whether it happened before the first reminder attempt");
-  assert(jobsSource.includes("ORACLE_WAKEUP_POST_SEND_RETENTION_MS"), "jobs should keep wake-up-target files around for a short post-send retention grace window");
-  assert(jobsSource.includes("wakeupRetentionGraceIsActive"), "jobs should detect recently sent wake-ups when deciding whether removal/pruning is safe");
-  assert(jobsSource.includes("if (job.status === \"complete\" || job.status === \"cancelled\") {"), "job pruning should treat complete/cancelled retention as an explicit age-based policy under the wake-up-only model");
-  assert(jobsSource.includes("return ageMs >= retention.complete;"), "complete/cancelled job pruning should no longer depend on synthetic notification state");
-  assert(jobsSource.includes("getTerminalCleanupStaleReason"), "terminal cleanup reconcile should detect live-but-stale cleanup workers");
-  assert(jobsSource.includes("Oracle terminal cleanup is stale"), "terminal cleanup reconcile should recover live workers whose terminal cleanup heartbeat is stale");
-  assert(jobsSource.includes("notification delivery is in flight"), "terminal job removal should refuse jobs with an in-flight notification claim instead of deleting around wake-up delivery");
-  assert(jobsSource.includes("post-send retention grace window"), "terminal job removal should refuse recently woken jobs until their response/artifact files survive a short post-send grace window");
-  assert(jobsSource.includes("Retry after"), "terminal job removal should return the next eligible cleanup time when post-send retention grace blocks cleanup");
-  assert(jobsSource.includes("Refusing to remove terminal oracle job"), "terminal job removal should refuse live terminal workers instead of deleting around them");
-  assert(jobsSource.includes("maxRetries: ORACLE_JOB_DIR_RM_MAX_RETRIES"), "terminal job removal should retry recursive job-dir deletion to stabilize transient ENOTEMPTY cleanup races");
-  assert(runtimeSource.includes("jobBlocksAdmission"), "runtime admission should delegate cleanup/worker blocking decisions to the shared job coordination helper");
-  assert(runtimeSource.includes("isTrackedProcessAlive"), "runtime admission should use the shared tracked-process identity helper when evaluating live workers");
-  assert(sharedLifecycleSource.includes("MAX_ORACLE_JOB_LIFECYCLE_EVENTS = 64"), "shared lifecycle helpers should bound stored lifecycle breadcrumbs to keep job state durable and reviewable");
-  assert(sharedObservabilitySource.includes("formatOracleJobSummary"), "shared observability helpers should centralize detached job summary formatting");
-  assert(sharedObservabilitySource.includes("terminal-event:"), "shared observability helpers should keep terminal lifecycle events prominent in detached job summaries");
-  assert(sharedObservabilitySource.includes("response: unavailable yet"), "shared observability helpers should avoid showing response paths as ready when the response file does not exist yet");
-  assert(sharedProcessSource.includes("spawnDetachedNodeProcess"), "shared process helpers should centralize detached process spawning semantics for worker handoff");
-  assert(!runtimeSource.includes("Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0"), "runtime admission should not treat cleanup warnings alone as live capacity blockers");
-  assert(!runtimeSource.includes("if (report.warnings.length > 0) {\n    return report;\n  }"), "runtime cleanup should not retain leases solely because teardown leaves warnings");
-  assert(runtimeSource.includes("await releaseConversationLease(runtime.conversationId)"), "runtime cleanup should always attempt to release conversation leases");
-  assert(runtimeSource.includes("await releaseRuntimeLease(runtime.runtimeId)"), "runtime cleanup should always attempt to release runtime leases");
-  assert(runtimeSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "runtime profile cloning should enforce a subprocess timeout");
-  assert(runtimeSource.includes("copyDirectory(seedDir, runtimeProfileDir"), "extension-side runtime profile cloning should use Node recursive copy off macOS instead of requiring POSIX cp on Windows/Linux");
-  assert(runtimeSource.includes("removeChromiumProcessSingletonArtifacts"), "runtime profile cloning should scrub Chromium singleton artifacts copied from seed profiles");
-  assert(workerSource.includes("PI_ORACLE_CP_PATH") && !workerSource.includes('spawnCommand("/bin/cp"'), "worker profile cloning should resolve cp from PATH on Linux/Nix instead of hard-coding /bin/cp");
-  assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
-  assert(toolsSource.includes("MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued archive bytes to avoid filling tmp with queued jobs");
-  assert(toolsSource.includes("hasRetainedPreSubmitArchive"), "queued archive pressure should count retained pre-submit archives, not just currently queued jobs");
   assert(toolsSource.includes("queued jobs and retained pre-submit archives"), "queued archive admission errors should explain that stranded pre-submit archives count against the byte cap");
+  assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
+  assert(commandsSource.includes("recently woken jobs may stay retained briefly"), "oracle-clean help text should mention the short post-send retention grace window");
+  assert(commandsSource.includes("Job retained for wake-up safety"), "oracle-clean summary should use friendly wake-up safety phrasing for retention blockers");
+
   assert(pkg.files?.includes("prompts"), "package.json files should include internal oracle command prompts");
   assert(pkg.pi?.extensions?.includes("./extensions/oracle/index.ts"), "package.json pi.extensions should include oracle extension entrypoint");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json should register oracle prompts so TUI slash completion can discover /oracle and /oracle-followup");
   assert(pkg.engines?.node === ">=22.19.0", "package.json should advertise the actual Node.js support floor without an upper bound");
   assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux") && pkg.os?.includes("win32"), "package.json should declare macOS, Linux, and Windows native support");
-  assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
-  assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
-  assert(pkg.scripts?.["typecheck:worker-runtime"] === "tsc --noEmit -p tsconfig.worker-runtime.json", "package.json should typecheck the worker runtime entry point, whose errors otherwise surface only mid-job");
-  assert(pkg.scripts?.["check:syntax"] === "node scripts/check-syntax.mjs", "package.json should parse-check every .mjs source by discovery, never by a hand-maintained file list");
-  assert(String(pkg.scripts?.["check:oracle-extension"] || "").startsWith("npm run check:syntax && esbuild "), "package.json should bundle the extension after the discovery syntax check");
-  assert(pkg.scripts?.["check:platform-smoke"] === "node scripts/platform-smoke/invariants.mjs", "package.json should run platform-smoke invariants as their own gate");
-  assert(pkg.scripts?.["smoke:platform:doctor"] === "node scripts/platform-smoke.mjs doctor", "package.json should expose the Crabbox platform-smoke doctor");
-  assert(pkg.scripts?.["smoke:platform:macos"] === "node scripts/platform-smoke.mjs run --target macos", "package.json should expose the macOS Crabbox platform smoke gate");
-  assert(pkg.scripts?.["smoke:platform:ubuntu"] === "node scripts/platform-smoke.mjs run --target ubuntu", "package.json should expose the Ubuntu Crabbox platform smoke gate");
-  assert(pkg.scripts?.["smoke:platform:windows-native"] === "node scripts/platform-smoke.mjs run --target windows-native", "package.json should expose the Windows native Crabbox platform smoke gate");
-  assert(pkg.scripts?.["smoke:platform:all"] === `npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target ${platformSmokeConfig.requiredTargets.join(",")}`, "package.json should run every required Crabbox target together after doctor");
   assert(pkg.files?.includes("platform-smoke.config.mjs") && pkg.files?.includes("scripts/platform-smoke.mjs") && pkg.files?.includes("scripts/platform-smoke"), "package files should include the Crabbox platform smoke harness");
-  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
-  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-runtime"), "full local verification should include worker runtime typechecking");
-  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:oracle-extension"), "full local verification should include the syntax discovery check and the extension bundle");
-  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:platform-smoke"), "full local verification should include platform smoke invariants");
-  assert(pkg.scripts?.["smoke:real"] === "npm run smoke:real:packed", "package.json should make the default real isolated pi-agent smoke packed-install proof");
-  assert(pkg.scripts?.["smoke:real:packed"] === "node scripts/oracle-real-smoke.mjs run --mode packed", "package.json should expose the packed real isolated pi-agent smoke gate");
-  assert(pkg.scripts?.["smoke:real:source"] === "node scripts/oracle-real-smoke.mjs run --mode source", "package.json should expose source-mode real smoke only as an explicit debug path");
-  assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
-  assert(pkg.scripts?.["release:check"] === "npm run verify:oracle && npm run proof:capture && npm run release:proof:chatgpt-presets && npm run smoke:platform:all", "release checks should run local verification, offline capture proof, fresh ChatGPT preset proof, then doctor-first platform smoke");
-  assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
   assert(pkg.peerDependencies?.["@earendil-works/pi-ai"] === "*", "package.json should declare the runtime StringEnum import as an optional wildcard peer");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
   for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox"]) {
     assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
   }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
-  assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
-  assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
-  assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
-  assert(commandsSource.includes("recently woken jobs may stay retained briefly"), "oracle-clean help text should mention the short post-send retention grace window");
-  assert(commandsSource.includes("Job retained for wake-up safety"), "oracle-clean summary should use friendly wake-up safety phrasing for retention blockers");
-  assert(commandsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel command should only promote queued jobs after a clean cancellation");
-  assert(commandsSource.includes("Refusing to remove non-terminal oracle job"), "oracle clean should refuse queued jobs");
-  assert(commandsSource.includes("runOracleAuthBootstrap"), "oracle commands should delegate auth refresh through the shared auth-bootstrap helper");
-  assert(jobsSource.includes("report.attempted.push(\"queuedArchive\")"), "cleanup retry should treat queued archive deletion as a first-class cleanup target");
-  assert(jobsSource.includes("Failed to remove queued archive"), "queued cleanup retries should preserve warnings when archive deletion keeps failing");
-  assert(jobsSource.includes("if (cleanupReport.warnings.length > 0)"), "terminal cleanup should retain job state when cleanup reports warnings");
-  assert(jobsSource.includes("cleanupPending: terminated"), "terminal cancellation/recovery should mark cleanup pending until teardown finishes");
-  assert(jobsSource.includes("markOracleJobCreated"), "job creation should register durable lifecycle breadcrumbs through the shared lifecycle helper");
-  assert(jobsSource.includes("cancelRequestedAt"), "oracle jobs should persist durable cancel intent before reconciling worker teardown");
-  assert(jobsSource.includes("Recovered requested cancellation"), "reconcile should preserve requested-cancel semantics instead of always failing stale active jobs");
-  assert(archiveSource.includes("target.input.on(\"error\", handlePipeError)"), "oracle archive creation should guard compressor input pipes so downstream early exits do not crash the host process");
-  assert(sharedObservabilitySource.includes("heartbeat:"), "shared observability helpers should surface heartbeat freshness in active job summaries");
-  assert(sharedObservabilitySource.includes("formatOracleCancelOutcome"), "shared observability helpers should centralize truthful cancel outcome messaging");
-  assert(commandsSource.includes("formatOracleCancelOutcome"), "oracle cancel command should use the shared truthful cancel outcome formatter");
-  assert(toolsSource.includes("formatOracleCancelOutcome"), "oracle cancel tool should use the shared truthful cancel outcome formatter");
 }
 
-async function testResponseTimeoutGuard(): Promise<void> {
+// These behavior contracts still have source-only coverage; keep their pins until behavioral replacements exist.
+async function testOraclePinOnlySourceContracts(): Promise<void> {
+  const extensionSource = await readFile(new URL("../extensions/oracle/index.ts", import.meta.url), "utf8");
   const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
   const authBootstrapSource = await readFile(new URL("../extensions/oracle/worker/auth-bootstrap.mjs", import.meta.url), "utf8");
-  const authFlowSource = await readFile(new URL("../extensions/oracle/worker/auth-flow-helpers.mjs", import.meta.url), "utf8");
-  const stateLocksSource = await readFile(new URL("../extensions/oracle/worker/state-locks.mjs", import.meta.url), "utf8");
-  const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
-  const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
-  const browserProfileHelpersSource = await readFile(new URL("../extensions/oracle/shared/browser-profile-helpers.mjs", import.meta.url), "utf8");
-  const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
-  const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
-  const archiveSource = await readFile(new URL("../extensions/oracle/lib/archive.ts", import.meta.url), "utf8");
-  const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
-  const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
+  assert(extensionSource.includes("if (ctx.hasUI) ctx.ui.notify"), "oracle extension should surface startup-maintenance failures through available session UI as well as stderr");
+  assert(extensionSource.includes('["print", "json", "rpc"].includes(ctx.mode)'), "oracle prompt fallback should keep print/json/rpc prompt-template expansion available");
   assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
   assert(workerSource.includes("Too many requests"), "worker should surface provider rate-limit modals instead of reporting generic UI drift");
   assert(workerSource.includes("waiting for send acceptance"), "worker should surface provider rate-limit modals after clicking send instead of reporting generic send acceptance failure");
   assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");
-  assert(workerSource.includes("POST_SEND_SETTLE_MS = 15_000"), "worker should wait 15 seconds after send before continuing");
   assert(workerSource.includes("promoteQueuedJobsAfterCleanup"), "worker should promote queued jobs after cleanup for autonomous queue advancement");
   assert(sharedJobCoordinationSource.includes("Queued oracle archive is missing:"), "cleanup-driven promotion should fail queued jobs whose archive is missing");
   assert(!workerSource.includes("if (!existsSync(current.archivePath)) continue;"), "cleanup-driven promotion should not silently skip archive-missing queued jobs");
@@ -4378,86 +3858,25 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(sharedLifecycleSource.includes("transitionOracleJobPhase"), "worker/extension lifecycle changes should flow through the shared lifecycle transition helper");
   assert(workerSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt)"), "cleanup-driven queued promotion should terminate spawned workers when metadata persistence fails");
   assert(workerSource.includes("cleanupWarnings = await cleanupRuntime(job);"), "cleanup-driven queued promotion should tear down runtime artifacts after spawned-worker failures");
-  assert(workerSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "worker runtime profile cloning should enforce a subprocess timeout");
-  assert(workerSource.includes("copyDirectory(seedDir, job.runtimeProfileDir"), "worker runtime profile cloning should use Node recursive copy off macOS instead of requiring POSIX cp on Windows/Linux");
-  assert(workerSource.includes("removeChromiumProcessSingletonArtifacts"), "worker runtime profile cloning should scrub Chromium singleton artifacts copied from seed profiles");
-  assert(workerSource.includes("jobBlocksAdmission"), "worker queued-promotion admission should delegate blocking checks to the shared job coordination helper");
-  assert(workerSource.includes("from \"./state-locks.mjs\""), "worker should use the shared hardened state-lock helper instead of keeping divergent lock/lease crash recovery logic inline");
-  assert(workerSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "worker should use the shared ChatGPT UI helper module for model/origin/completion logic");
   assert(workerSource.includes('["button", "radio", "menuitemradio"].includes(candidate.kind || "")'), "worker should accept radio-style model family controls in addition to button controls");
   assert(workerSource.includes('["button", "switch"].includes(candidate.kind || "")'), "worker should treat the auto-switch control as a switch in the current ChatGPT configure modal");
   assert(workerSource.includes("Could not find model family control"), "worker should describe missing family selectors generically instead of assuming button-only controls");
-
-  assert(workerSource.includes("canUseOpenModelMenuForSelection"), "worker should fall back to the top-level model menu for plain Instant when ChatGPT's configure sheet is unavailable");
-  assert(workerSource.includes("snapshotHasUsableComposerControls"), "worker readiness should accept authenticated usable composer shells even when model labels drift");
-  assert(workerSource.includes("public Log in/Sign up controls"), "worker readiness should not accept ChatGPT's public logged-out composer shell as authenticated");
-  assert(workerSource.includes("hasGrokLoginCta"), "worker should reject Grok login shells before accepting composer-like controls as authenticated");
-  assert(authBootstrapSource.includes("hasGrokLoginCta"), "auth bootstrap should reject Grok login shells before accepting composer-like controls as authenticated");
-  assert(conversationIdFromUrl("https://chatgpt.com/c/chatgpt-abc") === "chatgpt-abc" && conversationIdFromUrl("https://grok.com/chat/grok-abc") === "grok-abc", "conversation helpers should parse both ChatGPT and Grok conversation URL ids");
-  assert(workerSource.includes("Grok response completed but the conversation URL did not stabilize"), "Grok jobs should fail clearly rather than persist the Grok home page as a follow-up URL");
-  assert(workerSource.includes("hasTargetCopyResponse: hasTargetCopyResponse || isGrokJob(job)"), "Grok completion should not require exact Copy-button evidence once response text is stable");
-  assert(workerSource.includes("const errorText = detectUploadErrorText(`${snapshot}\\n${body}`);"), "Grok upload confirmation should preserve visible upload error detection");
   assert(workerSource.includes("document.querySelectorAll('.message-bubble')"), "Grok response extraction should anchor on message bubbles before brittle container class fallbacks");
   assert(workerSource.includes('document.querySelectorAll(\'[data-message-author-role="assistant"]\')'), "ChatGPT response extraction should use current assistant role nodes when message-bubble nodes are absent");
   assert(workerSource.includes("node.getAttribute('data-testid') !== 'user-message'"), "Grok response extraction should exclude user-message bubbles before selecting assistant text");
   assert(workerSource.includes("/^Thought for /i.test"), "Grok response extraction should strip leading thinking-summary labels from answer text");
-  assert(workerSource.includes("throw new Error(classification.message"), "worker auth-transition timeout should preserve the specific classifier guidance instead of replacing it with a misleading generic partial-login message");
-  assert(workerSource.includes("Math.min(job.config.auth.bootstrapTimeoutMs || 120_000, 120_000)"), "ChatGPT worker readiness should allow Cloudflare verification-successful settling longer than the old 30s fixed timeout");
-  assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
-  assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
-  assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
-  assert(uiHelpersSource.includes("selectionMatchesChipSelection"), "ChatGPT UI helpers should recognize composer chips like Heavy thinking or Extended Pro as durable preset indicators");
-
-  assert(authBootstrapSource.includes("from \"./state-locks.mjs\""), "auth bootstrap should use the shared hardened state-lock helper instead of keeping divergent auth-lock crash recovery logic inline");
-  assert(authBootstrapSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "auth bootstrap should use the shared ChatGPT origin helper so runtime/auth stay aligned");
-  assert(authBootstrapSource.includes("from \"./auth-flow-helpers.mjs\""), "auth bootstrap should use the extracted auth flow helper module for probe normalization and page classification");
-  assert(authFlowSource.includes("snapshotHasUsableComposerControls"), "auth classification should treat visible usable ChatGPT composer controls as ready despite model-control label drift");
-  assert(!authBootstrapSource.includes('"/tmp/oracle-auth'), "auth bootstrap should not write diagnostics to fixed /tmp/oracle-auth.* paths");
   assert(authBootstrapSource.includes('mkdtemp(join(tmpdir(), "pi-oracle-auth-"))'), "auth bootstrap should isolate diagnostics in a unique private temp directory per run");
-  assert(authBootstrapSource.includes("AGENT_BROWSER_COMMAND_TIMEOUT_MS"), "auth bootstrap should enforce process-level timeouts for agent-browser commands");
-  assert(authBootstrapSource.includes("PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS"), "auth bootstrap should allow shorter timeout overrides for close-time smoke tests");
-  assert(authBootstrapSource.includes("isAbsolute(targetDir)"), "auth bootstrap should accept platform-native absolute paths, including Windows drive-letter paths");
-  assert(authBootstrapSource.includes("Object.hasOwn(maybeOptions, \"timeoutMs\")"), "auth bootstrap targetCommand should accept explicit timeout overrides");
-  assert(!authBootstrapSource.includes("function killProcessTree") && !workerSource.includes("function killProcessTree") && !runtimeSource.includes("function killProcessTree"), "subprocess lifetime handling lives once, in the shared process helpers; a worker or runtime copy would reopen the class fixed in 0.3.3");
-  assert(!authBootstrapSource.includes("scrubSweetCookieSafeStoragePasswordEnv"), "auth bootstrap should avoid mutating process.env while handling Sweet Cookie safe-storage overrides");
-  assert(sharedProcessSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "the shared subprocess runner should scrub safe-storage passwords while preserving caller-provided env vars");
   assert(workerSource.includes("Launching isolated Chrome directly for agent-browser attach"), "worker should launch the isolated Chrome runtime itself instead of depending on global agent-browser daemon launch options");
   assert(workerSource.includes('"connect", endpoint'), "worker should attach agent-browser to the worker-owned Chrome DevTools endpoint so non-oracle sessions can remain active");
   assert(workerSource.includes('"open", url'), "worker should navigate the connected oracle session without relaunch-scoped agent-browser flags after attaching to worker-owned Chrome");
   assert(workerSource.includes("await terminateBrowserProcess()"), "worker should await worker-owned Chrome teardown before profile cleanup");
   assert(workerSource.includes("Runtime profile cleanup skipped because isolated browser close did not complete"), "worker should not delete runtime profiles while its directly spawned browser may still be alive");
   assert(!workerSource.includes('[...browserBaseArgs(job, { withLaunchOptions: true, mode }), "open", url]'), "worker should not launch oracle browsers through agent-browser open with launch-scoped flags that conflict with unrelated sessions");
-  assert(!runtimeSource.includes("assertNoForeignAgentBrowserSessions"), "submit preflight should not reject unrelated active agent-browser sessions now that worker-owned Chrome attach avoids global daemon takeover");
-  assert(browserProfileHelpersSource.includes('readFileSync(localStatePath, "utf8")'), "browser profile helpers should read Chromium Local State as utf8 text directly");
-  assert(authBootstrapSource.includes("Effective oracle auth config:"), "auth bootstrap failures should report the effective auth config path for the active agent dir");
-  assert(!authBootstrapSource.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap should not hardcode the default global config path in user-facing remediation guidance");
-  assert(stateLocksSource.includes("state-coordination-helpers.mjs"), "worker state-lock wrappers should delegate to the shared state coordination helper module");
-  assert(sharedStateSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "shared worker state-lock helper should use a bounded grace before reclaiming metadata-less state dirs");
-  assert(sharedStateSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "shared worker state-lock helper should use a longer grace for in-flight .tmp-* dirs under concurrent sweep");
-  assert(sharedStateSource.includes("createStateDirAtomically"), "shared worker state-lock helper should publish new state dirs atomically so first creation never exposes a final dir without metadata");
-  assert(sharedStateSource.includes(".tmp-"), "shared worker state-lock helper should use hidden temp dir prefixes so fresh publishes are never mistaken for final lease/lock dirs");
-  assert(sharedStateSource.includes("maybeReclaimIncompleteStateDir"), "shared worker state-lock helper should reclaim metadata-less state dirs left behind by crashes");
-  assert(sharedStateSource.includes("await rename(tempPath, finalPath);"), "shared worker state-lock helper should atomically rename fully populated temp dirs into place for first publish");
-  assert(sharedStateSource.includes("await rename(tempPath, targetPath);"), "shared worker state-lock helper should write metadata atomically via temp-file rename");
-  assert(queueSource.includes("appendCleanupWarnings"), "global queued promotion should persist cleanup warnings from failed teardown");
-  assert(queueSource.includes("runQueuedJobPromotionPass"), "global queued promotion should delegate the shared queued-promotion orchestration helper");
-  assert(queueSource.includes("transitionOracleJobPhase"), "global queued promotion should apply queue state changes through the shared lifecycle helper");
-  assert(toolsSource.includes("appendCleanupWarnings(job.id, cleanupReport.warnings)"), "submit failure teardown should persist cleanup warnings when runtime cleanup is incomplete");
-  assert(archiveSource.includes("ARCHIVE_COMMAND_TIMEOUT_MS = 120_000"), "archive creation should enforce a subprocess timeout envelope");
-  assert(archiveSource.includes("Oracle archive subprocess timed out after"), "archive creation should surface timeout failures clearly");
-  assert(workerSource.includes("applyOracleJobCleanupWarnings"), "worker should persist cleanup warnings when runtime teardown is incomplete through the shared lifecycle helper");
   assert(workerSource.includes("if (existing?.jobId === job.id) return true;"), "cleanup-driven queued promotion should reuse same-job conversation leases during retry");
   assert(workerSource.includes("runQueuedJobPromotionPass"), "cleanup-driven queued promotion should reuse the shared queued-promotion orchestration helper");
   assert(sharedProcessSource.includes("terminateTrackedProcess"), "shared process helpers should centralize tracked-process termination semantics");
   assert(workerSource.includes("cleanupPending: true"), "worker should mark terminal jobs as cleanup-pending before teardown starts");
   assert(workerSource.includes("clearOracleJobCleanupState"), "worker should clear cleanup-pending through the shared lifecycle helper once teardown finishes");
-  assert(!workerSource.includes("Proceeding after model configuration timeout because strong in-dialog verification already succeeded"), "worker should not proceed if the model configuration sheet never closes");
-  assert(sharedObservabilitySource.includes("buildOracleWakeupNotificationContent"), "shared observability helpers should centralize wake-up notification formatting");
-  assert(sharedObservabilitySource.includes("Response file: unavailable yet"), "shared observability helpers should avoid implying that failed jobs already have a response file when they do not");
-  assert(workerSource.includes("activateSendButton"), "worker should activate provider send through the page DOM instead of relying only on accessibility click refs");
-  assert(workerSource.includes("waitForSendAccepted"), "worker should verify that provider send actually leaves the composer before awaiting a response");
-  assert(workerSource.includes("send-not-accepted"), "worker should capture diagnostics when provider send activation does not submit the message");
-  assert(workerSource.includes("message did not leave the composer"), "worker should fail clearly instead of waiting forever when provider send is not accepted");
 }
 
 async function testArchiveDefaultExclusions(): Promise<void> {
@@ -6560,6 +5979,30 @@ async function testSanityRunnerIsolation(): Promise<void> {
   }
 }
 
+async function testRepoSecurityNegatives(): Promise<void> {
+  const rules = [
+    { label: "hidden localhost telemetry endpoint", pattern: /127\.0\.0\.1:7328/ },
+    { label: "fixed auth diagnostics path", pattern: /["'`]\/tmp\/oracle-auth/ },
+    { label: "duplicate process-tree teardown", pattern: /\bfunction\s+killProcessTree\b/ },
+  ];
+  const root = new URL("../extensions/", import.meta.url);
+  const offenders: string[] = [];
+  for (const entry of await readdir(root, { recursive: true })) {
+    const relative = entry.replaceAll("\\", "/");
+    // Unit-test fixture paths are not runtime diagnostics.
+    if (!/\.[cm]?[jt]s$/.test(relative) || /\.test\.[cm]?[jt]s$/.test(relative) || relative.includes("node_modules/")) continue;
+    const sharedProcessHelper = relative === "oracle/shared/process-helpers.mjs" || relative === "oracle/shared/process-helpers.d.mts";
+    const lines = (await readFile(new URL(relative, root), "utf8")).split("\n");
+    lines.forEach((line, index) => {
+      for (const rule of rules) {
+        if (rule.label === "duplicate process-tree teardown" && sharedProcessHelper) continue;
+        if (rule.pattern.test(line)) offenders.push(`extensions/${relative}:${index + 1}: ${rule.label}`);
+      }
+    });
+  }
+  assert(offenders.length === 0, `production sources must respect security negatives: ${offenders.join(", ")}`);
+}
+
 // A maintainer tool that falls back to a fixed loopback endpoint drives whichever signed-in browser
 // listens there: the preset proof runner (0.3.3) and the composer proof both defaulted to the
 // personal relay. Browser endpoints come from configuration or an explicit variable, never a fallback.
@@ -6619,35 +6062,58 @@ function testResponseChrome(): void {
   assert(stripChatGptResponseChrome("Stopped thinking\nAnswer body\nDo you like this personality?\n") === "Answer body", "Response chrome must not contaminate the answer");
 }
 
-async function testPollerHostSafety(): Promise<void> {
-  const sessionFile = "/tmp/oracle-sanity-session-host-safety.jsonl";
+async function testPollerHostSafety(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const sessionManager = createPersistedSessionManager("poller-host-safety");
+  const sessionFile = sessionManager.getSessionFile();
+  assert(sessionFile, "reconcile contention coverage should have a persisted session identity");
   const pi = createPiHarness();
-  pi.sendMessage = () => undefined;
-  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], {
-    notifications: [],
-    statuses: [],
-    setStatus: () => undefined,
-    theme: { fg: (_name: string, text: string) => text },
-    notify: () => undefined,
+  let signalLockHeld: (() => void) | undefined;
+  let releaseHolder: (() => void) | undefined;
+  const lockHeld = new Promise<void>((resolve) => {
+    signalLockHeld = resolve;
+  });
+  const holderGate = new Promise<void>((resolve) => {
+    releaseHolder = resolve;
+  });
+  let staleJobId: string | undefined;
+  let terminalJobId: string | undefined;
+  let scanPromise: Promise<void> | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const holder = withGlobalReconcileLock({ source: "oracle-sanity-holder", processPid: process.pid }, async () => {
+    staleJobId = await createJobForTest(config, process.cwd(), sessionFile);
+    const deadWorkerPid = 2_147_483_647;
+    assert(!isPidAlive(deadWorkerPid), "reconcile contention fixture should use a dead worker pid");
+    const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await updateJob(staleJobId, (job) => ({ ...job, workerPid: deadWorkerPid, workerStartedAt: "dead-worker", heartbeatAt: staleAt, submittedAt: staleAt }));
+    terminalJobId = await createTerminalJob(config, process.cwd(), sessionFile);
+    signalLockHeld?.();
+    await holderGate;
   });
 
-  let unhandled = 0;
-  const onUnhandled = () => {
-    unhandled += 1;
-  };
-  process.on("unhandledRejection", onUnhandled);
   try {
-    await withGlobalReconcileLock({ source: "oracle-sanity-holder", processPid: process.pid }, async () => {
-      startPoller(pi, ctx, 50, "/tmp/fake-oracle-worker.mjs");
-      await sleep(250);
-    });
-    await sleep(150);
-    stopPollerForSession(sessionFile, ctx.cwd);
+    await Promise.race([lockHeld, holder]);
+    scanPromise = scanOracleJobsOnce(pi, createExtensionCtx(sessionManager), "/tmp/fake-oracle-worker.mjs");
+    await Promise.race([
+      scanPromise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("poller scan should resolve within 2 s while reconcile is locked")), 2_000);
+      }),
+    ]);
+    assert(staleJobId && readJob(staleJobId)?.status === "submitted", "contended scans should skip stale-job reconciliation");
+    assert(pi.sentMessages.length === 1 && asRecord(pi.sentMessages[0]?.details)?.jobId === terminalJobId, "reconcile contention must not prevent exactly one terminal-job wake-up");
+    assert(terminalJobId && Boolean(readJob(terminalJobId)?.notifiedAt), "a wake-up delivered while reconcile is locked should be marked notified");
   } finally {
-    process.off("unhandledRejection", onUnhandled);
+    if (timeout) clearTimeout(timeout);
+    releaseHolder?.();
+    try {
+      await holder;
+      await scanPromise?.catch(() => undefined);
+    } finally {
+      if (staleJobId) await cleanupJob(staleJobId);
+      if (terminalJobId) await cleanupJob(terminalJobId);
+    }
   }
-
-  assert(unhandled === 0, `expected no unhandled rejections, saw ${unhandled}`);
 }
 
 function sanityProgress(label: string): void {
@@ -6668,6 +6134,7 @@ async function runSanityPreamble(): Promise<OracleConfig> {
   assert(DEFAULT_CONFIG.browser.cloneStrategy === defaultCloneStrategyForPlatform(process.platform), "default oracle clone strategy should use APFS clones only on macOS");
   assert("chromiumKeychain" in DEFAULT_CONFIG.auth, "default auth config should expose optional Chromium keychain support for non-Chrome Chromium-family browsers");
   await testRunnerAndSmokeFailureContracts();
+  await testShellQuote();
   await testBrowserProfileHelpers();
   return createSanityConfig();
 }
@@ -6799,9 +6266,9 @@ async function main() {
   await testWorkerConversationLeaseRecoversMetadataLessDir();
   await testTerminalCleanupWarningsPreserveJob(config);
   await testTerminalJobPruningAndCleanup(config);
-  await testLifecycleEventCutover();
+  testOracleToolSchemas();
   await testOraclePromptTemplateCutover();
-  await testResponseTimeoutGuard();
+  await testOraclePinOnlySourceContracts();
   sanityProgress("archive");
   await testArchiveDefaultExclusions();
   await testGrokArchiveUsesGzipTarFormat(config);
@@ -6819,6 +6286,7 @@ async function main() {
   await testArchiveOversizeErrorExplainsRetryPlan();
   sanityProgress("shared/helper suites");
   await testSanityRunnerIsolation();
+  await testRepoSecurityNegatives();
   await testMaintainedSourcesNeverDefaultToABrowserEndpoint();
   await testPresetProofRunnerFollowsTheOperatorTransport();
   testDurableWorkerHandoff();
@@ -6833,7 +6301,7 @@ async function main() {
   testChatGptFlowHelpers();
   testResponseChrome();
   sanityProgress("poller host safety");
-  await testPollerHostSafety();
+  await testPollerHostSafety(config);
   await resetOracleStateDir().catch(() => undefined);
   console.log("oracle sanity checks passed");
 }
