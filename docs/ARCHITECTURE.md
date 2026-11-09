@@ -233,7 +233,7 @@ recipes live in [Operations → Existing-Chrome relay](OPERATIONS.md#existing-ch
 Design invariants:
 
 - **Target discovery and pinned tabs.** The endpoint must support CDP `Target.getTargets`, target creation, attachment, and
-  closure (`agent-browser` 0.35.0 or newer). Each job creates a fresh tab, persists `relayTargetId` in `job.json`, and pins
+  closure (`agent-browser` 0.41.2 or newer). Each job creates a fresh tab, persists `relayTargetId` in `job.json`, and pins
   every command to that target. Cleanup verifies ownership, closes the pinned tab, confirms removal, and disconnects. When
   Chrome refuses to close a window's last tab (`Cannot close the last tab`), cleanup navigates that tab to `about:blank`
   instead, which the managed-browser keeper counts as idle. Relay mode never deletes a profile directory.
@@ -572,15 +572,18 @@ Each live persisted host session runs a background poller (`poller.intervalMs`, 
 
 - **Footer readiness.** Every poll re-evaluates submit prerequisites for the session footer (`oracle: ready`, `auth needed`,
   `browser unavailable`, `config error`) using the same error codes agents see, emitting at most one warning per distinct
-  blocker and clearing automatically when resolved.
+  blocker and clearing automatically when resolved. The agent-browser 0.41.2 floor caches its version verdict by resolved
+  executable path, modification time, and size, including in-flight checks, so unchanged drivers spawn once.
 - **Durable record on disk.** Completed job durability lives in `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` (`job.json`,
   `response.md`, `artifacts/`), which outlives the agent turn subject to `cleanup.*` retention, `/oracle-clean`, and the
   lifetime of the jobs directory (default `/tmp`).
 - **One best-effort, idle-gated wake-up.** When a session's job reaches `complete`, `failed`, or `cancelled`, the poller
-  delivers at most one wake-up message and records `notifiedAt`. Delivery happens only while the host session is idle with no
-  pending messages (`isIdle()` and `hasPendingMessages()`, checked before claiming and before sending; hosts without these
-  probes keep immediate delivery); a busy session defers delivery to a later poll. Multiple jobs finishing together are
-  batched into a single wake-up message, and any job the origin session already read through `oracle_read` is marked settled
+  delivers at most one wake-up message and records `notifiedAt`. All activity, lifecycle, claim, retention, and target gates
+  run before the first notification mark (`isIdle()` and `hasPendingMessages()` defer busy sessions; hosts without these
+  probes keep immediate delivery). The commit then marks each eligible job and always requests the marked batch with
+  `{ triggerTurn: true, deliverAs: "followUp" }`, even if the session becomes busy or the poller stops during commit.
+  A returned mark with another `notifiedAt` is skipped because another poller already announced it. Multiple jobs finishing
+  together are batched into a single wake-up message, and any job the origin session already read through `oracle_read` is marked settled
   (`wakeupSettledBeforeFirstAttempt`) so no redundant wake-up is sent. Manual `oracle_read`, `/oracle-read`, or
   `/oracle-status` inspection after a wake-up records settlement provenance on the job.
 - **Consumption and retry guard.** Wake-up text directs users to `/oracle-read [job-id]` (and agents to `oracle_read`),

@@ -96,7 +96,7 @@ If the upstream `pi-oracle` package is installed, remove it first (`omp plugin u
 - macOS, Linux, or Windows native.
 - Node.js 22.19.0 or newer to install and run; platform smoke and release validation expect Node 24+ per `platform-smoke.config.mjs`.
 - Google Chrome, Chromium, or another Chromium-family browser, signed in to ChatGPT or Grok in the profile you plan to use.
-- `agent-browser` and `tar` on the machine; `zstd` for ChatGPT `.tar.zst` archives; on macOS, `cp` on `PATH` or `PI_ORACLE_CP_PATH` for APFS clone mode.
+- `agent-browser` 0.41.2 or newer and `tar` on the machine; `zstd` for ChatGPT `.tar.zst` archives; on macOS, `cp` on `PATH` or `PI_ORACLE_CP_PATH` for APFS clone mode. Preflight reports an upgrade command for an older driver.
 - Start a normal persisted `pi` session (or Oh My Pi session) before using `/oracle`; `--no-session` runs report oracle unavailable.
 - On Linux, encrypted Chromium cookies may need `secret-tool` (GNOME/libsecret) or `kwallet-query` + `dbus-send` (KDE), unless a safe-storage password override is set for the auth run.
 

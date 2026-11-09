@@ -73,7 +73,7 @@ try {
 }
 
 mkdirSync(fakeBinDir, { recursive: true, mode: 0o700 });
-writeFileSync(agentBrowserPath, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+writeFileSync(agentBrowserPath, process.platform === "win32" ? "@if \"%~1\"==\"--version\" echo agent-browser 0.41.2\r\n@exit /b 0\r\n" : "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'agent-browser 0.41.2'; fi\nexit 0\n", { mode: 0o700 });
 if (process.platform !== "win32") chmodSync(agentBrowserPath, 0o700);
 
 const child = spawn(process.execPath, [tsxCli, "scripts/oracle-sanity.ts"], {

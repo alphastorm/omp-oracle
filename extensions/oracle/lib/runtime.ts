@@ -10,7 +10,8 @@ import { delimiter, dirname, join } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
-import { isTrackedProcessAlive, resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
+import { assertAgentBrowserVersionSupported } from "../shared/agent-browser-version.mjs";
+import { closeAgentBrowserSession, isTrackedProcessAlive, resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
 import { assertRelayReady, closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { assertManagedBrowserAvailable, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
 import type { OracleConfig, OracleProvider } from "./config.js";
@@ -259,6 +260,23 @@ async function assertRequiredLocalDependencyReady(name: string, command: string)
   if (!resolved) throw new Error(missingLocalDependencyMessage(name));
 }
 
+const agentBrowserVersionCache = new Map<string, { mtimeMs: number; size: number; verdict: Promise<string | undefined> }>();
+
+async function assertAgentBrowserVersionCached(binary: string): Promise<void> {
+  const { mtimeMs, size } = await stat(binary);
+  let cached = agentBrowserVersionCache.get(binary);
+  if (!cached || cached.mtimeMs !== mtimeMs || cached.size !== size) {
+    const verdict = assertAgentBrowserVersionSupported(binary).then(
+      () => undefined,
+      (error: unknown) => error instanceof Error ? error.message : String(error),
+    );
+    cached = { mtimeMs, size, verdict };
+    agentBrowserVersionCache.set(binary, cached);
+  }
+  const message = await cached.verdict;
+  if (message !== undefined) throw new Error(message);
+}
+
 async function assertWritableDirectory(path: string, label: "runtime profiles" | "jobs"): Promise<void> {
   try {
     await mkdir(path, { recursive: true, mode: 0o700 });
@@ -337,6 +355,9 @@ export async function assertOracleSubmitPrerequisites(config: OracleConfig, prov
   for (const dependency of requiredOracleDependencies(config, provider)) {
     await assertRequiredLocalDependencyReady(dependency.name, dependency.command);
   }
+  const agentBrowser = await resolveExecutableOnPath(AGENT_BROWSER_BIN);
+  if (!agentBrowser) throw new Error(missingLocalDependencyMessage("agent-browser"));
+  await assertAgentBrowserVersionCached(agentBrowser);
   await assertWritableDirectory(getOracleJobsDir(), "jobs");
 }
 
@@ -508,15 +529,12 @@ export interface OracleCleanupReport {
 }
 
 async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<string | undefined> {
-  let result;
   try {
-    result = await runCommand(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { stdio: "ignore", timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS, allowFailure: true });
+    await closeAgentBrowserSession(AGENT_BROWSER_BIN, ["--session", runtimeSessionName], runtimeSessionName, { timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     return `Failed to close agent-browser session ${runtimeSessionName}: ${(error as Error).message}`;
   }
-  if (result.timedOut) return `Timed out closing agent-browser session ${runtimeSessionName} after ${AGENT_BROWSER_CLOSE_TIMEOUT_MS}ms`;
-  if (result.code !== 0) return `agent-browser close exited with code ${result.code} for session ${runtimeSessionName}`;
   return undefined;
 }
 
