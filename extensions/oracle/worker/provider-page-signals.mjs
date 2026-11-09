@@ -11,6 +11,10 @@ export const PROVIDER_PATTERNS = {
   headerTooLarge: /http error 431|request header or cookie too large/i,
 };
 
+// User content in `snapshot -i`: input values and their continuation lines, links, and the sidebar, where ChatGPT
+// titles a just-sent chat with the prompt itself (observed live 2026-11-09). The page-text channel excludes the same.
+const SNAPSHOT_CONTENT_ROLES = ["textbox", "searchbox", "combobox", "link", "navigation", "complementary"];
+
 /** @param {string} snapshot */
 export function snapshotSignalText(snapshot) {
   const kept = [];
@@ -21,7 +25,7 @@ export function snapshotSignalText(snapshot) {
       if (!entry || entry[1].length > skippedIndent) continue;
       skippedIndent = undefined;
     }
-    if (entry && ["textbox", "searchbox", "combobox", "link"].includes(entry[2])) {
+    if (entry && SNAPSHOT_CONTENT_ROLES.includes(entry[2])) {
       skippedIndent = entry[1].length;
       continue;
     }
@@ -34,7 +38,7 @@ export function snapshotSignalText(snapshot) {
 export function providerPageSignalsExpression({ editorSelector }) {
   return `(() => {
     const visible = (node) => typeof node.checkVisibility === 'function' ? node.checkVisibility() : node.getClientRects().length > 0;
-    const excluded = ${JSON.stringify('a, [role="link"], nav, aside, [role="navigation"], [role="complementary"], [data-message-author-role], article, [data-testid^="conversation-turn"], .message-bubble, [contenteditable="true"], textarea, input, select, [role="textbox"], [role="combobox"], [role="searchbox"], script, style, noscript, template') } + ', ' + ${JSON.stringify(editorSelector)};
+    const excluded = ${JSON.stringify('a, [role="link"], nav, aside, [role="navigation"], [role="complementary"], [data-message-author-role], article, [data-testid^="conversation-turn"], [data-turn-key], [data-chatgpt-search-message-ids], [data-chatgpt-selection-message-id], [data-message-id], .message-bubble, [contenteditable="true"], textarea, input, select, [role="textbox"], [role="combobox"], [role="searchbox"], script, style, noscript, template') } + ', ' + ${JSON.stringify(editorSelector)};
     const composerPresent = [...document.querySelectorAll(${JSON.stringify(editorSelector)})].some(visible);
     const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
     let text = '', node;

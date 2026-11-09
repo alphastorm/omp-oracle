@@ -492,9 +492,11 @@ and filtered provider-owned page signals into these states: `authenticated_and_r
   `A network error occurred`, websocket error text, or `Try again later`.
 
 Provider error patterns live in `worker/provider-page-signals.mjs`, shared by job and auth classifiers. Snapshot
-filtering drops textbox/searchbox/combobox/link entries and their continuation/subtree lines; raw snapshots still drive
-login and composer control detection. The page expression reads visible text (at most 8000 characters) outside editors,
-navigation, sidebar and conversation turns, never the document title. Failed evaluations contribute no evidence: a
+filtering drops textbox/searchbox/combobox/link entries and navigation/complementary (sidebar) subtrees with their
+continuation lines: right after Send, ChatGPT titles the new chat in the sidebar with the prompt itself (observed
+2026-11-09). Raw snapshots still drive login and composer control detection. The page expression reads visible text
+(at most 8000 characters) outside editors, navigation, sidebar and conversation turns (including the current shell's
+`data-turn-key` exchanges), never the document title. Failed evaluations contribute no evidence: a
 missed error may time out, but a prompt or earlier answer quoting an error must not fail a job. Diagnostics retain a
 separate `.signals.txt` capture; worker error logs name only the matched pattern, not the captured page text.
 

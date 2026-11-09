@@ -37,6 +37,27 @@ continued upload failed
   assert.equal(visibleBlockerInSnapshot(input), "rate limit");
 });
 
+test("a just-sent prompt titling its sidebar entry is not a provider error", () => {
+  // Observed live on 2026-11-09 one second after Send: ChatGPT titles the new chat with the prompt itself,
+  // as a button inside the sidebar navigation, until it generates a real title.
+  const afterSend = `- link "Skip to content" [ref=e133]
+- navigation "Home" [ref=e7]
+  - link "Home" [ref=e9]
+  - button "New chat" [ref=e36]
+  - button "Fixture: the service said rate limit and Too many requests; the upload failed and we could not upload; a Cloudflare captcha asked: Verify you are human. Something went wrong, try again later." [ref=e37]
+  - group "Investment Memorandum Review" [ref=e38] clickable [cursor:pointer, onclick]
+    - link "Investment Memorandum Review" [ref=e58]
+    - button "Pin chat" [ref=e78]
+- complementary "Chat history" [ref=e90]
+  - button "rate limit retrospective" [ref=e91]
+- button "Stop streaming" [ref=e140]`;
+  assert.equal(snapshotSignalText(afterSend), '- button "Stop streaming" [ref=e140]');
+  assert.equal(visibleBlockerInSnapshot(afterSend), undefined);
+  assert.deepEqual(detectProviderSignals({ snapshot: afterSend, signals: { text: "", composerPresent: true } }), { challenge: undefined, transient: undefined, uploadError: undefined, headerTooLarge: false });
+  // A blocker the provider shows outside the sidebar still counts.
+  assert.equal(visibleBlockerInSnapshot(`${afterSend}\n- dialog "Too many requests" [ref=e150]`), "Too many requests");
+});
+
 test("interstitial, 431, settling and login verdicts survive filtering", () => {
   assert.equal(classifyChatGptJobPage({ ...base, signals: { text: "Cloudflare Verification successful", composerPresent: false } }).state, "unknown");
   assert.equal(classifyChatAuthPage({ ...base, signals: { text: "HTTP ERROR 431", composerPresent: false } }).state, "login_required");
@@ -65,7 +86,10 @@ test("completion reads signals only for Retry without Stop and ignores long answ
 });
 
 test("page expression excludes content surfaces, hidden text and title; caps visible evidence", () => {
-  const ignored = ["a", '[role="link"]', "nav", "aside", '[role="navigation"]', '[role="complementary"]', "[data-message-author-role]", "article", '[data-testid^="conversation-turn"]', ".message-bubble", '[contenteditable="true"]', "textarea", "input", "select", '[role="textbox"]', '[role="combobox"]', '[role="searchbox"]', "script", "style", "noscript", "template", "#editor"];
+  // The redesigned shell keeps both sides of an exchange under data-turn-key (user text under
+  // data-chatgpt-search-message-ids, the reply under data-chatgpt-selection-message-id); a sent prompt
+  // reached this channel there on 2026-11-09.
+  const ignored = ["a", '[role="link"]', "nav", "aside", '[role="navigation"]', '[role="complementary"]', "[data-message-author-role]", "article", '[data-testid^="conversation-turn"]', "[data-turn-key]", "[data-chatgpt-search-message-ids]", "[data-chatgpt-selection-message-id]", "[data-message-id]", ".message-bubble", '[contenteditable="true"]', "textarea", "input", "select", '[role="textbox"]', '[role="combobox"]', '[role="searchbox"]', "script", "style", "noscript", "template", "#editor"];
   const nodes = ignored.map((selector) => ({ textContent: "captcha rate limit upload failed", parentElement: { closest: (selectors) => selectors.split(", ").includes(selector), checkVisibility: () => true } }));
   nodes.push({ textContent: "hidden error", parentElement: { closest: () => null, checkVisibility: () => false } });
   nodes.push({ textContent: "Visible banner", parentElement: { closest: () => null, getClientRects: () => [1] } });
