@@ -122,6 +122,10 @@ attaches a provenance attestation naming the workflow run and the commit.
   `main`, runs `npm run verify:oracle`, and packs the tarball. The `publish` job, the only one that
   can obtain the npm credential, checks nothing out and installs nothing: it publishes that tarball.
   A tarball publish runs no lifecycle scripts, so `prepublishOnly` does not run there.
+- Repository settings back this up: the `publish` job runs in the `npm-publish` environment,
+  whose deployment policy admits only `v*` tags; a tag ruleset lets only repository admins create,
+  move, or delete `v*` tags; and a `main` ruleset blocks force pushes and branch deletion and
+  requires the `local-gate` check for everyone except repository admins.
 - The registry's `dist.shasum` is the one the `verify` job's `npm pack` printed. A local pack of the
   same commit on another Node release can differ even when the contents match, because the gzip
   bytes depend on the Node build: for `v0.4.6`, Node 24 and Node 26 produce different shasums from a

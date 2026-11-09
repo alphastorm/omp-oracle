@@ -60,10 +60,12 @@ jobs:
           if-no-files-found: error
 
   # The only job that can mint the npm credential, so it runs no repository or dependency code:
-  # no checkout and no install, only the tarball the verify job packed.
+  # no checkout and no install, only the tarball the verify job packed. The npm-publish
+  # environment only admits v* tags (repository settings), so no other ref can reach this job.
   publish:
     needs: verify
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       id-token: write
     steps:
