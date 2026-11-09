@@ -25,6 +25,8 @@ jobs:
           # The pushed commit, even if the tag moves while the run waits.
           ref: ${{ github.sha }}
           persist-credentials: false
+          # Full history, so a later step can prove the tagged commit is on main.
+          fetch-depth: 0
       # No dependency cache in a release build: a poisoned cache entry would be published.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -35,6 +37,12 @@ jobs:
           version="$(node -p 'require("./package.json").version')"
           if [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not name package.json version $version"
+            exit 1
+          fi
+      - name: Check the tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main"
             exit 1
           fi
       - name: Install archive tools

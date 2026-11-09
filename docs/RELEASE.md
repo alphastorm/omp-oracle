@@ -118,10 +118,10 @@ attaches a provenance attestation naming the workflow run and the commit.
 - Push the tag only after `npm run release:check` has passed on the tagged commit. The workflow
   repeats only the local gate; pushing the tag asserts that the preset proof and the Crabbox lanes
   passed.
-- The `verify` job checks that the tag names the `package.json` version, runs
-  `npm run verify:oracle`, and packs the tarball. The `publish` job, the only one that can obtain the
-  npm credential, checks nothing out and installs nothing: it publishes that tarball. A tarball
-  publish runs no lifecycle scripts, so `prepublishOnly` does not run there.
+- The `verify` job checks that the tag names the `package.json` version and points at a commit on
+  `main`, runs `npm run verify:oracle`, and packs the tarball. The `publish` job, the only one that
+  can obtain the npm credential, checks nothing out and installs nothing: it publishes that tarball.
+  A tarball publish runs no lifecycle scripts, so `prepublishOnly` does not run there.
 - The registry's `dist.shasum` is the one the `verify` job's `npm pack` printed. A local pack of the
   same commit on another Node release can differ even when the contents match, because the gzip
   bytes depend on the Node build: for `v0.4.6`, Node 24 and Node 26 produce different shasums from a
