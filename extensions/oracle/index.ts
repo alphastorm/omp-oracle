@@ -200,7 +200,21 @@ export default function oracleExtension(pi: ExtensionAPI) {
     }
     ctx.ui.notify("Preparing oracle job… running preflight", "info");
     const delivery = event.streamingBehavior ? { deliverAs: event.streamingBehavior } : undefined;
-    pi.sendUserMessage(formatOracleUserCommand(parsed.command, parsed.args), delivery);
+    const notifySubmissionFailure = (error: unknown) => {
+      try {
+        ctx.ui.notify(`Oracle request was not submitted by the host: ${error instanceof Error ? error.message : String(error)}. Re-enter /${parsed.command} when the agent can accept it.`, "warning");
+      } catch {
+        // The host may have disposed this context before rejecting the submission.
+      }
+    };
+    try {
+      const result: unknown = pi.sendUserMessage(formatOracleUserCommand(parsed.command, parsed.args), delivery);
+      if (typeof (result as { then?: unknown } | undefined)?.then === "function") {
+        void Promise.resolve(result).catch(notifySubmissionFailure);
+      }
+    } catch (error) {
+      notifySubmissionFailure(error);
+    }
     return INPUT_CONSUMED;
   });
 

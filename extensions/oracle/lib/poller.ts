@@ -76,6 +76,7 @@ export interface OraclePollerHooks {
   beforeNotificationPersist?: (job: OraclePollerJob) => Promise<void> | void;
   afterNotificationPersisted?: (job: OraclePollerJob) => Promise<void> | void;
   beforeMarkJobNotified?: (job: OraclePollerJob) => Promise<void> | void;
+  afterWakeupCommitted?: (job: OraclePollerJob) => Promise<void> | void;
 }
 
 export interface OracleReadinessCheckResult {
@@ -373,8 +374,7 @@ async function scan(
     if (deliverables.length === 0 || !canDeliverWakeup(snapshot, lifecycle)) return;
     const batchLiveWakeupTargets = await resolveLiveWakeupTargets();
     if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
-    if (!canDeliverWakeup(snapshot, lifecycle)) return;
-    const delivered: OraclePollerJob[] = [];
+    const finalDeliverables: OraclePollerJob[] = [];
     for (const candidate of deliverables) {
       const jobId = candidate.id;
       const deliverable = readJob(jobId);
@@ -382,27 +382,47 @@ async function scan(
         await releaseClaim(jobId);
         continue;
       }
-      if (!canDeliverWakeup(snapshot, lifecycle)) return;
-      const notedWakeup = await noteWakeupRequested(jobId);
-      if (!notedWakeup) {
+      finalDeliverables.push(deliverable);
+    }
+    if (finalDeliverables.length === 0 || !canDeliverWakeup(snapshot, lifecycle)) return;
+
+    // Once a job is marked, always request the follow-up turn, even if this session becomes busy
+    // or its poller stops during the commit. Nothing below may abandon the marked batch.
+    const delivered: OraclePollerJob[] = [];
+    for (const deliverable of finalDeliverables) {
+      const jobId = deliverable.id;
+      try {
+        if (!(await noteWakeupRequested(jobId))) {
+          await releaseClaim(jobId);
+          continue;
+        }
+        const at = new Date().toISOString();
+        const marked = await markJobNotified(jobId, notificationClaimant, {
+          at,
+          notificationSessionKey: pollerKey,
+          notificationSessionFile: currentSessionFile,
+        });
+        if (marked.notifiedAt !== at) continue;
+        delivered.push(marked);
+        await hooks.afterWakeupCommitted?.(marked);
+      } catch (error) {
         await releaseClaim(jobId);
-        continue;
+        console.error(`Oracle poller wake-up commit failed (${jobId}):`, error);
       }
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
-      await markJobNotified(jobId, notificationClaimant, {
-        notificationSessionKey: pollerKey,
-        notificationSessionFile: currentSessionFile,
-      });
-      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
-      delivered.push(deliverable);
     }
-    if (delivered.length === 0 || !canDeliverWakeup(snapshot, lifecycle)) return;
-    requestWakeupTurn(pi, delivered);
-    if (lifecycle.isActive?.() !== false && snapshot.hasUI) {
-      snapshot.ui.notify(delivered.length === 1
-        ? "Oracle job " + delivered[0].id + " is " + delivered[0].status + "."
-        : "Oracle jobs have finished: " + delivered.map((job) => job.id + " (" + job.status + ")").join(", ") + ".", "info");
+    if (delivered.length > 0) {
+      try {
+        requestWakeupTurn(pi, delivered);
+      } catch (error) {
+        console.error(`Oracle poller wake-up request failed (${delivered.map((job) => job.id).join(", ")}):`, error);
+      }
+      if (lifecycle.isActive?.() !== false && snapshot.hasUI) {
+        snapshot.ui.notify(delivered.length === 1
+          ? "Oracle job " + delivered[0].id + " is " + delivered[0].status + "."
+          : "Oracle jobs have finished: " + delivered.map((job) => job.id + " (" + job.status + ")").join(", ") + ".", "info");
+      }
     }
+    await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle);
   } finally {
     for (const jobId of claimedJobIds) await releaseClaim(jobId);
   }

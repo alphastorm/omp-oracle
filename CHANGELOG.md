@@ -13,6 +13,15 @@ history is kept below the divider.
 - `npm run typecheck` compiles `tsconfig.extension.json`, and the root `tsconfig.json` only references the extension and both worker projects, so editors and language servers check each file with its own project's options (#32)
 - the release workflow publishes only a tag that points at a commit on `main`; a `v*` tag on any other commit now fails the `verify` job instead of publishing that commit
 - the release workflow's `publish` job runs in the `npm-publish` environment, which admits only `v*` tags; repository rulesets let only admins create, move, or delete `v*` tags and block force pushes and deletion of `main`
+- agent-browser 0.41.2 or newer is required at submit preflight, with cached version checks and an upgrade message; the Ubuntu smoke image installs 0.41.2
+- extension test files are excluded from npm packages, and the helper gate discovers JavaScript and TypeScript regression tests through Node's quoted globs
+
+### Fixed
+
+- completion wake-ups always request the marked follow-up batch, even if the host turns busy or stops the poller during notification commit
+- interactive `/oracle` and `/oracle-followup` commands warn on throwing or rejecting host submissions without leaving unhandled rejections or submitting twice; void-return hosts remain supported
+- host runtime cleanup closes only sessions the driver lists, avoiding accidental daemon startup for an already-closed session
+- browser session prefixes reject characters agent-browser 0.41.2 cannot accept, while retaining Unicode letters and numbers, hyphens, and underscores
 
 ## 0.4.13 - 2026-11-02
 

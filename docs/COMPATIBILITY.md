@@ -27,6 +27,11 @@ Companion docs: [Operations](OPERATIONS.md) · [Release](RELEASE.md) · [Test pl
 
 A persisted session is required on every host. `--no-session` runs report oracle unavailable.
 
+Oh My Pi 18.18.2 and newer can return a rejecting Promise from `sendUserMessage` when a prompt
+is not admitted (`PromptDroppedError`). Interactive `/oracle` and `/oracle-followup` requests
+remain consumed and show a warning to re-enter the command; synchronous failures are handled
+the same way. Older hosts that return `void` remain supported.
+
 ## Platforms and runtime
 
 | Requirement | Value |
@@ -34,8 +39,21 @@ A persisted session is required on every host. `--no-session` runs report oracle
 | Operating systems | macOS and Ubuntu Linux (**required by the release gate**); Windows native (**declared** in `package.json` `os`, **validated upstream** at `pi-oracle` 0.7.20, and not re-qualified by the fork because the fork has no Windows validation environment) |
 | Node.js | `>=22.19.0` to install and run (**declared** in `engines`); Node 24+ **required by the release gate** (`platform-smoke.config.mjs`) |
 | Browser | Google Chrome, Chromium, or another Chromium-family browser |
-| Local tools | `agent-browser` (0.35.0 or newer for relay mode) and `tar`; `zstd` for ChatGPT `.tar.zst` archives; `cp` on `PATH` or `PI_ORACLE_CP_PATH` for macOS APFS clone mode; Linux encrypted cookies may need `secret-tool` (GNOME) or `kwallet-query` + `dbus-send` (KDE) unless a safe-storage password override is set |
+| Local tools | `agent-browser` 0.41.2 or newer and `tar`; `zstd` for ChatGPT `.tar.zst` archives; `cp` on `PATH` or `PI_ORACLE_CP_PATH` for macOS APFS clone mode; Linux encrypted cookies may need `secret-tool` (GNOME) or `kwallet-query` + `dbus-send` (KDE) unless a safe-storage password override is set |
 | Profile copies | macOS uses APFS clones (`cp -cR`); Linux and Windows use Node's recursive copy |
+
+Preflight requires `agent-browser >= 0.41.2`: 0.40.0–0.41.1 can relaunch a page to `about:blank`
+when subsequent commands omit launch flags ([driver #2287](https://github.com/vercel-labs/agent-browser/issues/2287)),
+and 0.39.1 and older can run commands in a new local browser after a connected browser disappears
+([driver #2155](https://github.com/vercel-labs/agent-browser/issues/2155)). Preflight reports
+the required floor and an upgrade remedy for an unsupported version, or the same floor when
+the version cannot be determined.
+
+`browser.sessionPrefix` must be non-empty and contain only Unicode letters, Unicode numbers,
+`-`, and `_` (`^[\p{L}\p{N}_-]+$`); dots, spaces, and path separators are rejected at config load,
+matching the driver's session-name character rules. Use the current keys `browser.sessionPrefix`
+and `browser.authSeedProfileDir`: the legacy `browser.sessionName` and `browser.profileDir`
+mapping runs after defaults are merged and therefore does not override those defaults.
 
 ## Providers
 
@@ -80,7 +98,7 @@ Known limits are part of the support boundary; read them before installing.
 - **A real ChatGPT or Grok web session is required.** You must be signed in to the provider you
   use in a local Chromium-family browser profile.
 - **Relay mode is ChatGPT-only and requires a capable relay.** Relay builds without
-  `Target.getTargets` cannot serve `agent-browser` (`0.35.0` or newer is required).
+  `Target.getTargets` cannot serve `agent-browser` (`0.41.2` or newer is required).
 - **The managed browser detects an open profile through Chrome's POSIX `SingletonLock`.** On
   Windows, a profile open without Oracle's DevTools endpoint surfaces only when a launch is handed
   off to it, and the browser window takes focus when Chrome creates it for the first job tab.

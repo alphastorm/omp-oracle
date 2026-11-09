@@ -482,6 +482,13 @@ function expectString(value: unknown, path: string): string {
   return value;
 }
 
+function expectSessionPrefix(value: unknown, path: string): string {
+  if (typeof value !== "string" || !/^[\p{L}\p{N}_-]+$/u.test(value)) {
+    throw new Error(`Invalid oracle config: ${path} must contain only letters, digits, '-' and '_' (agent-browser 0.41.2 rejects other session names)`);
+  }
+  return value;
+}
+
 function expandHomePath(value: string): string {
   if (value === "~") return homedir();
   if (value.startsWith("~/")) return join(homedir(), value.slice(2));
@@ -692,7 +699,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
       grokMode,
     },
     browser: {
-      sessionPrefix: expectString(browser.sessionPrefix, "browser.sessionPrefix"),
+      sessionPrefix: expectSessionPrefix(browser.sessionPrefix, "browser.sessionPrefix"),
       authSeedProfileDir,
       runtimeProfilesDir,
       maxConcurrentJobs: expectInteger(browser.maxConcurrentJobs, "browser.maxConcurrentJobs", 1, 32),

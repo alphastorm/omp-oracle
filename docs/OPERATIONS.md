@@ -4,6 +4,10 @@ Configure `omp-oracle` in Oh My Pi (OMP) and `pi`, choose and set up an auth tra
 sources and job outputs, switch install sources, and recover from failures.
 Companion docs: [Documentation](README.md) · [Compatibility](COMPATIBILITY.md) · [Security model](SECURITY.md) · [Architecture](ARCHITECTURE.md)
 
+All transports require `agent-browser` 0.41.2 or newer and `tar`; ChatGPT also requires `zstd`.
+Use `agent-browser --version` to check the driver, and upgrade with
+`npm install -g agent-browser@latest` or `brew upgrade agent-browser` when preflight reports an older version.
+
 ## Config files
 
 | Scope | Oh My Pi | `pi` | May set |
@@ -70,7 +74,7 @@ setup recipe for `browser.chatGptRelayEndpoint`.
 ### Existing-Chrome relay (ChatGPT only)
 
 1. **Prerequisites.** A signed-in Chrome session and a loopback CDP relay that exposes target discovery
-   (`Target.getTargets`), creation, attachment, and closure, plus `agent-browser` `0.35.0` or newer with
+   (`Target.getTargets`), creation, attachment, and closure, plus `agent-browser` `0.41.2` or newer with
    pinned-tab support. Older OMP relay builds without `Target.getTargets` cannot serve `agent-browser`.
 2. **Config.** Set `browser.chatGptRelayEndpoint` in agent-level `oracle.json`:
    ```json
@@ -314,6 +318,7 @@ omp --cwd /abs/project -p --mode json --session-dir /abs/session "/oracle-run su
 | Job finished on disk but no wake-up arrived | Run `/oracle-status` and `/oracle-read <job-id>` | [No wake-up arrived](#a-job-finished-but-no-wake-up-arrived) |
 | `/oracle-clean` refuses a completed job | Wait until the `Retry after ...` timestamp, then rerun `/oracle-clean` | [`/oracle-clean` retention grace](#oracle-clean-refuses-a-terminal-job-right-after-completion) |
 | `agent-browser`, `tar`, `zstd`, or `cp` is missing | Install the missing binary or set `AGENT_BROWSER_PATH` / `PI_ORACLE_CP_PATH` | [Missing local dependency](#a-local-dependency-like-agent-browser-tar-or-zstd-is-missing) |
+| Preflight reports an old or unreadable `agent-browser` version | Upgrade the driver to 0.41.2 or newer and check `agent-browser --version` | [Missing local dependency](#a-local-dependency-like-agent-browser-tar-or-zstd-is-missing) |
 | `/oracle-auth` reads the wrong browser profile | Set `auth.chromeProfile` or `auth.chromeCookiePath` in agent-level `oracle.json` | [Wrong browser profile](#auto-detection-picked-the-wrong-browser-profile) |
 | Deep Research fails with `deep_research_*` | Check `errorCode`, `chatUrl`, and `prompt-send-state` before retrying | [Deep Research failure codes](#a-deep-research-job-ended-with-deep_research_report_unreadable) |
 | Completed job reports `collection-status: partial` or `failed` | Run `oracle_read({ jobId, action: "recollect" })`; do not resubmit | [Partial or failed collection](#a-completed-job-reads-collection-status-partial-or-failed) |
@@ -378,6 +383,18 @@ these saved facts, and the metadata contains no answer text or auth data.
 ### A local dependency like `agent-browser`, `tar`, or `zstd` is missing
 
 Install the missing binary on `PATH` (or set `AGENT_BROWSER_PATH` for `agent-browser` and `PI_ORACLE_CP_PATH` for macOS APFS `cp`), then rerun the command. `zstd` is required only for ChatGPT `.tar.zst` archives; Grok uses `.tar.gz`.
+
+Preflight rejects `agent-browser` versions older than 0.41.2 with:
+
+```text
+Oracle prerequisite agent-browser is too old: found X.Y.Z at <path>, need 0.41.2 or newer. Upgrade agent-browser (npm install -g agent-browser@latest or brew upgrade agent-browser) and retry.
+```
+
+If the version cannot be parsed, preflight reports `agent-browser version could not be determined`
+and the same floor. Check `<path> --version`, upgrade the selected binary, and retry; if
+`AGENT_BROWSER_PATH` is set, upgrade that binary rather than a different installation on `PATH`.
+Readiness checks cache both success and failure by resolved executable path, modification time,
+and size, so an unchanged binary is not spawned on every tick and an upgrade is picked up automatically.
 
 ### Auto-detection picked the wrong browser profile
 
@@ -471,8 +488,8 @@ Defaults and validation live in `DEFAULT_CONFIG` and `validateOracleConfig` in
 
 | Key | Default | Bounds / allowed values | Meaning |
 | --- | --- | --- | --- |
-| `browser.sessionPrefix` | `"oracle"` | Non-empty string (legacy alias: `browser.sessionName`) | Prefix for `agent-browser` session names (`<sessionPrefix>-auth` and `<sessionPrefix>-<jobId>`) |
-| `browser.authSeedProfileDir` | `<agent dir>/extensions/oracle-auth-seed-profile` (`-grok` appended for Grok) | Safe absolute path (`~` expanded); not `/`, `$HOME`, a real browser user-data path, or overlapping `runtimeProfilesDir` / `chatGptManagedProfileDir` (legacy alias: `browser.profileDir`) | Isolated seed profile directory populated by `/oracle-auth` |
+| `browser.sessionPrefix` | `"oracle"` | Non-empty; Unicode letters/numbers, `-`, `_` only | Prefix for `agent-browser` session names (`<sessionPrefix>-auth` and `<sessionPrefix>-<jobId>`); legacy `browser.sessionName` does not override the default |
+| `browser.authSeedProfileDir` | `<agent dir>/extensions/oracle-auth-seed-profile` (`-grok` appended for Grok) | Safe absolute path (`~` expanded); not `/`, `$HOME`, a real browser user-data path, or overlapping `runtimeProfilesDir` / `chatGptManagedProfileDir` | Isolated seed profile directory populated by `/oracle-auth`; legacy `browser.profileDir` does not override the default |
 | `browser.runtimeProfilesDir` | `<agent dir>/extensions/oracle-runtime-profiles` (or `<authSeedProfileDir>/../oracle-runtime-profiles`) | Safe absolute path (`~` expanded); separate from `authSeedProfileDir`, real browser user-data paths, and `chatGptManagedProfileDir` | Parent directory for per-job cloned runtime profiles |
 | `browser.maxConcurrentJobs` | `2` | Integer `1`–`32` | Maximum active jobs at once; additional jobs queue up to the same limit |
 | `browser.cloneStrategy` | `"apfs-clone"` on macOS, `"copy"` on Linux and Windows | `"apfs-clone"` \| `"copy"` | How isolated-seed jobs clone the seed profile (`cp -cR` on macOS vs Node recursive copy) |

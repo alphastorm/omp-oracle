@@ -48,11 +48,11 @@ Companion docs: [Documentation](README.md) · [Architecture](ARCHITECTURE.md) ·
   revisions (`chatgpt-ui-helpers.mjs`), composer-tool configuration, bound-turn capture
   (`response-capture.mjs`), and non-sending recollection (`oracle_read` with
   `action: "recollect"`).
-- **agent-browser 0.39 driver contract.** `/oracle-auth` relaunches only after the driver stops
-  listing the previous auth session, the rule job teardown follows, instead of upstream's retry on
-  one pre-launch error message, which does not match the error 0.39 reports for that race; and both
-  workers run the driver with `AGENT_BROWSER_NO_WEBMCP=1` so page WebMCP announcements never reach
-  the text output they parse.
+- **agent-browser 0.41 driver contract.** Preflight requires 0.41.2 or newer, excluding older
+  drivers that relaunch pages or fall back to a new local browser after a connection disappears.
+  `/oracle-auth` and host/job teardown close only listed driver sessions and wait for them to
+  disappear before relaunching; both workers run the driver with `AGENT_BROWSER_NO_WEBMCP=1`
+  so page WebMCP announcements never reach the text output they parse.
 - **Documentation.** Organized by reader role across `README.md` and `docs/`.
 
 Per-release changes are recorded in [Changelog](../CHANGELOG.md).
