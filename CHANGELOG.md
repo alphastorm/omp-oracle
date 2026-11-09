@@ -8,25 +8,32 @@ history is kept below the divider.
 
 ### Changed
 
-- the sanity harness drops source-text pins already covered by behavioral tests and shares one fixture module; no user-visible change
+- agent-browser 0.41.2 or newer is required at submit preflight and again when a job, recollection, or auth worker starts (`agent_browser_unsupported`, before any browser command), with cached version checks and an upgrade message; the Ubuntu smoke image installs 0.41.2
+- worker and host session-helper commands disable agent-browser's Chrome version/CVE fetch alongside WebMCP output
+- worker UI delays use timers, successful commands skip redundant connection probes, and completion polls read provider error surfaces only when Retry is visible without Stop
 - host polling batches process start-time reads asynchronously and caches live identities for two seconds (the host's own identity for its lifetime); process termination still checks a fresh identity before signalling
 - oversized whole-repo archives use fast compression probes between exact boundary checks instead of rebuilding every pruned candidate at the normal compression level
+- extension test files are excluded from npm packages, and the helper gate discovers JavaScript and TypeScript regression tests through Node's quoted globs
 - the development baseline moves to `pi` 1.5.0 (`@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` `^1.5.0`), the floor upstream `pi-oracle` adopted in 0.7.24. The development-only `undici` and `minimatch` overrides are removed: Pi 1.5.0 pins patched versions (`undici` 8.12.3, `minimatch` 11.0.3), and the exact `undici` override would now force a downgrade. The published package does not change
 - `npm run typecheck` compiles `tsconfig.extension.json`, and the root `tsconfig.json` only references the extension and both worker projects, so editors and language servers check each file with its own project's options (#32)
 - the release workflow publishes only a tag that points at a commit on `main`; a `v*` tag on any other commit now fails the `verify` job instead of publishing that commit
 - the release workflow's `publish` job runs in the `npm-publish` environment, which admits only `v*` tags; repository rulesets let only admins create, move, or delete `v*` tags and block force pushes and deletion of `main`
-- agent-browser 0.41.2 or newer is required at submit preflight, with cached version checks and an upgrade message; the Ubuntu smoke image installs 0.41.2
-- extension test files are excluded from npm packages, and the helper gate discovers JavaScript and TypeScript regression tests through Node's quoted globs
+- the sanity harness drops source-text pins already covered by behavioral tests and shares one fixture module; no user-visible change
 
 ### Fixed
 
+- prompt text, sidebar titles, and earlier conversation turns no longer masquerade as provider challenge, rate-limit, or upload failures; response Retry detection ignores long answers quoting error phrases
 - completion wake-ups always request the marked follow-up batch, even if the host turns busy or stops the poller during notification commit
 - interactive `/oracle` and `/oracle-followup` commands warn on throwing or rejecting host submissions without leaving unhandled rejections or submitting twice; void-return hosts remain supported
+- worker driver commands have bounded lifetimes and report `agent_browser_timeout` instead of waiting for stale-heartbeat recovery; timeouts never replay a send
+- both workers decode agent-browser 0.41.2's literal `undefined` eval result as JavaScript `undefined`
 - host runtime cleanup closes only sessions the driver lists, avoiding accidental daemon startup for an already-closed session
 - browser session prefixes reject characters agent-browser 0.41.2 cannot accept, while retaining Unicode letters and numbers, hyphens, and underscores
 
 ### Security
 
+- ChatGPT prompts travel through batch stdin rather than process arguments, with normalized length and SHA-256 verification before send
+- session teardown removes private `.config` and conversation-URL `.target` sidecars only after the driver confirms the session is absent
 - job reads and queue promotion ignore symlinked, foreign-owned, or group/world-writable job directories and metadata, validate job ids and their saved identity, and refuse symlinked or foreign-owned state roots before use
 
 ## 0.4.13 - 2026-11-02

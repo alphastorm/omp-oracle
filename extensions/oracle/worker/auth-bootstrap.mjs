@@ -10,9 +10,13 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import { assertNotKnownBrowserUserDataPath } from "../shared/browser-profile-helpers.mjs";
-import { closeAgentBrowserSession, disableAgentBrowserWebMcp, resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
+import { closeAgentBrowserSession, applyAgentBrowserEnvDefaults, resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
 import { getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
+import { assertAgentBrowserVersionSupported } from "../shared/agent-browser-version.mjs";
+import { parseEvalResult } from "./agent-browser-helpers.mjs";
+import { classifyGrokAuthPage, providerPageSignalsExpression } from "./provider-page-signals.mjs";
+import { CHATGPT_COMPOSER_EDITOR_SELECTOR } from "./chatgpt-ui-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
@@ -62,7 +66,7 @@ let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
 const ORACLE_STATE_DIR = getOracleStateDir();
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const AGENT_BROWSER_BIN = resolveAgentBrowserBinary();
-disableAgentBrowserWebMcp();
+applyAgentBrowserEnvDefaults();
 
 function readPositiveIntEnv(name, fallback) {
   const value = process.env[name]?.trim();
@@ -319,20 +323,9 @@ async function targetCommand(...args) {
   await ensureBrowserConnected();
   const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), ...args], options);
   const label = options?.logLabel || `agent-browser ${args.join(" ")}`;
-  await log(`${label}: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
+  if (label === "provider page signals") await log(`${label}: code=${result.code}`);
+  else await log(`${label}: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
   return result;
-}
-
-function parseEvalResult(stdout) {
-  if (!stdout) return undefined;
-  let value = stdout.trim();
-  try {
-    let parsed = JSON.parse(value);
-    while (typeof parsed === "string") parsed = JSON.parse(parsed);
-    return parsed;
-  } catch {
-    return value;
-  }
 }
 
 async function evalPage(script, logLabel = "eval") {
@@ -729,43 +722,18 @@ async function captureDiagnostics(reason) {
   }
 }
 
-function classifyChatPage({ url, snapshot, body, probe }) {
-  if (preferredProvider() === "grok") return classifyGrokAuthPage({ url, snapshot, body });
+function classifyChatPage({ url, snapshot, signals, probe }) {
+  if (preferredProvider() === "grok") return classifyGrokAuthPage({ url, snapshot, signals, cookieSourceLabel: cookieSourceLabel() });
   return classifyChatAuthPage({
     url,
     snapshot,
-    body,
+    signals,
     probe,
     allowedOrigins: buildAllowedChatGptOrigins(config.browser.chatUrl, config.browser.authUrl),
     cookieSourceLabel: cookieSourceLabel(),
     runtimeProfileDir,
     logPath: LOG_PATH,
   });
-}
-
-function hasGrokLoginCta(text) {
-  const lines = String(text || "").split("\n").map((line) => line.trim()).filter(Boolean);
-  return lines.some((line) => {
-    const accessibleControl = line.match(/^-\s*(?:button|link|menuitem)\s+"([^"]+)"/i)?.[1]?.trim();
-    const label = accessibleControl || line;
-    return /^(?:sign in|log in|continue with x|continue with google|create account)$/i.test(label);
-  });
-}
-
-function classifyGrokAuthPage({ url, snapshot, body }) {
-  const text = `${snapshot}\n${body}`;
-  if (/captcha|cloudflare|verify you are human|unusual activity|suspicious activity/i.test(text)) {
-    return { state: "challenge_blocking", message: "Grok is showing a challenge/verification page" };
-  }
-  if (/something went wrong|network error|try again later|rate limit/i.test(text)) {
-    return { state: "transient_outage_error", message: "Grok is showing a transient outage/error page" };
-  }
-  const onGrokOrigin = typeof url === "string" && url.startsWith("https://grok.com");
-  const hasComposer = snapshot.includes('button "Attach"') && (snapshot.includes('textbox "Ask Grok anything"') || snapshot.includes("contenteditable"));
-  if (onGrokOrigin && hasGrokLoginCta(text)) return { state: "login_required", message: `Grok login is required. Sign in to Grok in ${cookieSourceLabel()}.` };
-  if (onGrokOrigin && hasComposer) return { state: "authenticated_and_ready", message: "Grok is authenticated and ready." };
-  if (url && !onGrokOrigin) return { state: "login_required", message: "Grok redirected away from grok.com." };
-  return { state: "unknown", message: "Grok page is not ready yet." };
 }
 
 async function maybeSelectAccountIdentity(snapshot, probe) {
@@ -802,6 +770,11 @@ function preserveBrowserError(message) {
   return error;
 }
 
+async function readPageSignals() {
+  const expression = providerPageSignalsExpression({ editorSelector: preferredProvider() === "grok" ? '[contenteditable="true"]' : CHATGPT_COMPOSER_EDITOR_SELECTOR });
+  return await evalPage(expression, "provider page signals").catch(() => ({ text: "", composerPresent: false }));
+}
+
 async function waitForImportedAuthReady() {
   const startedAt = Date.now();
   const timeoutAt = startedAt + config.auth.bootstrapTimeoutMs;
@@ -814,7 +787,7 @@ async function waitForImportedAuthReady() {
     iteration += 1;
     // Drain all reads before retrying or closing the browser: Promise.all can reject while the
     // other CDP commands are still running against a page that a normal redirect just replaced.
-    const reads = await Promise.allSettled([getUrl(), snapshotText(), pageText(), loginProbe()]);
+    const reads = await Promise.allSettled([getUrl(), snapshotText(), readPageSignals(), loginProbe()]);
     const failures = reads.filter((read) => read.status === "rejected");
     const fatal = failures.find((read) => !isAuthNavigationError(read.reason));
     if (fatal) throw fatal.reason;
@@ -824,11 +797,11 @@ async function waitForImportedAuthReady() {
       await sleep(config.auth.pollMs);
       continue;
     }
-    const [url, snapshot, body, probe] = /** @type {[string, string, string, import("./auth-flow-helpers.d.mts").OracleAuthLoginProbe]} */ (reads.map((read) => read.status === "fulfilled" ? read.value : undefined));
+    const [url, snapshot, signals, probe] = /** @type {[string, string, import("./provider-page-signals.d.mts").ProviderPageSignals, import("./auth-flow-helpers.d.mts").OracleAuthLoginProbe]} */ (reads.map((read) => read.status === "fulfilled" ? read.value : undefined));
     await writeFile(URL_PATH, `${url}\n`, { mode: 0o600 }).catch(() => undefined);
     await writeFile(SNAPSHOT_PATH, `${snapshot}\n`, { mode: 0o600 }).catch(() => undefined);
-    await writeFile(BODY_PATH, `${body}\n`, { mode: 0o600 }).catch(() => undefined);
-    const classification = classifyChatPage({ url, snapshot, body, probe });
+    await writeFile(BODY_PATH, `${signals?.text || ""}\n`, { mode: 0o600 }).catch(() => undefined);
+    const classification = classifyChatPage({ url, snapshot, signals, probe });
     await log(
       `poll ${iteration}: url=${JSON.stringify(url)} probe=${JSON.stringify(probe)} classification=${classification.state} hasComposer=${preferredProvider() === "grok" ? snapshot.includes('Ask Grok anything') || snapshot.includes('contenteditable') : parseSnapshotEntries(snapshot).some(isChatGptComposerEntry)} hasAddFiles=${preferredProvider() === "grok" ? snapshot.includes('button \"Attach\"') : snapshot.includes(`button \"${CHATGPT_ADD_FILES_LABEL}\"`)}`,
     );
@@ -893,6 +866,7 @@ async function run() {
     let committedProfile = false;
     let profilePlan;
     try {
+      await assertAgentBrowserVersionSupported(AGENT_BROWSER_BIN);
       profilePlan = await createProfilePlan(config.browser.authSeedProfileDir);
       await log(`Starting oracle auth bootstrap`);
       await log(

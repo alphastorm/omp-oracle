@@ -47,13 +47,20 @@ when subsequent commands omit launch flags ([driver #2287](https://github.com/ve
 and 0.39.1 and older can run commands in a new local browser after a connected browser disappears
 ([driver #2155](https://github.com/vercel-labs/agent-browser/issues/2155)). Preflight reports
 the required floor and an upgrade remedy for an unsupported version, or the same floor when
-the version cannot be determined.
+the version cannot be determined. The job, recollection, and auth workers repeat the check before
+their first browser command, so a job queued before a driver downgrade fails with
+`agent_browser_unsupported` and nothing sent.
 
 `browser.sessionPrefix` must be non-empty and contain only Unicode letters, Unicode numbers,
 `-`, and `_` (`^[\p{L}\p{N}_-]+$`); dots, spaces, and path separators are rejected at config load,
 matching the driver's session-name character rules. Use the current keys `browser.sessionPrefix`
 and `browser.authSeedProfileDir`: the legacy `browser.sessionName` and `browser.profileDir`
 mapping runs after defaults are merged and therefore does not override those defaults.
+
+Driver eval output is decoded identically in the job and auth workers: the bare `undefined` token emitted by
+agent-browser 0.41.2 becomes JavaScript `undefined` (the earlier `null` token still becomes `null`). Worker and
+host session-helper commands set `AGENT_BROWSER_NO_WEBMCP=1` and `AGENT_BROWSER_NO_VERSION_CHECK=1` so page tool
+announcements and Chrome release/CVE checks do not alter parsed output or add background network requests.
 
 ## Providers
 

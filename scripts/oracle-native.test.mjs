@@ -143,6 +143,7 @@ test("native Oracle status command dispatch creates no external job", { timeout:
         CHATGPT_LABELS: { close: "Close" },
         isGrokJob: () => false,
         log: async (message) => logs.push(message),
+        sleep: async () => {},
         dismissBlockingDialog: async () => {},
         snapshotText: async () => snapshotOverride ?? (pickerOpen ? openPicker : closedSnapshot),
         openModelConfiguration: async () => { automationCalls.push("openModelConfiguration"); pickerOpen = true; return openPicker; },

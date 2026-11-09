@@ -46,6 +46,10 @@ Default exclusions are a floor, not a guarantee. Review
 [`prompts/oracle.md`](../prompts/oracle.md) before running on private or regulated code, and pass
 narrower paths when the whole repository should not leave the machine.
 
+Prompts are carried to the driver on stdin, never as command-line arguments: ChatGPT uses JSON `batch` input and
+Grok uses `eval --stdin`. This avoids per-argument OS limits and prompt disclosure through process listings.
+ChatGPT verifies the editor's normalized length and SHA-256 before send; a mismatch sends nothing.
+
 ## Provider credentials
 
 ### Isolated seed profile (default)
@@ -136,6 +140,11 @@ narrower paths when the whole repository should not leave the machine.
   The default jobs root remains `/tmp` (intentionally shared); on multi-user hosts configure a
   private, per-user `PI_ORACLE_STATE_DIR` rather than sharing `/tmp/pi-oracle-state`. Do not
   repair or delete another user's directory; see the [refusal remedy](OPERATIONS.md#oracle-refuses-the-state-directory).
+
+Driver `.target` sidecars contain conversation URLs. Teardown deletes that session's `.target` and `.config` only
+after a successful inventory proves the driver no longer lists it; failed close or inventory leaves evidence intact.
+The resolved driver socket directory and namespace are honored. Old leftovers are not swept automatically; see
+[Operations](OPERATIONS.md#old-agent-browser-session-sidecars).
 
 ## Release integrity
 

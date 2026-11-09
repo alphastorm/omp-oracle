@@ -227,9 +227,34 @@ For each `submitted` job (`extensions/oracle/worker/run-job.mjs`):
 9. **Teardown.** In `finally`, close the isolated browser and delete `runtimeProfileDir` (or close the pinned tab on shared
    Chrome), release runtime and conversation leases, and promote the next eligible `queued` job.
 
-Both workers (`run-job.mjs` and `auth-bootstrap.mjs`) run every `agent-browser` command with `AGENT_BROWSER_NO_WEBMCP=1`.
+Both workers (`run-job.mjs` and `auth-bootstrap.mjs`) run every `agent-browser` command with `AGENT_BROWSER_NO_WEBMCP=1`
+and `AGENT_BROWSER_NO_VERSION_CHECK=1`; host-callable session helpers supply both without mutating the host environment.
+The latter suppresses the driver's background Chrome release/CVE fetch and version warning.
 From 0.36 the driver otherwise enables WebMCP in the Chrome it launches and appends page-provided tool announcements to the
 text output of `eval`, `get url`, `snapshot`, and `get text`, which the workers parse; Oracle uses no page tools.
+
+### Driver execution and prompt insertion
+
+The worker runner bounds commands to 60 s by default (`PI_ORACLE_AGENT_BROWSER_TIMEOUT_MS`, clamped to 5–150 s),
+with 90 s for navigation, 30 s for connect, 120 s for prompt insertion, and 15 s for status and diagnostic reads.
+Download capture has explicit 90 s (driver download) and 105 s (in-page capture) bounds, with heartbeats during long work.
+A timed-out command becomes `agent_browser_timeout`; no command is automatically replayed. `promptSendState` is still
+recorded as `attempted` before send activation. The managed-browser identity check remains before every command,
+including failure diagnostics. `stream status` runs only after a failed command, and numeric UI waits use Node timers.
+
+ChatGPT prompt insertion uses **one `agent-browser batch` command with JSON argv arrays on stdin**, not prompt argv.
+A loopback contenteditable tracer on macOS with driver 0.41.2 (2026-11-09) preserved embedded newlines, quotes, CJK,
+emoji and code fences; `fill` with an unknown ref exited 1. A batch with `--session`, `--cdp`, and `--pin-tab` navigated
+and filled only its newly pinned target while the other `about:blank` tab remained unchanged. Chrome rendered trailing
+spaces as non-breaking spaces, so the post-insertion proof compares NFC/whitespace-normalized length and SHA-256 in
+Node and the hydrated editor. A mismatch throws before send. There is no eval-insertion fallback. Deep Research still
+fills before enabling the tool. Grok keeps its existing stdin eval insertion.
+
+After the driver confirms a session is unlisted (including an already-absent session), teardown removes its `.config`
+and `.target` sidecars. The same tracer left only `.target` after close, both in `~/.agent-browser` and with an explicit
+socket directory. Socket resolution follows driver 0.41.2: `AGENT_BROWSER_SOCKET_DIR`, then `XDG_RUNTIME_DIR/agent-browser`
+(on every platform), then `~/.agent-browser`, then the system temp directory's `agent-browser`; a sanitized
+`AGENT_BROWSER_NAMESPACE` appends `namespaces/<namespace>/run`. Failed inventories or closes never authorize deletion.
 
 ## Existing-Chrome relay transport
 
@@ -451,8 +476,8 @@ derived DOM Markdown) for agent and user consumption.
 ## ChatGPT page-state classifier
 
 Before configuring the composer or uploading, the worker classifies the page using the current URL, accessibility snapshot,
-and body text into one of five states: `authenticated_and_ready`, `login_required`, `challenge_blocking`,
-`transient_outage_error`, or `unknown`. Shared control names and DOM selectors across ChatGPT shell revisions live in
+and filtered provider-owned page signals into these states: `authenticated_and_ready`, `login_required`, `challenge_blocking`,
+`transient_outage_error`, `auth_transitioning`, or `unknown`. Shared control names and DOM selectors across ChatGPT shell revisions live in
 `extensions/oracle/worker/chatgpt-ui-helpers.mjs`.
 
 - **Ready (`authenticated_and_ready`):** requires the expected ChatGPT origin outside `/auth/*`, an enabled composer textbox
@@ -465,6 +490,19 @@ and body text into one of five states: `authenticated_and_ready`, `login_require
   `Verify you are human`, `Cloudflare`, CAPTCHA/Turnstile prompts, or unusual-activity blocks.
 - **Transient outage (`transient_outage_error`):** matches provider error banners such as `Something went wrong`,
   `A network error occurred`, websocket error text, or `Try again later`.
+
+Provider error patterns live in `worker/provider-page-signals.mjs`, shared by job and auth classifiers. Snapshot
+filtering drops textbox/searchbox/combobox/link entries and navigation/complementary (sidebar) subtrees with their
+continuation lines: right after Send, ChatGPT titles the new chat in the sidebar with the prompt itself (observed
+2026-11-09). Raw snapshots still drive login and composer control detection. The page expression reads visible text
+(at most 8000 characters) outside editors, navigation, sidebar and conversation turns (including the current shell's
+`data-turn-key` exchanges), never the document title. Failed evaluations contribute no evidence: a
+missed error may time out, but a prompt or earlier answer quoting an error must not fail a job. Diagnostics retain a
+separate `.signals.txt` capture; worker error logs name only the matched pattern, not the captured page text.
+
+Completion reads these signals lazily, only when Retry is visible without Stop. Response-failure matching also considers
+the bound assistant turn only when it is at most 400 trimmed characters. Long answers quoting error messages never
+trigger Retry; Retry still happens at most once and only on the job's own conversation.
 
 ## Collection
 

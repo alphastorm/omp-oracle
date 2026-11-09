@@ -30,7 +30,19 @@ export interface OracleRunCommandResult {
 
 export declare function resolveNodeExecutable(): string;
 export declare function resolveAgentBrowserBinary(env?: Record<string, string | undefined>): string;
-export declare function disableAgentBrowserWebMcp(env?: NodeJS.ProcessEnv): void;
+export declare function applyAgentBrowserEnvDefaults(env?: NodeJS.ProcessEnv): void;
+export declare function withAgentBrowserEnvDefaults(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export declare function resolveAgentBrowserSocketDir(env?: NodeJS.ProcessEnv, options?: { platform?: string; homedir?: () => string; tmpdir?: () => string }): string;
+export declare function removeAgentBrowserSessionSidecars(sessionName: string, env?: NodeJS.ProcessEnv): Promise<string[]>;
+export declare class CommandTimeoutError extends Error {
+  code: string;
+  command: string;
+  args: string[];
+  timeoutMs: number;
+  stdout: string;
+  stderr: string;
+  constructor(command: string, args: string[], timeoutMs: number, stdout: string, stderr: string);
+}
 export declare function closeAgentBrowserSession(
   binary: string,
   sessionArgs: string[],

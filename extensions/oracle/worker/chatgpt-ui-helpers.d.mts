@@ -65,3 +65,7 @@ export declare function deriveAssistantCompletionSignature(args: {
   responseText: string;
   artifactLabels?: string[];
 }): string | undefined;
+
+export declare function normalizeComposerText(text: string): string;
+export declare function composerTextDigest(text: string): Promise<{ length: number; sha256: string }>;
+export declare function composerTextDigestExpression(editorSelector: string): string;

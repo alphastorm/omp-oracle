@@ -10,6 +10,9 @@ import { createServer } from 'node:http';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import ts from 'typescript';
+import { AgentBrowserTimeoutError, AGENT_BROWSER_TIMEOUTS, batchInvocation } from '../extensions/oracle/worker/agent-browser-helpers.mjs';
+import { composerTextDigest, composerTextDigestExpression } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
+import { detectCompletionFailure, throwIfProviderTransientError } from '../extensions/oracle/worker/provider-page-signals.mjs';
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
 import { usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
 import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings } from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
@@ -100,7 +103,7 @@ try {
   const source = readFileSync(new URL('../extensions/oracle/worker/run-job.mjs', import.meta.url), 'utf8');
   const tree = ts.createSourceFile('run-job.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const extract = (wanted) => {
-    const found = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && wanted.includes(node.name?.text));
+    const found = tree.statements.filter((node) => (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && wanted.includes(node.name?.text));
     assert.equal(found.length, wanted.length, `extracted ${wanted.join(', ')}`);
     return found.map((node) => node.getText(tree)).join('\n');
   };
@@ -115,8 +118,8 @@ try {
   const openUrl = async (url) => { opens.push(url); if (url.startsWith(origin)) await navigate(url); };
   // `sleep` is imported by the worker from the shared time helpers, so it is injected, not extracted;
   // bounded capture retries need no wall-clock delay against a static synthetic page.
-  const workerSource = extract(['captureBoundTurn', 'acquireBoundTurn', 'returnToOwnConversation', 'noteOwnConversation', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection']);
-  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','composeResearchResponse','durationLabelSeconds','readResearchReportState','redactTransportSecrets','turnContentSha256','validateArtifactBytes','appendOracleJobLifecycleEvent','applyOracleJobCleanupWarnings','jobDir','evalPage','openUrl','conversationIdFromUrl','sleep','usesSharedBrowser','timedOutRecollectionBinding'];
+  const workerSource = extract(['captureBoundTurn', 'acquireBoundTurn', 'returnToOwnConversation', 'noteOwnConversation', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection', 'OracleWorkerError']);
+  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','composeResearchResponse','durationLabelSeconds','readResearchReportState','redactTransportSecrets','turnContentSha256','validateArtifactBytes','appendOracleJobLifecycleEvent','applyOracleJobCleanupWarnings','jobDir','evalPage','openUrl','conversationIdFromUrl','sleep','usesSharedBrowser','timedOutRecollectionBinding','AgentBrowserTimeoutError'];
   // The browser adapter retains dead session identities and enforces the Unix socket limit.
   // Collection itself still executes production functions against real Chromium above.
   const factory = new Function(...dependencyNames, `let currentJob; let shuttingDown=false; let conversationLeftEpisode=false;
@@ -125,6 +128,9 @@ try {
     function isGrokJob() { return false; }
     let managedBrowserChangedError;
     async function assertManagedBrowserUnchanged() {}
+    // The proof models a supported driver; the version gate has its own regression test.
+    const AGENT_BROWSER_BIN='synthetic';
+    async function assertAgentBrowserVersionSupported() { return '0.41.2'; }
     async function mutateJob(fn) { currentJob=fn(currentJob); return currentJob; }
     async function readJob() { return currentJob; }
     async function withLock(...args) { return args.at(-1)(); }
@@ -152,7 +158,7 @@ try {
       recollect:async(job, warnings=[])=>{currentJob=job;retiredSessions.add(job.runtimeSessionName);nextCleanupWarnings=warnings;await runRecollection();return currentJob;}
     };`);
   const makeWorker = (dir) => factory(createHash,existsSync,readFile,writeFile,rename,chmod,mkdir,join,basename,captureExpression,captureDownload,collectionOutcome,composeResearchResponse,durationLabelSeconds,readResearchReportState,
-    redactTransportSecrets,turnContentSha256,validateArtifactBytes,appendOracleJobLifecycleEvent,applyOracleJobCleanupWarnings,dir,evalPage,openUrl,conversationIdFromUrl,() => sleep(1),usesSharedBrowser,timedOutRecollectionBinding);
+    redactTransportSecrets,turnContentSha256,validateArtifactBytes,appendOracleJobLifecycleEvent,applyOracleJobCleanupWarnings,dir,evalPage,openUrl,conversationIdFromUrl,() => sleep(1),usesSharedBrowser,timedOutRecollectionBinding,AgentBrowserTimeoutError);
   const jobDir = join(root, 'job');
   await mkdir(jobDir);
   const job = { id: 'synthetic', phase: 'downloading_artifacts', status: 'waiting', submittedAt: new Date().toISOString(), responsePath: join(jobDir, 'response.md'), conversationId: 'synthetic', selection: { provider: 'chatgpt' }, config: { artifacts: { capture: true } } };
@@ -356,8 +362,9 @@ document.querySelector('button').onclick = () => setTimeout(() => { const option
     assert.equal(composerDeclarations.length, composerNames.size);
     const editorExpression = `[...document.querySelectorAll(${JSON.stringify(CHATGPT_COMPOSER_EDITOR_SELECTOR)})].find((el) => el.isContentEditable)`;
     const writeComposer = new Function('evalPage', 'snapshotText', 'findEntry', 'isGrokJob', 'agentBrowser', 'CHATGPT_COMPOSER_EDITOR_SELECTOR', 'isChatGptComposerEntry',
+      'AGENT_BROWSER_TIMEOUTS', 'batchInvocation', 'composerTextDigest', 'composerTextDigestExpression', 'withHeartbeatWhile', 'log',
       composerDeclarations.map(node => node.getText(tree)).join('\n') + '\nreturn setComposerText;')(
-      async (_job, expression) => JSON.parse(await evaluate(
+      async (_job, expression) => { const result = await evaluate(
         `(async () => {
           if (window.hydrateOnComposerRead) {
             const shell = window.hydrateOnComposerRead;
@@ -376,10 +383,12 @@ document.querySelector('button').onclick = () => setTimeout(() => { const option
             }, 50);
           }
           return await (` + expression + `);
-        })()`)),
+        })()`); return typeof result === "string" ? JSON.parse(result) : result; },
       async () => evaluate(`[{kind:'textbox', label:document.querySelector('textarea')?.getAttribute('aria-label') || 'Ask ChatGPT', ref:(${editorExpression}) ? 'editor' : 'fallback'}]`),
       (entries, predicate) => entries.find(predicate), () => false,
-      async (_job, command, ref, text) => {
+      async (_job, subcommand, options) => {
+        assert.equal(subcommand, 'batch');
+        const [[command, ref, text]] = JSON.parse(options.input);
         assert.equal(command, 'fill');
         await evaluate(`(() => {
           const editor = ` + (ref === 'editor' ? editorExpression : `document.querySelector('textarea')`) + `;
@@ -388,6 +397,7 @@ document.querySelector('button').onclick = () => setTimeout(() => { const option
         })()`);
       },
       CHATGPT_COMPOSER_EDITOR_SELECTOR, isChatGptComposerEntry,
+      AGENT_BROWSER_TIMEOUTS, batchInvocation, composerTextDigest, composerTextDigestExpression, async task => task(), async () => {},
     );
     const editorText = () => evaluate(`(${editorExpression}).innerText`);
     for (const [shell, fallbackLabel] of [['legacy', 'Chat with ChatGPT'], ['current', 'Ask ChatGPT']]) {
@@ -423,22 +433,20 @@ ${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, 
     pages.set('/c/foreign', `<!doctype html><main>${exchange('f0', 'Other prompt', 'foreign-0', 'Foreign earlier.')}${exchange('f1', 'Other follow-up', 'foreign-1', 'FOREIGN FINISHED ANSWER')}</main>`);
     const completionSource = extract(['waitForChatCompletion', 'reconcileStreamedTurn', 'observeTurns', 'observedPagePath', 'returnToOwnConversation', 'noteOwnConversation', 'toJsonScript']);
     const waitForCompletion = new Function('evalPage', 'openUrl', 'sleep', 'observeConversationExpression', 'CHATGPT_STOP_CONTROL_SELECTOR', 'chatGptGenerationActive',
-      'deriveAssistantCompletionSignature', 'nextStaleStopState', 'isConversationPathUrl', 'classifyDeepResearchTurn', 'appendOracleJobLifecycleEvent', 'nextMissingTurnState', 'nextMissingTurnReloadState', `let currentJob; let conversationLeftEpisode = false;
+      'deriveAssistantCompletionSignature', 'nextStaleStopState', 'isConversationPathUrl', 'classifyDeepResearchTurn', 'appendOracleJobLifecycleEvent', 'nextMissingTurnState', 'nextMissingTurnReloadState', 'detectCompletionFailure', 'throwIfProviderTransientError', `let currentJob; let conversationLeftEpisode = false;
       const RELOAD_RECONCILE_TIMEOUT_MS = 5000, RELOAD_RECONCILE_POLL_MS = 50, STALE_STOP_CONTROL_MS = 120000, MISSING_TURN_RELOAD_MS = 300000, MISSING_TURN_RELOAD_MAX = 1;
       function isGrokJob() { return false; }
       async function heartbeat() {}
       async function log() {}
       async function snapshotText() { return ''; }
-      async function pageText() { return ''; }
-      function throwIfProviderTransientError() {}
-      function detectResponseFailureText() { return ''; }
+      async function readPageSignals() { return { text: '', composerPresent: true }; }
       async function collectArtifactCandidates() { return []; }
       async function mutateJob(fn) { currentJob = fn(currentJob); return currentJob; }
       async function agentBrowser(_job, command, url) { if (command !== 'open') throw Error('No send permitted'); await openUrl(url); }
       ${completionSource}
       return async (job, baseline) => { currentJob = job; const result = await waitForChatCompletion(job, baseline); return { result, job: currentJob }; };`)(
       evalPage, openUrl, sleep, observeConversationExpression, CHATGPT_STOP_CONTROL_SELECTOR, chatGptGenerationActive, deriveAssistantCompletionSignature,
-      nextStaleStopState, isConversationPathUrl, classifyDeepResearchTurn, appendOracleJobLifecycleEvent, nextMissingTurnState, nextMissingTurnReloadState);
+      nextStaleStopState, isConversationPathUrl, classifyDeepResearchTurn, appendOracleJobLifecycleEvent, nextMissingTurnState, nextMissingTurnReloadState, detectCompletionFailure, throwIfProviderTransientError);
     const onOwn = async () => { try { return await evaluate('location.pathname') === '/c/own'; } catch { return false; } };
     await navigate(`${origin}/c/foreign`);
     const navJob = { id: 'nav', phase: 'awaiting_response', status: 'waiting', submittedAt: new Date().toISOString(), conversationId: 'own', chatUrl: ownUrl,
