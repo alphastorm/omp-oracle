@@ -8,7 +8,7 @@ history is kept below the divider.
 
 ### Changed
 
-- agent-browser 0.41.2 or newer is required at submit preflight, with cached version checks and an upgrade message; the Ubuntu smoke image installs 0.41.2
+- agent-browser 0.41.2 or newer is required at submit preflight and again when a job, recollection, or auth worker starts (`agent_browser_unsupported`, before any browser command), with cached version checks and an upgrade message; the Ubuntu smoke image installs 0.41.2
 - worker and host session-helper commands disable agent-browser's Chrome version/CVE fetch alongside WebMCP output
 - worker UI delays use timers, successful commands skip redundant connection probes, and completion polls read provider error surfaces only when Retry is visible without Stop
 - host polling batches process start-time reads asynchronously and caches live identities for two seconds (the host's own identity for its lifetime); process termination still checks a fresh identity before signalling

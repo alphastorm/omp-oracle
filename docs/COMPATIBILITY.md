@@ -47,7 +47,9 @@ when subsequent commands omit launch flags ([driver #2287](https://github.com/ve
 and 0.39.1 and older can run commands in a new local browser after a connected browser disappears
 ([driver #2155](https://github.com/vercel-labs/agent-browser/issues/2155)). Preflight reports
 the required floor and an upgrade remedy for an unsupported version, or the same floor when
-the version cannot be determined.
+the version cannot be determined. The job, recollection, and auth workers repeat the check before
+their first browser command, so a job queued before a driver downgrade fails with
+`agent_browser_unsupported` and nothing sent.
 
 `browser.sessionPrefix` must be non-empty and contain only Unicode letters, Unicode numbers,
 `-`, and `_` (`^[\p{L}\p{N}_-]+$`); dots, spaces, and path separators are rejected at config load,

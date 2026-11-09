@@ -21,6 +21,7 @@ import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, clearOrac
 import { closeAgentBrowserSession, applyAgentBrowserEnvDefaults, killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir, getOracleStateDir, isTrustedOracleJobDir, isValidOracleJobId, listTrustedOracleJobIds } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
+import { assertAgentBrowserVersionSupported } from "../shared/agent-browser-version.mjs";
 import { AGENT_BROWSER_TIMEOUTS, AgentBrowserTimeoutError, createAgentBrowserRunner, parseEvalResult, batchInvocation } from "./agent-browser-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { acquireManagedBrowser, managedBrowserReplaced, releaseManagedBrowser, sharedBrowserEndpoint, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
@@ -2669,6 +2670,10 @@ async function run() {
       // Nothing reaches the provider before clickSend records "attempted".
       patch: { heartbeatAt: new Date().toISOString(), promptSendState: "not_sent" },
     }));
+    // A job queued before an agent-browser downgrade must not drive an unsupported driver; nothing is sent yet.
+    await assertAgentBrowserVersionSupported(AGENT_BROWSER_BIN).catch((error) => {
+      throw new OracleWorkerError("agent_browser_unsupported", error instanceof Error ? error.message : String(error));
+    });
     await closeBrowser(currentJob);
 
     // A profile clone can outlast the reconciler's stale-heartbeat window; keep heartbeating.
@@ -2844,6 +2849,8 @@ async function run() {
 
 async function runRecollection() {
   // Separate entrypoint: never reaches configure/upload/composer/send or the submit queue.
+  // Checked before any lease or job mutation, so an unsupported driver leaves the completed job untouched.
+  await assertAgentBrowserVersionSupported(AGENT_BROWSER_BIN);
   await withLock(ORACLE_STATE_DIR, "recollect", jobId, { processPid: process.pid }, async () => {
     currentJob = await readJob();
     const explicit = process.argv[4] ? JSON.parse(process.argv[4]) : undefined;

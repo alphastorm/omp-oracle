@@ -13,6 +13,7 @@ import { assertNotKnownBrowserUserDataPath } from "../shared/browser-profile-hel
 import { closeAgentBrowserSession, applyAgentBrowserEnvDefaults, resolveAgentBrowserBinary, runCommand } from "../shared/process-helpers.mjs";
 import { getOracleStateDir } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
+import { assertAgentBrowserVersionSupported } from "../shared/agent-browser-version.mjs";
 import { parseEvalResult } from "./agent-browser-helpers.mjs";
 import { classifyGrokAuthPage, providerPageSignalsExpression } from "./provider-page-signals.mjs";
 import { CHATGPT_COMPOSER_EDITOR_SELECTOR } from "./chatgpt-ui-helpers.mjs";
@@ -865,6 +866,7 @@ async function run() {
     let committedProfile = false;
     let profilePlan;
     try {
+      await assertAgentBrowserVersionSupported(AGENT_BROWSER_BIN);
       profilePlan = await createProfilePlan(config.browser.authSeedProfileDir);
       await log(`Starting oracle auth bootstrap`);
       await log(

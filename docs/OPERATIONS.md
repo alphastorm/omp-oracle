@@ -464,7 +464,8 @@ The default is 60 seconds; `PI_ORACLE_AGENT_BROWSER_TIMEOUT_MS` accepts a positi
 Navigation (90 s), connect (30 s), insertion (120 s), status/diagnostics (15 s), and artifact capture (90/105 s) have
 explicit bounds. The worker never retries a timed-out send. Check `prompt-send-state` before doing anything else;
 `attempted` means the provider may already have received it. A composer digest mismatch leaves `not_sent`.
-`agent_browser_unsupported` instead means the driver version floor failed; upgrade agent-browser before retrying.
+`agent_browser_unsupported` instead means the driver version floor failed when the worker started, before any browser
+command; upgrade agent-browser before retrying.
 
 ### Old agent-browser session sidecars
 
