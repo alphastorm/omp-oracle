@@ -128,6 +128,9 @@ try {
     function isGrokJob() { return false; }
     let managedBrowserChangedError;
     async function assertManagedBrowserUnchanged() {}
+    // The proof models a supported driver; the version gate has its own regression test.
+    const AGENT_BROWSER_BIN='synthetic';
+    async function assertAgentBrowserVersionSupported() { return '0.41.2'; }
     async function mutateJob(fn) { currentJob=fn(currentJob); return currentJob; }
     async function readJob() { return currentJob; }
     async function withLock(...args) { return args.at(-1)(); }
