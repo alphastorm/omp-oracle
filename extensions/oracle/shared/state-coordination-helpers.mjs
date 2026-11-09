@@ -9,6 +9,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { isProcessAlive } from "./process-helpers.mjs";
+import { assertTrustedOracleStateRoot } from "./state-path-helpers.mjs";
 
 const DEFAULT_WAIT_MS = 30_000;
 const POLL_MS = 200;
@@ -201,6 +202,7 @@ async function maybeReclaimStaleLock(path, now = Date.now()) {
  * @returns {Promise<string[]>}
  */
 export async function sweepStaleStateLocks(stateDir, now = Date.now()) {
+  assertTrustedOracleStateRoot(stateDir);
   const dir = getStateLocksDir(stateDir);
   if (!existsSync(dir)) return [];
   const removed = [];
@@ -225,7 +227,9 @@ export async function acquireStateLock(stateDir, kind, key, metadata, timeoutMs 
   const parentDir = getStateLocksDir(stateDir);
   const path = join(parentDir, hashOracleStateKey(kind, key));
   const deadline = Date.now() + timeoutMs;
+  assertTrustedOracleStateRoot(stateDir);
   await ensurePrivateDir(stateDir);
+  assertTrustedOracleStateRoot(stateDir);
   await ensurePrivateDir(parentDir);
 
   while (Date.now() < deadline) {
@@ -288,7 +292,9 @@ export async function createStateLease(stateDir, kind, key, metadata, timeoutMs 
   const parentDir = getStateLeasesDir(stateDir);
   const path = join(parentDir, hashOracleStateKey(kind, key));
   const deadline = Date.now() + timeoutMs;
+  assertTrustedOracleStateRoot(stateDir);
   await ensurePrivateDir(stateDir);
+  assertTrustedOracleStateRoot(stateDir);
   await ensurePrivateDir(parentDir);
 
   while (Date.now() < deadline) {
@@ -316,7 +322,9 @@ export async function createStateLease(stateDir, kind, key, metadata, timeoutMs 
 export async function writeStateLeaseMetadata(stateDir, kind, key, metadata) {
   const parentDir = getStateLeasesDir(stateDir);
   const path = join(parentDir, hashOracleStateKey(kind, key));
+  assertTrustedOracleStateRoot(stateDir);
   await ensurePrivateDir(stateDir);
+  assertTrustedOracleStateRoot(stateDir);
   await ensurePrivateDir(parentDir);
   if (existsSync(path)) {
     await chmod(path, 0o700).catch(() => undefined);
@@ -344,6 +352,7 @@ export async function writeStateLeaseMetadata(stateDir, kind, key, metadata) {
  * @returns {Promise<T | undefined>}
  */
 export async function readStateLeaseMetadata(stateDir, kind, key) {
+  assertTrustedOracleStateRoot(stateDir);
   const path = getMetadataPath(leasePath(stateDir, kind, key));
   if (!existsSync(path)) return undefined;
   try {
@@ -360,6 +369,7 @@ export async function readStateLeaseMetadata(stateDir, kind, key) {
  * @returns {T[]}
  */
 export function listStateLeaseMetadata(stateDir, kind) {
+  assertTrustedOracleStateRoot(stateDir);
   const dir = getStateLeasesDir(stateDir);
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
@@ -382,6 +392,7 @@ export function listStateLeaseMetadata(stateDir, kind) {
  * @returns {Promise<void>}
  */
 export async function releaseStateLease(stateDir, kind, key) {
+  assertTrustedOracleStateRoot(stateDir);
   if (!key) return;
   await rm(leasePath(stateDir, kind, key), { recursive: true, force: true }).catch(() => undefined);
 }

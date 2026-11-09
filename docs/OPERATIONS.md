@@ -315,6 +315,7 @@ omp --cwd /abs/project -p --mode json --session-dir /abs/session "/oracle-run su
 | Custom Chromium auth syncs cookies but session is rejected | Quit the source browser completely and verify `auth.chromeCookiePath` and Keychain/keyring settings | [Cookies synced but session rejected](#custom-chromium-auth-says-cookies-synced-but-the-session-is-rejected) |
 | Challenge or human verification page blocks a run | Solve the challenge in the bootstrap or relay browser, then rerun `/oracle-auth` | [Challenge or verification page](#you-hit-a-challenge-or-verification-page) |
 | `Oracle requires a persisted pi session` | Restart `omp` or `pi` without `--no-session` | [Persisted session required](#you-see-oracle-requires-a-persisted-pi-session) |
+| `Oracle state directory ...; refusing to use it` | Set `PI_ORACLE_STATE_DIR` to a private directory you own; never change another user's state | [State directory refusal](#oracle-refuses-the-state-directory) |
 | Job finished on disk but no wake-up arrived | Run `/oracle-status` and `/oracle-read <job-id>` | [No wake-up arrived](#a-job-finished-but-no-wake-up-arrived) |
 | `/oracle-clean` refuses a completed job | Wait until the `Retry after ...` timestamp, then rerun `/oracle-clean` | [`/oracle-clean` retention grace](#oracle-clean-refuses-a-terminal-job-right-after-completion) |
 | `agent-browser`, `tar`, `zstd`, or `cp` is missing | Install the missing binary or set `AGENT_BROWSER_PATH` / `PI_ORACLE_CP_PATH` | [Missing local dependency](#a-local-dependency-like-agent-browser-tar-or-zstd-is-missing) |
@@ -326,6 +327,27 @@ omp --cwd /abs/project -p --mode json --session-dir /abs/session "/oracle-run su
 | Another browser tool navigated the job tab | Check `/oracle-status` first and avoid attaching another tool to the active Chrome | [Managed Chrome driven while jobs run](#do-not-drive-the-managed-chrome-while-jobs-run) |
 | Prompt has draft text in front of it in relay mode | Clear the saved draft in Chrome's ChatGPT composer | [Unrelated draft prefix in relay mode](#the-prompt-arrived-with-unrelated-text-in-front-of-it-relay-mode) |
 | Need full worker or auth logs for a failed run | Inspect `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/logs/worker.log` or `/tmp/pi-oracle-auth-*/oracle-auth.log` | [Inspect failure logs](#you-want-more-details-about-a-failed-run) |
+
+### Oracle refuses the state directory
+
+Oracle refuses a state root that is a symlink or, on POSIX, belongs to another uid:
+`Oracle state directory <dir> is <a symlink | owned by uid N>; refusing to use it. Point PI_ORACLE_STATE_DIR at a private directory you own.`
+On multi-user machines, the first user of `/tmp/pi-oracle-state` owns it; each other user needs a
+separate private root. Do not chmod, chown, or delete someone else's state.
+
+Stop your Oracle sessions and workers before changing the root, then create a private directory
+and export it in the environment that launches OMP or `pi`:
+
+```bash
+mkdir -p "$HOME/.local/state/pi-oracle"
+chmod 700 "$HOME/.local/state/pi-oracle"
+export PI_ORACLE_STATE_DIR="$HOME/.local/state/pi-oracle"
+```
+
+Restart the host with that environment. Job paths and `PI_ORACLE_JOBS_DIR` do not change.
+Jobs created under another uid (for example via `sudo`), symlinked jobs, and jobs with group/world
+write permissions are now ignored rather than read or promoted. Restore `0700` on your own job
+directories and `0600` on their `job.json` files only after verifying their contents and ownership.
 
 ### `/oracle-auth` fails or says login is required
 

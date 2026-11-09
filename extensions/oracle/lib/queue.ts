@@ -17,6 +17,7 @@ import { withLock } from "./locks.js";
 import { appendCleanupWarnings, isTerminalOracleJob, listOracleJobDirs, readJob, spawnWorker, terminateWorkerPid, updateJob, type OracleJob } from "./jobs.js";
 import { cleanupRuntimeArtifacts, releaseRuntimeLease, tryAcquireConversationLease, tryAcquireRuntimeLease } from "./runtime.js";
 import { sharedBrowserCleanupFields } from "../shared/managed-browser-helpers.mjs";
+import { primeProcessStartedAt } from "../shared/process-helpers.mjs";
 
 export interface OracleQueuePosition {
   position: number;
@@ -140,6 +141,7 @@ export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueue
 }
 
 export async function promoteQueuedJobs(options: PromoteQueuedJobsOptions): Promise<{ promotedJobIds: string[] }> {
+  await primeProcessStartedAt(listOracleJobDirs().map((dir) => readJob(dir)?.workerPid));
   return withLock("admission", "global", { processPid: process.pid, source: options.source }, async () => {
     return promoteQueuedJobsWithinAdmissionLock(options);
   }, { timeoutMs: options.lockTimeoutMs });

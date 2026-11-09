@@ -6,7 +6,7 @@
 import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildOracleStatusText, buildOracleWakeupBatchNotificationContent, buildOracleWakeupNotificationContent, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
-import { isProcessAlive, readProcessStartedAt } from "../shared/process-helpers.mjs";
+import { isProcessAlive, primeProcessStartedAt, readProcessStartedAt } from "../shared/process-helpers.mjs";
 import { parseTimestamp } from "../shared/time-helpers.mjs";
 import { isLockTimeoutError, listLeaseMetadata, releaseLease, withGlobalReconcileLock, writeLeaseMetadata } from "./locks.js";
 import {
@@ -108,7 +108,9 @@ function getWakeupTargetLeaseKey(sessionKey: string, processPid = process.pid, p
 
 async function collectLiveWakeupTargetLeases(now = Date.now()): Promise<Array<OracleWakeupTargetLeaseMetadata & { sessionKey: string }>> {
   const liveTargets: Array<OracleWakeupTargetLeaseMetadata & { sessionKey: string }> = [];
-  for (const lease of listLeaseMetadata<OracleWakeupTargetLeaseMetadata>(WAKEUP_TARGET_LEASE_KIND)) {
+  const leases = listLeaseMetadata<OracleWakeupTargetLeaseMetadata>(WAKEUP_TARGET_LEASE_KIND);
+  await primeProcessStartedAt(leases.map((lease) => lease?.processPid));
+  for (const lease of leases) {
     const sessionKey = `${lease?.projectId ?? ""}::${lease?.sessionId ?? ""}`;
     const leaseKey = lease?.leaseKey;
     const currentStartedAt = readProcessStartedAt(lease?.processPid);
@@ -186,6 +188,15 @@ function getJobCountsForSession(sessionFile: string | undefined, cwd: string): {
     );
 }
 
+async function primeStatusPids(snapshot: OraclePollerContextSnapshot): Promise<void> {
+  if (!snapshot.hasUI || !snapshot.sessionFile) return;
+  const pids = listOracleJobDirs()
+    .map(readJob)
+    .filter((job): job is OraclePollerJob => Boolean(job && jobMatchesContext(job, snapshot.sessionFile, snapshot.cwd) && isActiveOracleJob(job)))
+    .map((job) => job.workerPid);
+  await primeProcessStartedAt(pids);
+}
+
 function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): void {
   if (!snapshot.hasUI) return;
   if (!snapshot.sessionFile) {
@@ -259,6 +270,7 @@ async function scan(
   lifecycle: OraclePollerLifecycle = {},
 ): Promise<void> {
   if (lifecycle.isActive?.() === false) return;
+  await primeProcessStartedAt([process.pid]);
   const currentSessionFile = snapshot.sessionFile;
   const pollerKey = getPollerSessionKey(currentSessionFile, snapshot.cwd);
   const notificationClaimant = `${pollerKey}:${process.pid}`;
@@ -460,9 +472,13 @@ export function startPoller(pi: ExtensionAPI, ctx: ExtensionContext, intervalMs:
         console.error(`Oracle poller scan failed (${sessionKey}):`, error);
       }
     } finally {
-      scansInFlight.delete(sessionKey);
-      if (isCurrentPollerActive()) {
-        refreshOracleStatusSnapshot(snapshot);
+      try {
+        if (isCurrentPollerActive()) {
+          await primeStatusPids(snapshot);
+          if (isCurrentPollerActive()) refreshOracleStatusSnapshot(snapshot);
+        }
+      } finally {
+        scansInFlight.delete(sessionKey);
       }
     }
   };
@@ -473,6 +489,7 @@ export function startPoller(pi: ExtensionAPI, ctx: ExtensionContext, intervalMs:
     readinessChecksInFlight.add(sessionKey);
     try {
       const result = await checkReadiness();
+      await primeStatusPids(snapshot);
       if (isCurrentPollerActive()) applyReadinessCheck(snapshot, sessionKey, result);
     } catch (error) {
       if (isCurrentPollerActive()) {

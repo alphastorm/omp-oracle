@@ -9,6 +9,8 @@ history is kept below the divider.
 ### Changed
 
 - the sanity harness drops source-text pins already covered by behavioral tests and shares one fixture module; no user-visible change
+- host polling batches process start-time reads asynchronously and caches live identities for two seconds (the host's own identity for its lifetime); process termination still checks a fresh identity before signalling
+- oversized whole-repo archives use fast compression probes between exact boundary checks instead of rebuilding every pruned candidate at the normal compression level
 - the development baseline moves to `pi` 1.5.0 (`@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` `^1.5.0`), the floor upstream `pi-oracle` adopted in 0.7.24. The development-only `undici` and `minimatch` overrides are removed: Pi 1.5.0 pins patched versions (`undici` 8.12.3, `minimatch` 11.0.3), and the exact `undici` override would now force a downgrade. The published package does not change
 - `npm run typecheck` compiles `tsconfig.extension.json`, and the root `tsconfig.json` only references the extension and both worker projects, so editors and language servers check each file with its own project's options (#32)
 - the release workflow publishes only a tag that points at a commit on `main`; a `v*` tag on any other commit now fails the `verify` job instead of publishing that commit
@@ -22,6 +24,10 @@ history is kept below the divider.
 - interactive `/oracle` and `/oracle-followup` commands warn on throwing or rejecting host submissions without leaving unhandled rejections or submitting twice; void-return hosts remain supported
 - host runtime cleanup closes only sessions the driver lists, avoiding accidental daemon startup for an already-closed session
 - browser session prefixes reject characters agent-browser 0.41.2 cannot accept, while retaining Unicode letters and numbers, hyphens, and underscores
+
+### Security
+
+- job reads and queue promotion ignore symlinked, foreign-owned, or group/world-writable job directories and metadata, validate job ids and their saved identity, and refuse symlinked or foreign-owned state roots before use
 
 ## 0.4.13 - 2026-11-02
 
