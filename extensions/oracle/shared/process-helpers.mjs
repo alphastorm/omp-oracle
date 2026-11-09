@@ -4,7 +4,7 @@
 // Usage: Imported by lib/jobs.ts, lib/runtime.ts, worker/run-job.mjs, worker/auth-bootstrap.mjs, and shared state helpers.
 // Invariants/Assumptions: Process identity is validated with `ps -o lstart=` to defend against PID reuse on macOS.
 
-import { spawn, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
@@ -166,8 +166,6 @@ export async function closeAgentBrowserSession(binary, sessionArgs, sessionName,
   }
   return true;
 }
-
-import { execFile } from "node:child_process";
 
 const PROCESS_START_TIME_CACHE_TTL_MS = 2_000;
 /** @type {Map<number, { startedAt: string; readAt: number }>} */
