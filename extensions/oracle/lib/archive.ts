@@ -21,6 +21,8 @@ const ARCHIVE_PIPE_FAILURE_ERROR_CODES = new Set(["EPIPE", "ERR_STREAM_DESTROYED
 const DEFAULT_ARCHIVE_PLAN = resolveOracleProviderArchivePlan("chatgpt");
 const DEFAULT_ARCHIVE_FORMAT = DEFAULT_ARCHIVE_PLAN.archiveFormat;
 const DEFAULT_MAX_ARCHIVE_BYTES = DEFAULT_ARCHIVE_PLAN.maxArchiveBytes;
+const BOUNDARY_SLACK = 0.10;
+type ArchiveCompressionLevel = "normal" | "probe";
 
 const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".git",
@@ -374,9 +376,9 @@ async function writePortableTarArchiveToStream(cwd: string, entries: string[], s
   await writeChunk(stream, Buffer.alloc(1024));
 }
 
-async function writeWindowsTarArchiveToZstd(cwd: string, entries: string[], archivePath: string, timeout: AbortSignal): Promise<void> {
+async function writeWindowsTarArchiveToZstd(cwd: string, entries: string[], archivePath: string, level: ArchiveCompressionLevel, timeout: AbortSignal): Promise<void> {
   const scrubbedEnv = sweetCookieSafeStoragePasswordScrubbedEnv(process.env);
-  const zstd = spawn("zstd", ["-19", "-T0", "-f", "-o", archivePath], {
+  const zstd = spawn(process.env.PI_ORACLE_TEST_ZSTD_BIN ?? "zstd", [level === "normal" ? "-19" : "-3", "-T0", "-f", "-o", archivePath], {
     cwd,
     env: scrubbedEnv,
     stdio: ["pipe", "ignore", "pipe"],
@@ -401,8 +403,8 @@ async function writeWindowsTarArchiveToZstd(cwd: string, entries: string[], arch
   if (code !== 0) throw new Error(`zstd archive compression failed with status ${code}: ${stderr.trim()}`);
 }
 
-async function writeWindowsTarArchiveToGzip(cwd: string, entries: string[], archivePath: string, timeout: AbortSignal): Promise<void> {
-  const gzip = createGzip({ level: 9 });
+async function writeWindowsTarArchiveToGzip(cwd: string, entries: string[], archivePath: string, level: ArchiveCompressionLevel, timeout: AbortSignal): Promise<void> {
+  const gzip = createGzip({ level: level === "normal" ? 9 : 1 });
   const output = createWriteStream(archivePath, { mode: 0o600 });
   const abort = () => gzip.destroy(new Error(formatArchiveTimeoutMessage()));
   timeout.addEventListener("abort", abort, { once: true });
@@ -431,8 +433,8 @@ type ArchiveCompressionTarget = {
   unpipe: (tarStdout: NodeJS.ReadableStream) => void;
 };
 
-function createGzipCompressionTarget(archivePath: string): ArchiveCompressionTarget {
-  const gzip = createGzip({ level: 9 });
+function createGzipCompressionTarget(archivePath: string, level: ArchiveCompressionLevel): ArchiveCompressionTarget {
+  const gzip = createGzip({ level: level === "normal" ? 9 : 1 });
   const output = createWriteStream(archivePath, { mode: 0o600 });
   return {
     name: "gzip",
@@ -450,8 +452,8 @@ function createGzipCompressionTarget(archivePath: string): ArchiveCompressionTar
   };
 }
 
-function createZstdCompressionTarget(archivePath: string, env: NodeJS.ProcessEnv): ArchiveCompressionTarget {
-  const zstd = spawn(process.env.PI_ORACLE_TEST_ZSTD_BIN ?? "zstd", ["-19", "-T0", "-f", "-o", archivePath], {
+function createZstdCompressionTarget(archivePath: string, env: NodeJS.ProcessEnv, level: ArchiveCompressionLevel): ArchiveCompressionTarget {
+  const zstd = spawn(process.env.PI_ORACLE_TEST_ZSTD_BIN ?? "zstd", [level === "normal" ? "-19" : "-3", "-T0", "-f", "-o", archivePath], {
     env,
     stdio: ["pipe", "ignore", "pipe"],
   });
@@ -599,13 +601,14 @@ async function writeTarGzipArchiveFile(
   entries: string[],
   archivePath: string,
   listPath: string,
+  level: ArchiveCompressionLevel,
   options?: { commandTimeoutMs?: number },
 ): Promise<number> {
   if (process.platform === "win32") {
     const timeoutController = new AbortController();
     const timeout = setTimeout(() => timeoutController.abort(), options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS);
     try {
-      await writeWindowsTarArchiveToGzip(cwd, entries, archivePath, timeoutController.signal);
+      await writeWindowsTarArchiveToGzip(cwd, entries, archivePath, level, timeoutController.signal);
       return (await stat(archivePath)).size;
     } catch (error) {
       if (timeoutController.signal.aborted) {
@@ -617,7 +620,7 @@ async function writeTarGzipArchiveFile(
     }
   }
 
-  return writeNonWindowsTarArchiveFile(cwd, archivePath, listPath, () => createGzipCompressionTarget(archivePath), options);
+  return writeNonWindowsTarArchiveFile(cwd, archivePath, listPath, () => createGzipCompressionTarget(archivePath, level), options);
 }
 
 async function writeZstdArchiveFile(
@@ -625,13 +628,14 @@ async function writeZstdArchiveFile(
   entries: string[],
   archivePath: string,
   listPath: string,
+  level: ArchiveCompressionLevel,
   options?: { commandTimeoutMs?: number },
 ): Promise<number> {
   if (process.platform === "win32") {
     const timeoutController = new AbortController();
     const timeout = setTimeout(() => timeoutController.abort(), options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS);
     try {
-      await writeWindowsTarArchiveToZstd(cwd, entries, archivePath, timeoutController.signal);
+      await writeWindowsTarArchiveToZstd(cwd, entries, archivePath, level, timeoutController.signal);
       return (await stat(archivePath)).size;
     } catch (error) {
       if (timeoutController.signal.aborted) {
@@ -643,7 +647,7 @@ async function writeZstdArchiveFile(
     }
   }
 
-  return writeNonWindowsTarArchiveFile(cwd, archivePath, listPath, (env) => createZstdCompressionTarget(archivePath, env), options);
+  return writeNonWindowsTarArchiveFile(cwd, archivePath, listPath, (env) => createZstdCompressionTarget(archivePath, env, level), options);
 }
 
 async function writeArchiveFile(
@@ -651,6 +655,7 @@ async function writeArchiveFile(
   entries: string[],
   archivePath: string,
   listPath: string,
+  level: ArchiveCompressionLevel,
   options?: { commandTimeoutMs?: number; archiveFormat?: OracleArchiveFormat },
 ): Promise<number> {
   await writeFile(listPath, Buffer.from(`${entries.join("\0")}\0`), { mode: 0o600 });
@@ -658,8 +663,8 @@ async function writeArchiveFile(
 
   const archiveFormat = options?.archiveFormat ?? DEFAULT_ARCHIVE_FORMAT;
   return archiveFormat === "tar.gz"
-    ? writeTarGzipArchiveFile(cwd, entries, archivePath, listPath, options)
-    : writeZstdArchiveFile(cwd, entries, archivePath, listPath, options);
+    ? writeTarGzipArchiveFile(cwd, entries, archivePath, listPath, level, options)
+    : writeZstdArchiveFile(cwd, entries, archivePath, listPath, level, options);
 }
 
 export async function createArchiveForTesting(
@@ -681,40 +686,52 @@ export async function createArchiveForTesting(
   const adaptivePruneMinBytes = options?.adaptivePruneMinBytes ?? 0;
   const autoPrunedPrefixes: ArchiveSizeBreakdownRow[] = [];
   let initialArchiveBytes: number | undefined;
+  const probePath = join(listDir, `probe.${options?.archiveFormat ?? DEFAULT_ARCHIVE_FORMAT}`);
+  const build = (level: ArchiveCompressionLevel) => writeArchiveFile(cwd, expandedEntries, level === "normal" ? archivePath : probePath, listPath, level, {
+    commandTimeoutMs: options?.commandTimeoutMs,
+    archiveFormat: options?.archiveFormat,
+  });
 
   try {
-    while (true) {
-      if (expandedEntries.length === 0) {
-        throw new Error("Oracle archive inputs are empty after default exclusions and automatic size pruning");
-      }
-
-      const archiveBytes = await writeArchiveFile(cwd, expandedEntries, archivePath, listPath, { commandTimeoutMs: options?.commandTimeoutMs, archiveFormat: options?.archiveFormat });
-      if (archiveBytes <= maxBytes) {
-        return {
-          sha256: await sha256File(archivePath),
-          archiveBytes,
-          initialArchiveBytes,
-          autoPrunedPrefixes,
-          includedEntries: [...expandedEntries],
-        };
-      }
-
-      if (initialArchiveBytes === undefined) initialArchiveBytes = archiveBytes;
+    let archiveBytes = await build("normal");
+    if (archiveBytes > maxBytes) {
+      initialArchiveBytes = archiveBytes;
       const entrySizes = await measureArchiveEntrySizes(cwd, expandedEntries);
       if (!wholeRepoSelection) {
         throw new Error(formatArchiveOversizeError({ archiveBytes, maxBytes, entrySizes, autoPrunedPrefixes, adaptivePruneMinBytes }));
       }
 
-      const nextCandidate = summarizeAdaptivePruneCandidates(entrySizes, adaptivePruneMinBytes).find(
-        (entry) => !autoPrunedPrefixes.some((pruned) => pruned.relativePath === entry.relativePath),
-      );
-      if (!nextCandidate) {
-        throw new Error(formatArchiveOversizeError({ archiveBytes, maxBytes, entrySizes, autoPrunedPrefixes, adaptivePruneMinBytes }));
+      let ratio = archiveBytes / await build("probe");
+      let needsExactBuild = false;
+      for (const nextCandidate of summarizeAdaptivePruneCandidates(entrySizes, adaptivePruneMinBytes)) {
+        autoPrunedPrefixes.push(nextCandidate);
+        expandedEntries = pruneEntriesByPrefix(expandedEntries, nextCandidate.relativePath);
+        if (expandedEntries.length === 0) {
+          throw new Error("Oracle archive inputs are empty after default exclusions and automatic size pruning");
+        }
+        const probeBytes = await build("probe");
+        needsExactBuild = true;
+        if (probeBytes * ratio > maxBytes * (1 + BOUNDARY_SLACK)) continue;
+
+        archiveBytes = await build("normal");
+        ratio = archiveBytes / probeBytes;
+        needsExactBuild = false;
+        if (archiveBytes <= maxBytes) break;
       }
 
-      autoPrunedPrefixes.push(nextCandidate);
-      expandedEntries = pruneEntriesByPrefix(expandedEntries, nextCandidate.relativePath);
+      if (needsExactBuild) archiveBytes = await build("normal");
+      if (archiveBytes > maxBytes) {
+        const included = new Set(expandedEntries);
+        throw new Error(formatArchiveOversizeError({ archiveBytes, maxBytes, entrySizes: entrySizes.filter((entry) => included.has(entry.relativePath)), autoPrunedPrefixes, adaptivePruneMinBytes }));
+      }
     }
+    return {
+      sha256: await sha256File(archivePath),
+      archiveBytes,
+      initialArchiveBytes,
+      autoPrunedPrefixes,
+      includedEntries: [...expandedEntries],
+    };
   } finally {
     await rm(listDir, { recursive: true, force: true }).catch(() => undefined);
   }

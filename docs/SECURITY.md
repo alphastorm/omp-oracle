@@ -126,6 +126,16 @@ narrower paths when the whole repository should not leave the machine.
   `${PI_ORACLE_STATE_DIR:-/tmp/pi-oracle-state}`. Treat job directories and auth diagnostics as
   sensitive local files; `/oracle-clean <job-id|all>` and age-based retention remove terminal job
   directories.
+- Reads, listings, and queue promotion accept only valid job ids and non-symlink job directories
+  and `job.json` files. On POSIX both must belong to the current uid and have no group/world
+  write bits; the saved `job.json` id must match the requested id. Absolute job paths must be
+  direct children of the configured jobs root; cwd-relative directories are never used.
+  Windows skips uid/mode checks, but keeps the id and symlink checks.
+- A symlinked or foreign-owned state root is refused with
+  `Oracle state directory <dir> is <a symlink | owned by uid N>; refusing to use it. Point PI_ORACLE_STATE_DIR at a private directory you own.`
+  The default jobs root remains `/tmp` (intentionally shared); on multi-user hosts configure a
+  private, per-user `PI_ORACLE_STATE_DIR` rather than sharing `/tmp/pi-oracle-state`. Do not
+  repair or delete another user's directory; see the [refusal remedy](OPERATIONS.md#oracle-refuses-the-state-directory).
 
 ## Release integrity
 
@@ -138,8 +148,11 @@ narrower paths when the whole repository should not leave the machine.
 
 ## Out of scope
 
-- Untrusted local accounts on the same machine. Jobs, state, profiles, and loopback DevTools or
-  relay ports rely on OS user isolation and file permissions. Do not run on a shared shell host.
+- Hostile processes running as your own user, and unauthorized access to loopback DevTools or
+  relay ports. Ownership checks stop another uid's planted jobs from being promoted, but are not
+  a sandbox or port authentication. On multi-user hosts keep state and profiles private and
+  ensure other accounts cannot reach browser-control ports; do not use a shared shell host
+  without that isolation.
 - Provider-side handling of uploaded archives and prompts is governed by your ChatGPT or Grok
   account and its data settings, not by this extension.
 - Provider UI drift can fail a job; it cannot cause `oracle_submit` to upload paths outside the

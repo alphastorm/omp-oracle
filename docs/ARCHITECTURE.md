@@ -179,6 +179,17 @@ Submission executes in strict archive-before-admission order:
    detached worker
 8. otherwise create the job directory as `queued`, move the archive in, and return without spawning a worker
 
+### Archive size probes
+
+An archive that fits is built once at the normal level (zstd `-19`, gzip level 9). If a whole-repo
+archive is oversized, entry sizes are measured once and generated-output prune candidates retain
+their largest-first ordering. Fast probes (zstd `-3`, gzip level 1) write beside the temporary
+file list, never over the final archive. The initial exact/probe size ratio estimates subsequent
+sizes; an estimate within 10% above the ceiling triggers an exact normal-level build. Every exact
+build recalibrates the ratio, and the final accepted archive must actually fit. A ratio shift of
+more than that 10% slack in one pruning step can still over-prune. Oversize errors report exact
+bytes, and `initialArchiveBytes` and the ordered `autoPrunedPrefixes` retain their meaning.
+
 ### Worker run flow
 
 For each `submitted` job (`extensions/oracle/worker/run-job.mjs`):
@@ -570,6 +581,13 @@ between jobs:
 
 Each live persisted host session runs a background poller (`poller.intervalMs`, default 5000 ms):
 
+- **Process identity reads.** The host's own start time is cached for its lifetime; other live
+  pids have a two-second cache, with `kill(pid, 0)` evicting dead entries immediately. Poll scans,
+  reconciliation, queue promotion, wake-up leases, and footer/readiness refreshes asynchronously
+  prime their pids in batched process-table reads. Successful priming keeps synchronous `ps`
+  (or PowerShell) off the poll tick; failed priming retains the synchronous fallback. Exact
+  `lstart` strings are preserved for persisted `workerStartedAt` comparisons. Spawn identity
+  waits and every signal-sending identity check bypass the short-lived cache.
 - **Footer readiness.** Every poll re-evaluates submit prerequisites for the session footer (`oracle: ready`, `auth needed`,
   `browser unavailable`, `config error`) using the same error codes agents see, emitting at most one warning per distinct
   blocker and clearing automatically when resolved. The agent-browser 0.41.2 floor caches its version verdict by resolved

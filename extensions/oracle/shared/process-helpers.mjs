@@ -167,27 +167,101 @@ export async function closeAgentBrowserSession(binary, sessionArgs, sessionName,
   return true;
 }
 
+import { execFile } from "node:child_process";
+
+const PROCESS_START_TIME_CACHE_TTL_MS = 2_000;
+/** @type {Map<number, { startedAt: string; readAt: number }>} */
+const processStartTimeCache = new Map();
+
+/** @param {number | undefined} pid @returns {pid is number} */
+function isValidProcessPid(pid) {
+  return typeof pid === "number" && Number.isInteger(pid) && pid > 0;
+}
+
+/** @param {number} pid @returns {string | undefined} */
+function readProcessStartedAtSynchronously(pid) {
+  try {
+    const startedAt = (process.platform === "win32"
+      ? execFileSync("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`,
+      ], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() })
+      : execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() })).trim();
+    if (startedAt) {
+      processStartTimeCache.set(pid, { startedAt, readAt: Date.now() });
+      return startedAt;
+    }
+  } catch {
+    // An unavailable process table leaves callers free to retry on the next read.
+  }
+  processStartTimeCache.delete(pid);
+  return undefined;
+}
+
 /**
  * @param {number | undefined} pid
  * @returns {string | undefined}
  */
 export function readProcessStartedAt(pid) {
-  if (!pid || pid <= 0) return undefined;
-  try {
-    if (process.platform === "win32") {
-      const startedAt = execFileSync("powershell.exe", [
-        "-NoLogo",
-        "-NoProfile",
-        "-Command",
-        `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`,
-      ], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
-      return startedAt || undefined;
-    }
-    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
-    return startedAt || undefined;
-  } catch {
-    return undefined;
+  if (!isValidProcessPid(pid)) return undefined;
+  if (pid !== process.pid && !isProcessAlive(pid)) return undefined;
+  const cached = processStartTimeCache.get(pid);
+  if (cached && (pid === process.pid || Date.now() - cached.readAt < PROCESS_START_TIME_CACHE_TTL_MS)) return cached.startedAt;
+  return readProcessStartedAtSynchronously(pid);
+}
+
+/**
+ * Bypass the short-lived cache before any signal-sending identity decision.
+ * @param {number | undefined} pid
+ * @returns {string | undefined}
+ */
+export function readProcessStartedAtFresh(pid) {
+  if (!isValidProcessPid(pid)) return undefined;
+  if (pid === process.pid) return readProcessStartedAt(pid);
+  if (!isProcessAlive(pid)) return undefined;
+  return readProcessStartedAtSynchronously(pid);
+}
+
+/**
+ * Populate process identities in one asynchronous process-table read, preserving lstart spacing.
+ * @param {Iterable<number | undefined>} pids
+ * @returns {Promise<void>}
+ */
+export async function primeProcessStartedAt(pids) {
+  const now = Date.now();
+  const pending = new Set();
+  for (const pid of pids) {
+    if (!isValidProcessPid(pid) || !isProcessAlive(pid)) continue;
+    const cached = processStartTimeCache.get(pid);
+    if (cached && (pid === process.pid || now - cached.readAt < PROCESS_START_TIME_CACHE_TTL_MS)) continue;
+    pending.add(pid);
   }
+  if (pending.size === 0) return;
+  const ids = [...pending].join(",");
+  const windows = process.platform === "win32";
+  const args = windows
+    ? ["-NoLogo", "-NoProfile", "-Command", `Get-Process -Id ${ids} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id) $($_.StartTime.ToUniversalTime().ToString('o'))" }`]
+    : ["-o", "pid=,lstart=", "-p", ids];
+  await new Promise((resolve) => {
+    execFile(windows ? "powershell.exe" : "ps", args, {
+      encoding: "utf8",
+      timeout: 5_000,
+      env: sweetCookieSafeStoragePasswordScrubbedEnv(),
+    }, (error, stdout) => {
+      if (!error) {
+        const readAt = Date.now();
+        for (const line of stdout.split(/\r?\n/)) {
+          const match = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
+          if (!match) continue;
+          const pid = Number(match[1]);
+          if (pending.has(pid)) processStartTimeCache.set(pid, { startedAt: match[2], readAt });
+        }
+      }
+      resolve(undefined);
+    });
+  });
 }
 
 /**
@@ -195,12 +269,15 @@ export function readProcessStartedAt(pid) {
  * @returns {boolean}
  */
 export function isProcessAlive(pid) {
-  if (!pid || pid <= 0) return false;
+  if (!isValidProcessPid(pid)) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
+    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") {
+      processStartTimeCache.delete(pid);
+      return false;
+    }
     return true;
   }
 }
@@ -216,6 +293,11 @@ export function isTrackedProcessAlive(pid, startedAt) {
   return startedAt ? currentStartedAt === startedAt : true;
 }
 
+/** @param {number} pid @param {string} startedAt */
+function isTrackedProcessAliveFresh(pid, startedAt) {
+  return readProcessStartedAtFresh(pid) === startedAt;
+}
+
 /**
  * @param {number | undefined} pid
  * @param {number} [timeoutMs]
@@ -224,11 +306,11 @@ export function isTrackedProcessAlive(pid, startedAt) {
 export async function waitForProcessStartedAt(pid, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const startedAt = readProcessStartedAt(pid);
+    const startedAt = readProcessStartedAtFresh(pid);
     if (startedAt) return startedAt;
     await sleep(100);
   }
-  return readProcessStartedAt(pid);
+  return readProcessStartedAtFresh(pid);
 }
 
 /**
@@ -238,10 +320,11 @@ export async function waitForProcessStartedAt(pid, timeoutMs = 2_000) {
  * @returns {Promise<boolean>}
  */
 export async function terminateTrackedProcess(pid, startedAt, options = {}) {
-  if (!pid || pid <= 0) return true;
-  const currentStartedAt = readProcessStartedAt(pid);
+  if (!isValidProcessPid(pid)) return true;
+  const currentStartedAt = readProcessStartedAtFresh(pid);
   if (!currentStartedAt) return true;
   if (startedAt && currentStartedAt !== startedAt) return false;
+  const expectedStartedAt = startedAt || currentStartedAt;
 
   const termGraceMs = options.termGraceMs ?? 5_000;
   const killGraceMs = options.killGraceMs ?? 2_000;
@@ -249,28 +332,29 @@ export async function terminateTrackedProcess(pid, startedAt, options = {}) {
   try {
     process.kill(pid, "SIGTERM");
   } catch {
-    return !isTrackedProcessAlive(pid, startedAt);
+    return !isTrackedProcessAliveFresh(pid, expectedStartedAt);
   }
 
   const termDeadline = Date.now() + termGraceMs;
   while (Date.now() < termDeadline) {
-    if (!isTrackedProcessAlive(pid, startedAt)) return true;
+    if (!isTrackedProcessAliveFresh(pid, expectedStartedAt)) return true;
     await sleep(250);
   }
 
+  if (!isTrackedProcessAliveFresh(pid, expectedStartedAt)) return true;
   try {
     process.kill(pid, "SIGKILL");
   } catch {
-    return !isTrackedProcessAlive(pid, startedAt);
+    return !isTrackedProcessAliveFresh(pid, expectedStartedAt);
   }
 
   const killDeadline = Date.now() + killGraceMs;
   while (Date.now() < killDeadline) {
-    if (!isTrackedProcessAlive(pid, startedAt)) return true;
+    if (!isTrackedProcessAliveFresh(pid, expectedStartedAt)) return true;
     await sleep(250);
   }
 
-  return !isTrackedProcessAlive(pid, startedAt);
+  return !isTrackedProcessAliveFresh(pid, expectedStartedAt);
 }
 
 /**

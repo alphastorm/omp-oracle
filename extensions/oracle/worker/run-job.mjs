@@ -19,7 +19,7 @@ import {
 } from "../shared/job-coordination-helpers.mjs";
 import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { closeAgentBrowserSession, disableAgentBrowserWebMcp, killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
-import { getOracleJobsDir, getOracleStateDir } from "../shared/state-path-helpers.mjs";
+import { getOracleJobsDir, getOracleStateDir, isTrustedOracleJobDir, isValidOracleJobId, listTrustedOracleJobIds } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { acquireManagedBrowser, managedBrowserReplaced, releaseManagedBrowser, sharedBrowserEndpoint, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
@@ -85,13 +85,17 @@ import { assertNotKnownBrowserUserDataPath, assertSafeBrowserLaunchArg, scrubSwe
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
-if (!jobId) {
+if (!isValidOracleJobId(jobId)) {
   console.error("Usage: run-job.mjs <job-id>");
   process.exit(1);
 }
 
 const ORACLE_JOBS_DIR = getOracleJobsDir();
 const jobDir = join(ORACLE_JOBS_DIR, `oracle-${jobId}`);
+if (!isTrustedOracleJobDir(jobDir)) {
+  console.error(`Refusing untrusted oracle job directory ${jobDir}`);
+  process.exit(1);
+}
 const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
   addFiles: CHATGPT_ADD_FILES_LABEL,
@@ -201,6 +205,7 @@ async function readJob() {
 }
 
 function getAnyJobDir(targetJobId) {
+  if (!isValidOracleJobId(targetJobId)) throw new Error(`Invalid oracle job id: ${targetJobId}`);
   return join(ORACLE_JOBS_DIR, `oracle-${targetJobId}`);
 }
 
@@ -209,20 +214,19 @@ function getAnyJobPath(targetJobId) {
 }
 
 function readAnyJob(targetJobId) {
+  if (!isValidOracleJobId(targetJobId) || !isTrustedOracleJobDir(getAnyJobDir(targetJobId))) return undefined;
   const path = getAnyJobPath(targetJobId);
-  if (!existsSync(path)) return undefined;
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed?.id === targetJobId ? parsed : undefined;
   } catch {
     return undefined;
   }
 }
 
 function listQueuedJobs() {
-  if (!existsSync(ORACLE_JOBS_DIR)) return [];
-  return readdirSync(ORACLE_JOBS_DIR)
-    .filter((name) => name.startsWith("oracle-"))
-    .map((name) => readAnyJob(name.slice("oracle-".length)))
+  return listTrustedOracleJobIds(ORACLE_JOBS_DIR)
+    .map((id) => readAnyJob(id))
     .filter((job) => job?.status === "queued")
     .sort(compareQueuedOracleJobs);
 }

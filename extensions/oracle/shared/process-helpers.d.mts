@@ -41,6 +41,8 @@ export declare function killProcessTree(child: ChildProcess): void;
 export declare function killProcess(child: ChildProcess): void;
 export declare function runCommand(command: string, args: string[], options?: OracleRunCommandOptions): Promise<OracleRunCommandResult>;
 export declare function readProcessStartedAt(pid: number | undefined): string | undefined;
+export declare function readProcessStartedAtFresh(pid: number | undefined): string | undefined;
+export declare function primeProcessStartedAt(pids: Iterable<number | undefined>): Promise<void>;
 export declare function isProcessAlive(pid: number | undefined): boolean;
 export declare function isTrackedProcessAlive(pid: number | undefined, startedAt?: string): boolean;
 export declare function waitForProcessStartedAt(pid: number | undefined, timeoutMs?: number): Promise<string | undefined>;

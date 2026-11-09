@@ -5,10 +5,10 @@
 // Invariants/Assumptions: Job mutations happen under per-job locks, worker identity checks defend against PID reuse, and persisted jobs remain the source of truth.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
-import { isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -29,10 +29,10 @@ import {
 } from "../shared/job-lifecycle-helpers.mjs";
 import type { OracleJobLifecycleEvent as SharedOracleJobLifecycleEvent, OracleJobPhase as SharedOracleJobPhase, OracleJobStatus as SharedOracleJobStatus } from "../shared/job-lifecycle-helpers.mjs";
 import { hasDurableWorkerHandoff as sharedHasDurableWorkerHandoff } from "../shared/job-coordination-helpers.mjs";
-import { isTrackedProcessAlive, readProcessStartedAt, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
+import { isTrackedProcessAlive, primeProcessStartedAt, readProcessStartedAt, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { sharedBrowserCleanupFields, type ManagedBrowserRecord } from "../shared/managed-browser-helpers.mjs";
 import type { OracleConfig, OracleResolvedSelection } from "./config.js";
-import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
+import { getOracleJobsDir, isTrustedOracleJobDir, isValidOracleJobId, listTrustedOracleJobIds } from "../shared/state-path-helpers.mjs";
 import type { OracleObservedSelection } from "../shared/job-observability-helpers.mjs";
 import { parseTimestamp } from "../shared/time-helpers.mjs";
 import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
@@ -246,23 +246,32 @@ export function getSessionFile(ctx: ExtensionContext): string | undefined {
 }
 
 export function getJobDir(id: string): string {
+  if (!isValidOracleJobId(id)) throw new Error(`Invalid oracle job id: ${id}`);
   return join(ORACLE_JOBS_DIR, `oracle-${id}`);
 }
 
 export function listOracleJobDirs(): string[] {
-  if (!existsSync(ORACLE_JOBS_DIR)) return [];
-  return readdirSync(ORACLE_JOBS_DIR)
-    .filter((name) => name.startsWith("oracle-"))
-    .map((name) => join(ORACLE_JOBS_DIR, name))
-    .filter((path) => existsSync(join(path, "job.json")));
+  return listTrustedOracleJobIds(ORACLE_JOBS_DIR).map(getJobDir);
 }
 
 export function readJob(jobDirOrId: string): OracleJob | undefined {
-  const jobDir = existsSync(join(jobDirOrId, "job.json")) ? jobDirOrId : getJobDir(jobDirOrId);
-  const jobPath = join(jobDir, "job.json");
-  if (!existsSync(jobPath)) return undefined;
+  let id: string;
+  let jobDir: string;
+  if (isValidOracleJobId(jobDirOrId)) {
+    id = jobDirOrId;
+    jobDir = getJobDir(id);
+  } else {
+    if (!isAbsolute(jobDirOrId) || resolve(dirname(jobDirOrId)) !== resolve(ORACLE_JOBS_DIR)) return undefined;
+    const name = basename(jobDirOrId);
+    if (!name.startsWith("oracle-")) return undefined;
+    id = name.slice("oracle-".length);
+    if (!isValidOracleJobId(id)) return undefined;
+    jobDir = jobDirOrId;
+  }
+  if (!isTrustedOracleJobDir(jobDir)) return undefined;
   try {
-    return JSON.parse(readFileSync(jobPath, "utf8")) as OracleJob;
+    const parsed = JSON.parse(readFileSync(join(jobDir, "job.json"), "utf8")) as OracleJob | null;
+    return parsed?.id === id ? parsed : undefined;
   } catch {
     return undefined;
   }
@@ -611,11 +620,10 @@ export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
   const repaired: OracleJob[] = [];
   const now = Date.now();
   const recoveredAt = new Date(now).toISOString();
+  const jobs = listOracleJobDirs().map(readJob).filter((job): job is OracleJob => Boolean(job));
+  await primeProcessStartedAt(jobs.map((job) => job.workerPid));
 
-  for (const jobDir of listOracleJobDirs()) {
-    const job = readJob(jobDir);
-    if (!job) continue;
-
+  for (const job of jobs) {
     if (terminalCleanupIsDue(job, now)) {
       let cleanupTarget: OracleJob | undefined;
       let blockedWarning: string | undefined;
