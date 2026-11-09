@@ -60,8 +60,26 @@ Per-release changes are recorded in [Changelog](../CHANGELOG.md).
 ## Tracking upstream
 
 - **Merge, never rebase.** Shared upstream history stays intact through explicit merge commits,
-  never rebases; later changes are selectively ported where the fork's runtime and release gates
-  diverge. The latest recorded sync is upstream `eecf79e` (2026-10-31, `pi-oracle` 0.7.23).
+  never rebases, and a sync lands on `main` by fast-forward, because a squash merge drops the
+  upstream parent; later changes are selectively ported where the fork's runtime and release gates
+  diverge. The latest recorded sync is upstream `bf2c031` (2026-11-03, `pi-oracle` 0.7.27),
+  merged on 2026-11-09:
+  - `6759f3e` ([#74](https://github.com/fitchmultz/pi-oracle/pull/74)): adopted as the fork's own
+    development baseline, `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` `^1.5.0`.
+    Pi 1.5.0 pins `undici` 8.12.3 and `minimatch` 11.0.3, so the fork's `undici` and `minimatch`
+    overrides, which patched the 1.3.0 and 1.4.0 pins, are removed. Upstream's exact pins and its
+    `protobufjs` override are not adopted; the fork keeps a caret range and needs no override.
+  - `74fb70d` ([#77](https://github.com/fitchmultz/pi-oracle/pull/77)), `205cbf1` and `21f0323`
+    ([#79](https://github.com/fitchmultz/pi-oracle/pull/79),
+    [#80](https://github.com/fitchmultz/pi-oracle/pull/80)), `88aa788`
+    ([#83](https://github.com/fitchmultz/pi-oracle/pull/83)), and the 0.7.24–0.7.27 release
+    commits: reviewed, not adopted; they move upstream's automatic release workflow
+    (`npm-version.yml`) to newer reusable-workflow pins, which the fork's
+    `.github/workflows/release.yml` trusted publishing replaces.
+
+  The preceding sync, upstream `eecf79e` (2026-10-31, `pi-oracle` 0.7.23), landed as squash
+  commit `a7b0918` ([#28](https://github.com/alphastorm/omp-oracle/pull/28)) without its upstream
+  parent, so GitHub reported the fork behind upstream until the merge above restored the ancestry.
   Re-checked on 2026-11-02 before 0.4.12: upstream `main` is `bd91a5a` (`596d8b7`, [#72](https://github.com/fitchmultz/pi-oracle/pull/72) "Automate qualified Oracle releases (3/3)", and the 0.7.23 release chore); no file under `extensions/oracle/{lib,shared,worker}` changed, and the release-automation work serves upstream's pipeline, not the fork's Crabbox lanes and trusted publishing. Nothing ported.
   - `5c31b3d` ([#68](https://github.com/fitchmultz/pi-oracle/pull/68)): ported case-insensitive
     bare-effort opener recognition, including removable chips, through `BARE_EFFORT_PATTERN`,
@@ -94,7 +112,7 @@ Per-release changes are recorded in [Changelog](../CHANGELOG.md).
     `ci-release-windows.ps1` duplicate the fork-owned Crabbox macOS/Ubuntu release proof and
     `.github/workflows/release.yml` trusted publishing with a different automation contract.
 
-  The preceding sync, upstream `d658a98` (2026-10-17, `pi-oracle` 0.7.22), ported the runtime
+  The sync before it, upstream `d658a98` (2026-10-17, `pi-oracle` 0.7.22), ported the runtime
   fixes the fork shares: anonymous `ua-*` visitor sessions classified as signed out,
   `/oracle-auth` reads retried across CDP navigation with failure guidance that separates browser
   verification from rejected cookies, the `/oracle-auth` launch retry for a closing

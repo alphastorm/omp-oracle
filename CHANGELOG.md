@@ -8,6 +8,7 @@ history is kept below the divider.
 
 ### Changed
 
+- the development baseline moves to `pi` 1.5.0 (`@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` `^1.5.0`), the floor upstream `pi-oracle` adopted in 0.7.24. The development-only `undici` and `minimatch` overrides are removed: Pi 1.5.0 pins patched versions (`undici` 8.12.3, `minimatch` 11.0.3), and the exact `undici` override would now force a downgrade. The published package does not change
 - `npm run typecheck` compiles `tsconfig.extension.json`, and the root `tsconfig.json` only references the extension and both worker projects, so editors and language servers check each file with its own project's options (#32)
 
 ## 0.4.13 - 2026-11-02

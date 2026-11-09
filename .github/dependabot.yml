@@ -15,7 +15,7 @@ updates:
       # parse the worker (`ts.ScriptTarget` is undefined there).
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
-      # typebox stays on the copy the pi development baseline pins (1.3.27 for pi 1.3.0); it moves
+      # typebox stays on the copy the pi development baseline pins (1.3.27 for pi 1.5.0); it moves
       # together with the @earendil-works devDependencies, never on its own.
       - dependency-name: typebox
   - package-ecosystem: github-actions
