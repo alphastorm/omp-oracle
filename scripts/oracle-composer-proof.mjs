@@ -7,9 +7,14 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import { sleep } from '../extensions/oracle/shared/time-helpers.mjs';
+import { applyAgentBrowserEnvDefaults } from '../extensions/oracle/shared/process-helpers.mjs';
+import { AGENT_BROWSER_TIMEOUTS, batchInvocation, parseEvalResult } from '../extensions/oracle/worker/agent-browser-helpers.mjs';
+import { composerTextDigest, composerTextDigestExpression } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 import { parseSnapshotEntries } from '../extensions/oracle/worker/artifact-heuristics.mjs';
 import { CHATGPT_ADD_FILES_LABEL, CHATGPT_COMPOSER_EDITOR_SELECTOR, CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR, isChatGptComposerEntry, isDeepResearchMenuEntry, snapshotHasDeepResearchPill } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 
+applyAgentBrowserEnvDefaults();
 const researchTool = process.argv.includes('--research-tool');
 const [session, target, draftFile, existingDraftFile] = process.argv.slice(2).filter(v => v !== '--research-tool');
 assert(session && target, 'Supply an existing pinned diagnostic session and its owned target ID');
@@ -18,8 +23,8 @@ assert(endpoint, 'Set ORACLE_COMPOSER_CDP_URL to the DevTools HTTP origin of the
 console.log(JSON.stringify({ event: `Driving the browser at ${endpoint}` }));
 const prefix = ['--session', session, '--cdp', endpoint, '--pin-tab'];
 const binary = process.env.AGENT_BROWSER_PATH || '/opt/homebrew/bin/agent-browser';
-const run = (args, input) => execFileSync(binary, [...prefix, ...args], {
-  encoding: 'utf8', input, timeout: 35000, maxBuffer: 4 * 1024 * 1024,
+const run = (args, input, timeoutMs = 35000) => execFileSync(binary, [...prefix, ...args], {
+  encoding: 'utf8', input, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,
 });
 const tabs = JSON.parse(run(['--json', 'tab', 'list'])).data.tabs;
 assert(tabs.some(t => t.targetId === target && t.active), 'Refusing a tab not owned by this probe');
@@ -27,18 +32,20 @@ assert(tabs.some(t => t.targetId === target && t.active), 'Refusing a tab not ow
 // Parse declarations to exercise production behavior without launching the worker entrypoint.
 const source = readFileSync(new URL('../extensions/oracle/worker/run-job.mjs', import.meta.url), 'utf8');
 const tree = ts.createSourceFile('run-job.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-const names = new Set(['parseEvalResult', 'toJsonScript', 'toAsyncJsonScript', 'evalPage', 'snapshotText', 'findEntry', 'clickRef', 'setComposerText', 'deepResearchToolSelected', 'enableDeepResearch', 'OracleWorkerError']);
+const names = new Set(['toJsonScript', 'toAsyncJsonScript', 'evalPage', 'snapshotText', 'findEntry', 'clickRef', 'setComposerText', 'deepResearchToolSelected', 'enableDeepResearch', 'OracleWorkerError']);
 const declarations = tree.statements.filter(n => (ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)) && names.has(n.name?.text));
 assert.equal(declarations.length, names.size, 'Worker function extraction is incomplete');
 const agentBrowser = async (_job, ...args) => {
   const options = typeof args.at(-1) === 'object' ? args.pop() : {};
-  return { stdout: run(args, options.input) };
+  return { stdout: run(args, options.input, options.timeoutMs) };
 };
 const api = new Function('agentBrowser', 'parseSnapshotEntries', 'isGrokJob', 'CHATGPT_LABELS', 'CHATGPT_COMPOSER_EDITOR_SELECTOR',
   'CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR', 'isChatGptComposerEntry', 'isDeepResearchMenuEntry', 'snapshotHasDeepResearchPill', 'log',
+  'sleep', 'parseEvalResult', 'AGENT_BROWSER_TIMEOUTS', 'batchInvocation', 'composerTextDigest', 'composerTextDigestExpression', 'withHeartbeatWhile',
   declarations.map(n => n.getText(tree)).join('\n') + '\nreturn {setComposerText, deepResearchToolSelected, enableDeepResearch, snapshotText, evalPage, toJsonScript};')(
   agentBrowser, parseSnapshotEntries, () => false, { addFiles: CHATGPT_ADD_FILES_LABEL }, CHATGPT_COMPOSER_EDITOR_SELECTOR,
   CHATGPT_DEEP_RESEARCH_MENTION_SELECTOR, isChatGptComposerEntry, isDeepResearchMenuEntry, snapshotHasDeepResearchPill, async message => console.log(JSON.stringify({ event: message })),
+  sleep, parseEvalResult, AGENT_BROWSER_TIMEOUTS, batchInvocation, composerTextDigest, composerTextDigestExpression, async task => task(),
 );
 const evaluate = body => api.evalPage({}, api.toJsonScript(body));
 // The composer of either shell: the earlier `#prompt-textarea` editor or the current labeled textbox.

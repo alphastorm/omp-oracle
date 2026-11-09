@@ -32,7 +32,7 @@ export declare function buildAccountChooserCandidateLabels(name?: string): strin
 export declare function classifyChatAuthPage(args: {
   url: string;
   snapshot: string;
-  body: string;
+  signals: import("./provider-page-signals.mjs").ProviderPageSignals;
   probe?: OracleAuthLoginProbe;
   allowedOrigins: readonly string[];
   cookieSourceLabel: string;

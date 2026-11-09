@@ -1000,3 +1000,27 @@ export function deriveAssistantCompletionSignature({
 
   return undefined;
 }
+
+
+/** @param {string} text */
+export function normalizeComposerText(text) {
+  return text.normalize("NFC").replace(/\s+/g, " ").trim();
+}
+
+// Kept self-contained so the browser and Node execute exactly the same digest code.
+/** @param {string} text @returns {Promise<{ length: number; sha256: string }>} */
+export async function composerTextDigest(text) {
+  const normalized = text.normalize("NFC").replace(/\s+/g, " ").trim();
+  const bytes = new TextEncoder().encode(normalized);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return { length: normalized.length, sha256: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("") };
+}
+
+/** @param {string} editorSelector */
+export function composerTextDigestExpression(editorSelector) {
+  return `(async () => {
+    const editor = [...document.querySelectorAll(${JSON.stringify(editorSelector)})].find((node) => node.isContentEditable && node.getClientRects().length);
+    if (!editor) return null;
+    return await (${composerTextDigest.toString()})(editor.innerText);
+  })()`;
+}

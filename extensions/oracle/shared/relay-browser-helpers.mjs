@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
+import { withAgentBrowserEnvDefaults } from "./process-helpers.mjs";
 
 const runFile = promisify(execFile);
 /** @typedef {{success?: boolean, code?: string, error?: string, data?: {tabs?: Array<{targetId: string, active?: boolean}>, targetId?: string}}} CommandResponse */
@@ -59,7 +60,7 @@ export async function closeRelayTab({ binary, sessionName, endpoint, targetId, b
       const { stdout } = await runFile(binary, [...prefix, ...args], {
         timeout: 10000,
         maxBuffer: 4 * 1024 * 1024,
-        env: sweetCookieSafeStoragePasswordScrubbedEnv(),
+        env: sweetCookieSafeStoragePasswordScrubbedEnv(withAgentBrowserEnvDefaults()),
       });
       return JSON.parse(stdout);
     } catch (error) {

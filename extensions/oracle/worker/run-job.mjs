@@ -18,9 +18,10 @@ import {
   runQueuedJobPromotionPass,
 } from "../shared/job-coordination-helpers.mjs";
 import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
-import { closeAgentBrowserSession, disableAgentBrowserWebMcp, killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
+import { closeAgentBrowserSession, applyAgentBrowserEnvDefaults, killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir, getOracleStateDir, isTrustedOracleJobDir, isValidOracleJobId, listTrustedOracleJobIds } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
+import { AGENT_BROWSER_TIMEOUTS, AgentBrowserTimeoutError, createAgentBrowserRunner, parseEvalResult, batchInvocation } from "./agent-browser-helpers.mjs";
 import { closeRelayTab } from "../shared/relay-browser-helpers.mjs";
 import { acquireManagedBrowser, managedBrowserReplaced, releaseManagedBrowser, sharedBrowserEndpoint, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
 import { RelayCdpClient } from "../shared/relay-cdp-client.mjs";
@@ -41,6 +42,8 @@ import {
 } from "./response-capture.mjs";
 import {
   buildAllowedChatGptOrigins,
+  composerTextDigest,
+  composerTextDigestExpression,
   CHATGPT_ADD_FILES_LABEL,
   CHATGPT_ATTACH_FILES_INPUT_SELECTOR,
   CHATGPT_COMPOSER_EDITOR_SELECTOR,
@@ -81,6 +84,7 @@ import {
 } from "./chatgpt-ui-helpers.mjs";
 import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash, timedOutRecollectionBinding } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
+import { classifyChatGptJobPage, classifyGrokPage, detectProviderSignals, detectCompletionFailure, providerPageSignalsExpression, visibleBlockerInSnapshot, formatProviderTransientErrorMessage, providerTransientErrorMessage, throwIfProviderTransientError } from "./provider-page-signals.mjs";
 import { assertNotKnownBrowserUserDataPath, assertSafeBrowserLaunchArg, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
@@ -126,7 +130,7 @@ const AGENT_BROWSER_BIN = resolveAgentBrowserBinary();
 const CHROME_DEVTOOLS_READY_TIMEOUT_MS = 15_000;
 const CP_BIN = process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 scrubSweetCookieSafeStoragePasswordEnv();
-disableAgentBrowserWebMcp();
+applyAgentBrowserEnvDefaults();
 
 // Failures callers must tell apart carry a stable code into job.json (errorCode) and tool results.
 class OracleWorkerError extends Error {
@@ -711,7 +715,7 @@ async function launchBrowser(job, url) {
     // A fresh pinned CDP session creates its own tab before executing the command.
     // Navigate that tab instead of creating a second, untracked startup tab.
     await assertManagedBrowserUnchanged(job);
-    const { stdout } = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "--json", "open", "about:blank"]);
+    const { stdout } = await agentBrowser(job, "--json", "open", "about:blank");
     const created = JSON.parse(stdout);
     if (!created.success || typeof created.data?.targetId !== "string") {
       throw new Error("The relay did not return an identity for the job-owned tab.");
@@ -720,7 +724,7 @@ async function launchBrowser(job, url) {
     if (shuttingDown) return;
     await assertManagedBrowserUnchanged(currentJob);
     await log(`Navigating job-owned relay tab ${currentJob.relayTargetId}`);
-    await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(currentJob), "open", url]);
+    await agentBrowser(currentJob, "open", url);
     return;
   }
   const executablePath = job.config.browser.executablePath;
@@ -740,28 +744,20 @@ async function launchBrowser(job, url) {
   });
   const endpoint = await waitForDevToolsEndpoint(job);
   await log(`Connecting agent-browser session ${job.runtimeSessionName} to isolated Chrome DevTools endpoint`);
-  await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "connect", endpoint]);
-  await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "open", url]);
+  await agentBrowser(job, "connect", endpoint);
+  await agentBrowser(job, "open", url);
   browserStarted = true;
 }
 
-async function streamStatus(job) {
-  const { stdout } = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "--json", "stream", "status"], { allowFailure: true });
-  try {
-    const parsed = JSON.parse(stdout || "{}");
-    return parsed?.data || {};
-  } catch {
-    return {};
-  }
-}
-
-async function ensureBrowserConnected(job) {
-  if (!browserStarted || cleaningUpBrowser) return;
-  await assertManagedBrowserUnchanged(job);
-  const status = await streamStatus(job);
-  if (status.connected === false) {
-    throw new Error("The isolated oracle browser disconnected during the job.");
-  }
+function browserRunner(job) {
+  return createAgentBrowserRunner({
+    binary: AGENT_BROWSER_BIN,
+    baseArgs: () => browserBaseArgs(job),
+    beforeCommand: () => assertManagedBrowserUnchanged(job),
+    connectionCheckEnabled: () => browserStarted && !cleaningUpBrowser,
+    shuttingDown: () => shuttingDown,
+    disconnectMessage: "The isolated oracle browser disconnected during the job.",
+  });
 }
 
 async function agentBrowser(job, ...args) {
@@ -779,27 +775,14 @@ async function agentBrowser(job, ...args) {
   ) {
     options = args.pop();
   }
-  await ensureBrowserConnected(job);
-  return spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), ...args], options);
+  return browserRunner(job).run(args, options);
 }
-function parseEvalResult(stdout) {
-  if (!stdout) return undefined;
-  let value = stdout.trim();
-  try {
-    let parsed = JSON.parse(value);
-    while (typeof parsed === "string") parsed = JSON.parse(parsed);
-    return parsed;
-  } catch {
-    return value;
-  }
-}
-
 function toJsonScript(expression) {
   return `JSON.stringify((() => { ${expression} })(), null, 2)`;
 }
 
-async function evalPage(job, script) {
-   const result = await agentBrowser(job, "eval", "--stdin", { input: script });
+async function evalPage(job, script, options = {}) {
+   const result = await agentBrowser(job, "eval", "--stdin", { ...options, input: script });
    return parseEvalResult(result.stdout);
 }
 
@@ -851,6 +834,10 @@ async function noteOwnConversation() {
 async function snapshotText(job) {
   const { stdout } = await agentBrowser(job, "snapshot", "-i");
   return stdout;
+}
+
+async function readPageSignals(job, options = {}) {
+  return await evalPage(job, toJsonScript(`return ${providerPageSignalsExpression({ editorSelector: isGrokJob(job) ? '[contenteditable="true"]' : CHATGPT_COMPOSER_EDITOR_SELECTOR })};`), options).catch(() => ({ text: "", composerPresent: false }));
 }
 
 async function pageText(job) {
@@ -1019,7 +1006,7 @@ async function expandCurrentPowerControls(job, snapshot) {
   );
   if (advancedOptions) {
     await clickRef(job, advancedOptions.ref);
-    await agentBrowser(job, "wait", "500");
+    await sleep(500);
     currentSnapshot = await snapshotText(job);
     changed = true;
   }
@@ -1029,7 +1016,7 @@ async function expandCurrentPowerControls(job, snapshot) {
   );
   if (effortOptions) {
     await clickRef(job, effortOptions.ref);
-    await agentBrowser(job, "wait", "300");
+    await sleep(300);
     currentSnapshot = await snapshotText(job);
     changed = true;
   }
@@ -1094,7 +1081,7 @@ async function openEffortDropdown(job) {
       const opener = findEntry(snapshot, matchesModelConfigurationOpener);
       if (opener) {
         await clickRef(job, opener.ref);
-        await agentBrowser(job, "wait", "500");
+        await sleep(500);
         snapshot = await snapshotText(job);
         proEffortEntry = findEntry(
           snapshot,
@@ -1167,129 +1154,33 @@ async function setComposerText(job, text) {
   const snapshot = await snapshotText(job);
   const entry = findEntry(snapshot, isChatGptComposerEntry);
   if (!entry) throw new Error("Could not find ChatGPT composer textbox");
-  await agentBrowser(job, "fill", entry.ref, text);
-}
-
-function classifyChatPage({ job, url, snapshot, body, probe }) {
-  if (isGrokJob(job)) return classifyGrokPage({ url, snapshot, body });
-  const text = `${snapshot}\n${body}`;
-  const challengePatterns = [
-    /just a moment/i,
-    /verify you are human/i,
-    /cloudflare/i,
-    /captcha|turnstile|hcaptcha/i,
-    /unusual activity detected/i,
-    /we detect suspicious activity/i,
-  ];
-  if (challengePatterns.some((pattern) => pattern.test(text))) {
-    if (/verification successful|waiting for chatgpt\.com to respond/i.test(text)) {
-      return { state: "unknown", message: "ChatGPT verification is still settling." };
-    }
-    return { state: "challenge_blocking", message: "ChatGPT is showing a challenge/verification page" };
+  const invocation = batchInvocation([["fill", entry.ref, text]]);
+  await withHeartbeatWhile(() => agentBrowser(job, ...invocation.args, { input: invocation.input, timeoutMs: AGENT_BROWSER_TIMEOUTS.batch }));
+  const [expected, actual] = await Promise.all([
+    composerTextDigest(text),
+    evalPage(job, composerTextDigestExpression(CHATGPT_COMPOSER_EDITOR_SELECTOR)),
+  ]);
+  if (!actual || actual.length !== expected.length || actual.sha256 !== expected.sha256) {
+    throw new Error(`ChatGPT composer text did not match the prompt after insertion (expected ${expected.length} normalized characters, found ${actual?.length ?? 0}); nothing was sent`);
   }
-
-  const outageText = detectProviderTransientErrorText(text);
-  if (outageText) {
-    return { state: "transient_outage_error", message: `ChatGPT is showing a transient outage/rate-limit page: ${outageText}` };
-  }
-
-  const allowedOrigins = buildAllowedChatGptOrigins(job.config.browser.chatUrl, job.config.browser.authUrl);
-  const onAllowedOrigin = typeof url === "string" && allowedOrigins.some((origin) => url.startsWith(origin));
-  const onAuthPath = typeof url === "string" && url.includes("/auth/");
-  const hasUsableComposer = snapshotHasUsableComposerControls(snapshot);
-
-  // /backend-api/me also returns HTTP 200 and an id for anonymous visitors: a ua-* identity
-  // beside login controls is a signed-out page, never an account still resolving.
-  if (probe?.bodyIsAnonymous && (onAuthPath || probe?.onAuthPage || probe?.domLoginCta)) {
-    return {
-      state: "login_required",
-      message: "ChatGPT login is required: the page shows login controls and returned an anonymous visitor session, not a signed-in account. Run /oracle-auth.",
-    };
-  }
-
-  const probeHasAccountIdentity = !probe?.bodyIsAnonymous && (probe?.bodyHasId === true || probe?.bodyHasEmail === true);
-
-  // A fresh runtime can see a transient 403 while Cloudflare is still loading.
-  // Require explicit authentication evidence before declaring the seed logged out.
-  if (probe?.status === 401) {
-    return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
-  }
-
-  if (onAuthPath || probe?.onAuthPage) {
-    if (probeHasAccountIdentity) {
-      return {
-        state: "auth_transitioning",
-        message: "ChatGPT is on an auth page even though the backend probe returned account-like fields. Rerun /oracle-auth.",
-      };
-    }
-    return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
-  }
-
-  if (onAllowedOrigin && probe?.domLoginCta && !probeHasAccountIdentity) {
-    return {
-      state: "login_required",
-      message: "ChatGPT login is required: the chat shell still shows public Log in/Sign up controls. Run /oracle-auth.",
-    };
-  }
-
-  if (onAllowedOrigin && (probe?.status === 200 || probe?.status === 403) && hasUsableComposer) {
-    if (probe?.domLoginCta) {
-      // The public logged-out composer case returned above, so a remaining visible login CTA here still has account-like probe data.
-      return {
-        state: "auth_transitioning",
-        message: "ChatGPT backend probe returned account-like fields, but the web shell still shows public login controls. Rerun /oracle-auth.",
-      };
-    }
-    return { state: "authenticated_and_ready", message: "ChatGPT is authenticated and ready." };
-  }
-
-  if (url && !onAllowedOrigin) {
-    return { state: "login_required", message: "ChatGPT redirected away from the expected authenticated chat origin." };
-  }
-
-  return { state: "unknown", message: "ChatGPT page is not ready yet." };
-}
-
-function hasGrokLoginCta(text) {
-  const lines = String(text || "").split("\n").map((line) => line.trim()).filter(Boolean);
-  return lines.some((line) => {
-    const accessibleControl = line.match(/^-\s*(?:button|link|menuitem)\s+"([^"]+)"/i)?.[1]?.trim();
-    const label = accessibleControl || line;
-    return /^(?:sign in|log in|continue with x|continue with google|create account)$/i.test(label);
-  });
-}
-
-function classifyGrokPage({ url, snapshot, body }) {
-  const text = `${snapshot}\n${body}`;
-  if (/captcha|cloudflare|verify you are human|unusual activity|suspicious activity/i.test(text)) {
-    return { state: "challenge_blocking", message: "Grok is showing a challenge/verification page" };
-  }
-  const outageText = detectProviderTransientErrorText(text);
-  if (outageText) {
-    return { state: "transient_outage_error", message: `Grok is showing a transient outage/rate-limit page: ${outageText}` };
-  }
-  const onGrokOrigin = typeof url === "string" && url.startsWith("https://grok.com");
-  if (onGrokOrigin && hasGrokLoginCta(text)) {
-    return { state: "login_required", message: "Grok login is required. Sign in to Grok in the configured browser profile and rerun /oracle-auth grok." };
-  }
-  const hasComposer = snapshot.includes(`button "${GROK_LABELS.addFiles}"`) && (snapshot.includes(`textbox "${GROK_LABELS.composer}"`) || snapshot.includes("contenteditable"));
-  if (onGrokOrigin && hasComposer) return { state: "authenticated_and_ready", message: "Grok is ready." };
-  if (url && !onGrokOrigin) return { state: "login_required", message: "Grok redirected away from grok.com. Sign in to Grok in the configured browser profile and rerun /oracle-auth grok if needed." };
-  return { state: "unknown", message: "Grok page is not ready yet." };
+  await log(`ChatGPT composer digest matched (${expected.length} normalized characters)`);
 }
 
 async function captureDiagnostics(job, reason) {
   if (!browserStarted) return;
+  const options = { timeoutMs: AGENT_BROWSER_TIMEOUTS.diagnostics, allowFailure: true };
   try {
-    const [url, snapshot, body] = await Promise.all([
-      currentUrl(job).catch(() => ""),
-      snapshotText(job).catch(() => ""),
-      pageText(job).catch(() => ""),
+    const [url, snapshot, body, signals] = await Promise.all([
+      agentBrowser(job, "get", "url", options).then((result) => result.stdout).catch(() => ""),
+      agentBrowser(job, "snapshot", "-i", options).then((result) => result.stdout).catch(() => ""),
+      agentBrowser(job, "get", "text", "body", options).then((result) => result.stdout).catch(() => ""),
+      readPageSignals(job, options),
     ]);
     await secureWriteText(join(job.logsDir, `${reason}.url.txt`), `${url || ""}\n`);
     await secureWriteText(join(job.logsDir, `${reason}.snapshot.txt`), `${snapshot || ""}\n`);
     await secureWriteText(join(job.logsDir, `${reason}.body.txt`), `${body || ""}\n`);
-    await agentBrowser(job, "screenshot", join(job.logsDir, `${reason}.png`)).catch(() => undefined);
+    await secureWriteText(join(job.logsDir, `${reason}.signals.txt`), `${signals?.text || ""}\n`);
+    await agentBrowser(job, "screenshot", join(job.logsDir, `${reason}.png`), options).catch(() => undefined);
   } catch {
     // best effort only
   }
@@ -1306,13 +1197,14 @@ async function waitForOracleReady(job) {
   while (Date.now() < timeoutAt) {
     // Every probe below tolerates failure, so check the browser here or a change waits out the whole timeout.
     await assertManagedBrowserUnchanged(job);
-    const [url, snapshot, body, probe] = await Promise.all([
+    const [url, snapshot, signals, probe] = await Promise.all([
       currentUrl(job).catch(() => ""),
       snapshotText(job).catch(() => ""),
-      pageText(job).catch(() => ""),
+      readPageSignals(job),
       loginProbe(job).catch(() => ({ ok: false, status: 0, error: "probe-failed" })),
     ]);
-    const classification = classifyChatPage({ job, url, snapshot, body, probe });
+    const classification = isGrokJob(job) ? classifyGrokPage({ url, snapshot, signals })
+      : classifyChatGptJobPage({ url, snapshot, signals, probe, allowedOrigins: buildAllowedChatGptOrigins(job.config.browser.chatUrl, job.config.browser.authUrl) });
     if (classification.state !== "challenge_blocking") {
       challengeStartedAt = undefined;
       retriedChallenge = false;
@@ -1370,74 +1262,16 @@ async function waitForOracleReady(job) {
   throw new Error("Timed out waiting for the ChatGPT chat UI to become ready");
 }
 
-function detectUploadErrorText(text) {
-  const patterns = [
-    "Failed upload",
-    "upload failed",
-    "files.oaiusercontent.com",
-    "Please ensure your network settings allow access to this site",
-    "could not upload",
-  ];
-  return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
-}
-
-function detectProviderTransientErrorText(text) {
-  const patterns = [
-    "Too many requests",
-    "rate limit",
-    "try again later",
-    "Something went wrong",
-    "A network error occurred",
-    "An error occurred while connecting to the websocket",
-  ];
-  return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
-}
-
-function detectProviderVisibleBlockerText(text) {
-  const patterns = [
-    "Too many requests",
-    "rate limit",
-  ];
-  return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
-}
-
-function formatProviderTransientErrorMessage(job, errorText, context) {
-  const providerLabel = isGrokJob(job) ? "Grok" : "ChatGPT";
-  return `${providerLabel} is showing a transient outage/rate-limit page${context ? ` while ${context}` : ""}: ${errorText}`;
-}
-
-function providerTransientErrorMessage(job, text, context) {
-  const errorText = detectProviderVisibleBlockerText(text);
-  if (!errorText) return "";
-  return formatProviderTransientErrorMessage(job, errorText, context);
-}
-
-function throwIfProviderTransientError(job, text, context) {
-  const message = providerTransientErrorMessage(job, text, context);
-  if (message) throw new Error(message);
-}
-
-function detectResponseFailureText(text) {
-  const patterns = [
-    "Message delivery timed out",
-    "A network error occurred",
-    "An error occurred while connecting to the websocket",
-    "There was an error generating a response",
-    "Something went wrong while generating the response",
-  ];
-  return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
-}
-
 async function waitForUploadConfirmed(job, fileLabel, baselineCount) {
   const timeoutAt = Date.now() + 10 * 60 * 1000;
   let stableCount = 0;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
-    const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
+    const [snapshot, signals] = await Promise.all([snapshotText(job), readPageSignals(job)]);
     throwIfProviderTransientError(job, snapshot, "uploading the archive");
 
-    const errorText = detectUploadErrorText(`${snapshot}\n${body}`);
+    const errorText = detectProviderSignals({ snapshot, signals }).uploadError;
     if (errorText) {
       throw new Error(`Upload error detected: ${errorText}`);
     }
@@ -1465,9 +1299,9 @@ async function waitForSendReady(job) {
   while (Date.now() < timeoutAt) {
     await heartbeat();
     const snapshot = await snapshotText(job);
-    const body = await pageText(job).catch(() => "");
+    const signals = await readPageSignals(job);
     throwIfProviderTransientError(job, snapshot, "waiting for send readiness");
-    const errorText = detectUploadErrorText(`${snapshot}\n${body}`);
+    const errorText = detectProviderSignals({ snapshot, signals }).uploadError;
     if (errorText) {
       throw new Error(`Upload error detected: ${errorText}`);
     }
@@ -1506,7 +1340,7 @@ async function sendAcceptanceState(job, baselineAssistantCount) {
     urlKnown: urlResult.ok,
     assistantCount: Math.max(baselineAssistantCount, messages.length),
     stopStreaming: isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : chatGptStreamingVisible(snapshot),
-    transientErrorText: detectProviderVisibleBlockerText(snapshot) || "",
+    transientErrorText: visibleBlockerInSnapshot(snapshot) || "",
   };
 }
 
@@ -1549,7 +1383,7 @@ async function dismissBlockingDialog(job, snapshot) {
   if (!close) return false;
   await log("Dismissing a dialog that covers the composer");
   await clickRef(job, close.ref).catch(() => undefined);
-  await agentBrowser(job, "wait", "500");
+  await sleep(500);
   return true;
 }
 
@@ -1561,11 +1395,11 @@ async function dismissProFeedbackModal(job, snapshot) {
   const close = entries.find((entry) => entry.kind === "button" && entry.label === CHATGPT_LABELS.close && !entry.disabled);
   if (close) {
     await clickRef(job, close.ref).catch(() => undefined);
-    await agentBrowser(job, "wait", "500");
+    await sleep(500);
     if (!(await pageText(job).catch(() => "")).includes("Pro feedback")) return true;
   }
   await agentBrowser(job, "press", "Escape").catch(() => undefined);
-  await agentBrowser(job, "wait", "500");
+  await sleep(500);
   if (!(await pageText(job).catch(() => "")).includes("Pro feedback")) return true;
 
   const dismissed = await evalPage(job, toJsonScript(`
@@ -1577,7 +1411,7 @@ async function dismissProFeedbackModal(job, snapshot) {
     button.click();
     return true;
   `));
-  if (dismissed) await agentBrowser(job, "wait", "500");
+  if (dismissed) await sleep(500);
   return Boolean(dismissed);
 }
 
@@ -1605,7 +1439,7 @@ async function openModelConfiguration(job) {
       const entry = findEntry(snapshot, predicate);
       if (!entry) continue;
       await clickRef(job, entry.ref);
-      await agentBrowser(job, "wait", "800");
+      await sleep(800);
       const after = await snapshotText(job);
       lastSnapshot = after;
       throwIfProviderTransientError(job, after, "opening model configuration");
@@ -1626,7 +1460,7 @@ async function openModelConfiguration(job) {
 
       if (configureEntry) {
         await clickRef(job, configureEntry.ref);
-        await agentBrowser(job, "wait", "1200");
+        await sleep(1200);
         const postConfigure = await snapshotText(job);
         lastSnapshot = postConfigure;
         throwIfProviderTransientError(job, postConfigure, "opening model configuration");
@@ -1636,10 +1470,10 @@ async function openModelConfiguration(job) {
     }
 
     if (composerControlsVisible(lastSnapshot, job) && !snapshotHasModelOpener(lastSnapshot)) {
-      await agentBrowser(job, "wait", "1000");
+      await sleep(1000);
       continue;
     }
-    await agentBrowser(job, "wait", "500");
+    await sleep(500);
   }
 
   throw new Error("Could not open model configuration UI");
@@ -1679,7 +1513,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
       lastCloseAttemptAt = Date.now();
       if (!(await maybeClickLabeledEntry(job, CHATGPT_LABELS.close, { kind: "button" }))) {
         await agentBrowser(job, "press", "Escape").catch(() => undefined);
-        await agentBrowser(job, "wait", "100");
+        await sleep(100);
         const afterEscape = await snapshotText(job);
         if (snapshotHasModelConfigurationUi(afterEscape)) {
           const composer = findEntry(afterEscape, (candidate) => isChatGptComposerEntry(candidate) && !candidate.disabled);
@@ -1755,17 +1589,17 @@ async function configurePowerSlider(job) {
     if (!key) throw new Error(`Unknown thinking-effort slider position: ${state.label}`);
     const before = state.index;
     await agentBrowser(job, "press", key);
-    await agentBrowser(job, "wait", "250");
+    await sleep(250);
     steps += 1;
     let next = await readPowerSliderState(job);
     if (next && next.index === before) {
-      await agentBrowser(job, "wait", "500");
+      await sleep(500);
       next = await readPowerSliderState(job);
       if (next && next.index === before) {
         await log(`Thinking-effort slider still reads ${next.label} after ${key}; refocusing and pressing once more`);
         if (!(await focusPowerSlider(job))) throw new Error("Could not focus the ChatGPT thinking-effort slider");
         await agentBrowser(job, "press", key);
-        await agentBrowser(job, "wait", "500");
+        await sleep(500);
         steps += 1;
         next = await readPowerSliderState(job);
       }
@@ -1879,7 +1713,7 @@ async function configureModel(job) {
     );
     if (selectModel) {
       await clickRef(job, selectModel.ref);
-      await agentBrowser(job, "wait", "500");
+      await sleep(500);
       const modelSnapshot = await snapshotText(job);
       transitionedPowerSelection = snapshotWeaklyMatchesRequestedModel(modelSnapshot, job.selection)
         || (job.selection.modelFamily === "pro" && (job.selection.effort || "standard") === "extended"
@@ -1910,7 +1744,7 @@ async function configureModel(job) {
   if (!alreadyConfiguredInUi && !familyAlreadySelectedInUi && familyEntry) {
     const clickedCompactControl = matchesCompactIntelligenceControlLabel(familyEntry.label);
     await clickRef(job, familyEntry.ref);
-    await agentBrowser(job, "wait", "800");
+    await sleep(800);
     familySnapshot = await snapshotText(job);
     verificationSnapshot = familySnapshot;
     compactSelectionVerifiedAfterClick = clickedCompactControl && snapshotHasClosedCompactSelection(familySnapshot, job.selection);
@@ -1943,13 +1777,13 @@ async function configureModel(job) {
           throw new Error(`Could not open effort dropdown for requested effort: ${effortLabel}`);
         }
       } else {
-        await agentBrowser(job, "wait", "300");
+        await sleep(300);
         if (job.selection.modelFamily === "pro" && await maybeClickLabeledEntry(job, `Pro ${effortLabel}`, { kind: "menuitemradio" })) {
           // Current ChatGPT exposes Pro effort choices as nested menu radio items.
         } else {
           await clickLabeledEntry(job, effortLabel, { kind: "option" });
         }
-        await agentBrowser(job, "wait", "400");
+        await sleep(400);
         const effortSnapshot = await snapshotText(job);
         verificationSnapshot = effortSnapshot;
         const selectedEffort = findEntry(
@@ -1971,7 +1805,7 @@ async function configureModel(job) {
       || (desiredAutoSwitchState && currentAutoSwitchState === undefined && snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection));
     if (!compactInstantAlreadyVerified && currentAutoSwitchState !== desiredAutoSwitchState && (desiredAutoSwitchState || currentAutoSwitchState === true)) {
       await clickAutoSwitchToThinkingControl(job);
-      await agentBrowser(job, "wait", "400");
+      await sleep(400);
       verificationSnapshot = await snapshotText(job);
       familySnapshot = verificationSnapshot;
     }
@@ -2030,7 +1864,7 @@ async function enableDeepResearch(job) {
   // The menu animates open; a fixed wait snapshotted it half-open once. Poll until expanded.
   let entry;
   for (let attempt = 0; attempt < 10 && !entry; attempt += 1) {
-    await agentBrowser(job, "wait", "300");
+    await sleep(300);
     const menu = await snapshotText(job);
     entry = findEntry(menu, isDeepResearchMenuEntry);
     if (!entry && !menu.includes(`button "${CHATGPT_LABELS.addFiles}" [expanded=true`)) {
@@ -2043,7 +1877,7 @@ async function enableDeepResearch(job) {
     throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research is not offered in the composer tools menu for this account or page");
   }
   await clickRef(job, entry.ref);
-  await agentBrowser(job, "wait", "800");
+  await sleep(800);
   const after = await snapshotText(job);
   if (!(await deepResearchToolSelected(job, after))) {
     throw new OracleWorkerError("deep_research_toggle_not_found", "Deep Research did not appear in the composer after selecting it");
@@ -2061,12 +1895,12 @@ async function configureGrokModel(job) {
   const modelButton = findEntry(snapshot, (candidate) => candidate.kind === "button" && candidate.label === GROK_LABELS.modelSelect && !candidate.disabled);
   if (!modelButton) throw new Error("Could not find Grok model selector");
   await clickRef(job, modelButton.ref);
-  await agentBrowser(job, "wait", "500");
+  await sleep(500);
   const menuSnapshot = await snapshotText(job);
   const heavy = findEntry(menuSnapshot, (candidate) => ["menuitem", "menuitemradio", "option", "button"].includes(candidate.kind || "") && /^Heavy\b/i.test(String(candidate.label || "")) && !candidate.disabled);
   if (!heavy) throw new Error("Could not find Grok Heavy model option");
   await clickRef(job, heavy.ref);
-  await agentBrowser(job, "wait", "800");
+  await sleep(800);
   const after = await snapshotText(job);
   if (!/\bHeavy\b/i.test(after)) {
     if (after.includes('link "Sign in"') || after.includes('button "Sign in"')) {
@@ -2101,7 +1935,7 @@ async function uploadArchive(job) {
       throw new Error(`Could not find "${labels.addFiles}" button`);
     }
     await clickRef(job, addFilesEntry.ref);
-    await agentBrowser(job, "wait", "500");
+    await sleep(500);
     await agentBrowser(job, "upload", "input[type=file]", job.archivePath);
   }
   await log(`Selected archive for upload: ${job.archivePath}`);
@@ -2111,7 +1945,7 @@ async function uploadArchive(job) {
     while (Date.now() < deadline) {
       await heartbeat();
       const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
-      const errorText = detectUploadErrorText(`${snapshot}\n${body}`);
+      const errorText = detectProviderSignals({ snapshot }).uploadError;
       if (errorText) {
         throw new Error(`Upload error detected: ${errorText}`);
       }
@@ -2316,16 +2150,16 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       continue;
     }
     await noteOwnConversation();
-    const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
+    const snapshot = await snapshotText(job);
     const hasStopStreaming = isGrokJob(job)
       ? snapshot.includes(GROK_LABELS.stop)
       : chatGptGenerationActive({ snapshot, domStopButton: observation?.stopPresent });
     const hasRetryButton = snapshot.includes('button "Retry"');
     throwIfProviderTransientError(job, snapshot, "waiting for response completion");
-    const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
     const messages = observation ? observation.messages : await assistantMessages(job);
     const targetMessage = messages[baselineAssistantCount];
     const targetText = targetMessage?.text || "";
+    const responseFailureText = await detectCompletionFailure({ hasStopStreaming, hasRetryButton, turnText: targetText, readSignals: () => readPageSignals(job) });
     // The bound turn must exist before it can be finished. Generation state is the authority for
     // "finished"; assistant-action labels are not, because ChatGPT renames them on rehydration.
     const hasTargetCopyResponse = Boolean(targetMessage);
@@ -2345,7 +2179,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
           stableCount = 0;
           await log(`Response delivery failed (${responseFailureText}); clicking Retry once`);
           await clickRef(job, retryEntry.ref);
-          await agentBrowser(job, "wait", "1000").catch(() => undefined);
+          await sleep(1000).catch(() => undefined);
           continue;
         }
       }
@@ -2729,7 +2563,7 @@ async function collectBoundResult(job, binding, fallbackText = "") {
           } else {
             const expression = "(" + captureDownload.toString() + ")(" + JSON.stringify(candidate.selector) + ")";
             try {
-              downloaded = await evalPage(job, toAsyncJsonScript(`return await ${expression};`));
+              downloaded = await withHeartbeatWhile(() => evalPage(job, toAsyncJsonScript(`return await ${expression};`), { timeoutMs: 105_000 }));
             } catch (browserCaptureError) {
               nativeDownloadPath = join(artifactsDir, `.download-${candidate.candidateId}-${randomUUID()}`);
               await log(`Browser byte capture for ${candidate.candidateId} did not observe a file; using the driver's pre-armed native download listener.`);
@@ -2971,7 +2805,7 @@ async function run() {
         message: `Job failed: ${message}`,
         patch: {
           error: message,
-          ...(error instanceof OracleWorkerError ? { errorCode: error.code } : {}),
+          ...((error instanceof OracleWorkerError || error instanceof AgentBrowserTimeoutError) ? { errorCode: error.code } : {}),
           cleanupPending: true,
         },
       }));
@@ -3116,6 +2950,7 @@ async function runRecollection() {
       const message = redactTransportSecrets(error.message || String(error));
       await log("Recollection failed: " + message);
       await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,
+        ...((error instanceof OracleWorkerError || error instanceof AgentBrowserTimeoutError) ? { errorCode: error.code } : {}),
         collectionRequiredMissing: [...new Set([...(job.collectionRequiredMissing || []), "bound_response_capture"])] }));
     } finally {
       if (acquired && !shuttingDown) await finalizeRecollection(await cleanupRuntime(currentJob));

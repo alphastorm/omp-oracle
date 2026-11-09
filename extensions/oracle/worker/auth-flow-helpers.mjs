@@ -4,6 +4,7 @@
 // Usage: Imported by auth-bootstrap.mjs and sanity tests to exercise auth classification behavior without driving a browser.
 // Invariants/Assumptions: Inputs are already captured snapshots/probe results from the live browser session; outputs are deterministic and side-effect free.
 
+import { detectProviderSignals } from "./provider-page-signals.mjs";
 import { snapshotHasUsableComposerControls } from "./chatgpt-ui-helpers.mjs";
 
 /** @typedef {import("./auth-flow-helpers.d.mts").OracleAuthLoginProbe} OracleAuthLoginProbe */
@@ -60,7 +61,7 @@ export function buildAccountChooserCandidateLabels(name) {
  * @param {{
  *   url: string;
  *   snapshot: string;
- *   body: string;
+ *   signals: import("./provider-page-signals.d.mts").ProviderPageSignals;
  *   probe?: OracleAuthLoginProbe;
  *   allowedOrigins: readonly string[];
  *   cookieSourceLabel: string;
@@ -70,20 +71,12 @@ export function buildAccountChooserCandidateLabels(name) {
  * @returns {OracleAuthPageClassification}
  */
 export function classifyChatAuthPage(args) {
-  const text = `${args.snapshot}\n${args.body}`;
+  const detected = detectProviderSignals(args);
   const onAllowedOrigin = args.allowedOrigins.some((origin) => args.url.startsWith(origin));
   const hasUsableComposer = snapshotHasUsableComposerControls(args.snapshot);
 
-  const challengePatterns = [
-    /just a moment/i,
-    /verify you are human/i,
-    /cloudflare/i,
-    /captcha|turnstile|hcaptcha/i,
-    /unusual activity detected/i,
-    /we detect suspicious activity/i,
-  ];
-  if (challengePatterns.some((pattern) => pattern.test(text))) {
-    if (/verification successful|waiting for chatgpt\.com to respond/i.test(text)) {
+  if (detected.challenge) {
+    if (detected.challenge === "settling") {
       return { state: "unknown", message: "ChatGPT verification is still settling." };
     }
     return {
@@ -94,7 +87,7 @@ export function classifyChatAuthPage(args) {
     };
   }
 
-  if (/http error 431|request header or cookie too large/i.test(text)) {
+  if (detected.headerTooLarge) {
     return {
       state: "login_required",
       message:
@@ -103,13 +96,7 @@ export function classifyChatAuthPage(args) {
     };
   }
 
-  const outagePatterns = [
-    /something went wrong/i,
-    /a network error occurred/i,
-    /an error occurred while connecting to the websocket/i,
-    /try again later/i,
-  ];
-  if (outagePatterns.some((pattern) => pattern.test(text))) {
+  if (detected.transient) {
     return { state: "transient_outage_error", message: `ChatGPT is showing a transient outage/error page. Logs: ${args.logPath}` };
   }
 

@@ -6,7 +6,7 @@ import { classifyChatAuthPage, isAuthNavigationError, normalizeLoginProbeResult 
 const base = {
   url: "https://chatgpt.com/",
   snapshot: "",
-  body: "",
+  signals: { text: "", composerPresent: false },
   allowedOrigins: ["https://chatgpt.com"],
   cookieSourceLabel: "configured Chrome profile",
   runtimeProfileDir: "/tmp/oracle-runtime-test",
@@ -41,7 +41,7 @@ test("Cloudflare verification may settle but a blocking challenge remains distin
   assert.equal(
     classifyChatAuthPage({
       ...base,
-      body: "Verification successful. Waiting for chatgpt.com to respond. Cloudflare",
+      signals: { text: "Verification successful. Waiting for chatgpt.com to respond. Cloudflare", composerPresent: false },
       probe: { ok: false, status: 403 },
     }).state,
     "unknown",
@@ -49,7 +49,7 @@ test("Cloudflare verification may settle but a blocking challenge remains distin
   assert.equal(
     classifyChatAuthPage({
       ...base,
-      body: "Cloudflare: verify you are human",
+      signals: { text: "Cloudflare: verify you are human", composerPresent: false },
       probe: { ok: false, status: 403 },
     }).state,
     "challenge_blocking",
@@ -72,4 +72,10 @@ test("only CDP navigation interruptions make an auth read retryable", () => {
   for (const message of ["The isolated oracle browser was closed before auth verification completed.", "agent-browser timed out after 30000ms"]) {
     assert.equal(isAuthNavigationError(new Error(message)), false, message);
   }
+});
+
+
+test("prompt and sidebar phrases are not authentication challenges", () => {
+  const snapshot = '- textbox "Chat with ChatGPT" [ref=e1]: rate limit Too many requests\n  upload failed could not upload\n  Something went wrong\n- link "Cloudflare captcha notes" [ref=e2]\n  - button "More options" [ref=e3]\n- button "Add files and more" [ref=e4]\n- button "Send prompt" [ref=e5]';
+  assert.equal(classifyChatAuthPage({ ...base, snapshot, probe: { status: 200, bodyHasId: true } }).state, "authenticated_and_ready");
 });

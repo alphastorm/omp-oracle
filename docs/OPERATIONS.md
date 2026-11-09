@@ -457,13 +457,32 @@ citation footnotes if the export cannot be collected.
 
 Inspect `prompt-send-state` in `oracle_read({ jobId })` (or `promptSendState` in `job.json`): resubmit immediately when it is `not_sent`; open `chatUrl` in Chrome to check the thread first when it is `attempted`; and use `oracle_read({ jobId, action: "recollect" })` or `/oracle-followup` when it is `accepted`.
 
+### A driver command timed out
+
+`errorCode: agent_browser_timeout` identifies a bounded worker command, not the three-minute stale-heartbeat guard.
+The default is 60 seconds; `PI_ORACLE_AGENT_BROWSER_TIMEOUT_MS` accepts a positive integer clamped to 5000–150000 ms.
+Navigation (90 s), connect (30 s), insertion (120 s), status/diagnostics (15 s), and artifact capture (90/105 s) have
+explicit bounds. The worker never retries a timed-out send. Check `prompt-send-state` before doing anything else;
+`attempted` means the provider may already have received it. A composer digest mismatch leaves `not_sent`.
+`agent_browser_unsupported` instead means the driver version floor failed; upgrade agent-browser before retrying.
+
+### Old agent-browser session sidecars
+
+New teardown removes each absent session's `.config` and `.target`; old releases may have left conversation URLs in
+`.target` files. There is no automatic historical sweep. With no Oracle jobs or auth bootstrap active, run
+`agent-browser session list` and stop if it fails. Resolve the directory using `AGENT_BROWSER_SOCKET_DIR`, else
+`XDG_RUNTIME_DIR/agent-browser`, else `~/.agent-browser` (system-temp `agent-browser` only when no home exists).
+If `AGENT_BROWSER_NAMESPACE` is set, use the driver's sanitized `namespaces/<namespace>/run` subdirectory.
+For each old Oracle session that is **not listed**, remove only `<session>.config` and `<session>.target` in that
+directory. Never remove another tool's files, live session files, or whole driver directories.
+
 ### Do not drive the managed Chrome while jobs run
 
 Connecting another browser automation tool (for example an agent's browser tool attached to the same CDP endpoint) to the managed or relay Chrome adopts its visible tab and can navigate a running job's tab away from its conversation, forcing the worker to reopen the conversation and reattach any Deep Research frame. Run `/oracle-status` to confirm no job is active before attaching another browser tool, or inspect conversations in a separate browser.
 
 ### The prompt arrived with unrelated text in front of it (relay mode)
 
-ChatGPT restores saved composer drafts in a signed-in Chrome session. The worker clears the composer before filling; if a draft prefix still appears, delete the draft in Chrome's ChatGPT composer and check `prompt-send-state` before retrying.
+ChatGPT restores saved composer drafts in a signed-in Chrome session. The worker clears the composer before filling and verifies the normalized editor digest before send. A mismatch stops with "nothing was sent"; clear the saved draft and inspect the job diagnostics before retrying.
 
 ### You want more details about a failed run
 
@@ -567,6 +586,7 @@ Defaults and validation live in `DEFAULT_CONFIG` and `validateOracleConfig` in
 | `PI_ORACLE_JOBS_DIR` | `/tmp` | Job directory root (`${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`) |
 | `PI_ORACLE_STATE_DIR` | `/tmp/pi-oracle-state` | Lock, queue, runtime-lease, conversation-lease, and managed-browser state root |
 | `PI_ORACLE_CP_PATH` | `cp` on `PATH` | `cp` binary used on macOS when `browser.cloneStrategy` is `"apfs-clone"` |
+| `PI_ORACLE_AGENT_BROWSER_TIMEOUT_MS` | `60000` | Worker default driver-command timeout; positive integer clamped to `5000`–`150000` ms, with explicit operation-specific bounds |
 | `PI_ORACLE_NODE_PATH` | `process.execPath` (when `node`) or `node` | Node executable used to spawn detached workers |
 | `PI_ORACLE_MANAGED_BROWSER_IDLE_MS` | `120000` (2 minutes) | Positive integer milliseconds before the managed-browser keeper quits an Oracle-started Chrome with no jobs or pages |
 | `AGENT_BROWSER_PATH` | `/opt/homebrew/bin/agent-browser`, `/usr/local/bin/agent-browser`, or `PATH` | `agent-browser` executable path override |

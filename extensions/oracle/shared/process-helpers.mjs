@@ -6,7 +6,9 @@
 
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
 import { sleep } from "./time-helpers.mjs";
 
@@ -40,6 +42,21 @@ export function killProcess(child) {
     return;
   }
   child.kill("SIGKILL");
+}
+
+/** A timeout is distinct from a driver command's non-zero exit. */
+export class CommandTimeoutError extends Error {
+  /** @param {string} command @param {string[]} args @param {number} timeoutMs @param {string} stdout @param {string} stderr */
+  constructor(command, args, timeoutMs, stdout, stderr) {
+    super(`${basename(command)} ${args[0] || ""} timed out after ${timeoutMs}ms${stderr ? `: ${stderr}` : ""}`);
+    this.name = "CommandTimeoutError";
+    this.code = "ETIMEDOUT";
+    this.command = command;
+    this.args = args;
+    this.timeoutMs = timeoutMs;
+    this.stdout = stdout;
+    this.stderr = stderr;
+  }
 }
 
 /**
@@ -93,7 +110,7 @@ export function runCommand(command, args, options = {}) {
       if (timedOut) {
         const message = stderr || stdout || `${command} timed out after ${timeoutMs}ms`;
         if (allowFailure) resolve({ code, stdout: stdout.trim(), stderr: message, timedOut });
-        else reject(new Error(message));
+        else reject(new CommandTimeoutError(command, args, /** @type {number} */ (timeoutMs), stdout.trim(), stderr.trim()));
         return;
       }
       if (code === 0 || allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim(), timedOut });
@@ -126,8 +143,49 @@ export function resolveAgentBrowserBinary(env = process.env) {
  * workers parse. Oracle uses no page tools, and earlier drivers ignore the variable.
  * @param {NodeJS.ProcessEnv} [env]
  */
-export function disableAgentBrowserWebMcp(env = process.env) {
+export function applyAgentBrowserEnvDefaults(env = process.env) {
   env.AGENT_BROWSER_NO_WEBMCP = "1";
+  env.AGENT_BROWSER_NO_VERSION_CHECK = "1";
+}
+
+/** @param {NodeJS.ProcessEnv} [env] */
+export function withAgentBrowserEnvDefaults(env = process.env) {
+  const defaults = { ...env };
+  applyAgentBrowserEnvDefaults(defaults);
+  return defaults;
+}
+
+/** Resolve exactly as agent-browser v0.41.2's get_socket_dir, including namespaces.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ platform?: string; homedir?: () => string; tmpdir?: () => string }} [options]
+ */
+export function resolveAgentBrowserSocketDir(env = process.env, options = {}) {
+  const home = (options.homedir || homedir)();
+  const base = env.AGENT_BROWSER_SOCKET_DIR || (env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "agent-browser")
+    : home ? join(home, ".agent-browser") : join((options.tmpdir || tmpdir)(), "agent-browser"));
+  // Rust sanitizes each character before lowercasing; retain that order for Unicode.
+  let namespace = "";
+  let separator = false;
+  for (const c of env.AGENT_BROWSER_NAMESPACE || "") {
+    if (/[\p{L}\p{N}]/u.test(c)) { namespace += c.toLowerCase(); separator = false; }
+    else if (namespace && !separator) { namespace += c === "_" ? "_" : "-"; separator = true; }
+  }
+  namespace = namespace.replace(/[-_]+$/, "");
+  return namespace ? join(base, "namespaces", namespace, "run") : base;
+}
+
+/** Remove only known private sidecars, after the caller proves the session is absent.
+ * @param {string} sessionName @param {NodeJS.ProcessEnv} [env] @returns {Promise<string[]>}
+ */
+export async function removeAgentBrowserSessionSidecars(sessionName, env = process.env) {
+  if (!/^[\p{L}\p{N}_-]+$/u.test(sessionName)) return [];
+  const removed = [];
+  for (const suffix of ["config", "target"]) {
+    const path = join(resolveAgentBrowserSocketDir(env), `${sessionName}.${suffix}`);
+    try { await rm(path); removed.push(path); }
+    catch (error) { if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ENOENT") throw error; }
+  }
+  return removed;
 }
 
 /**
@@ -138,7 +196,7 @@ export function disableAgentBrowserWebMcp(env = process.env) {
  * @returns {Promise<boolean>}
  */
 async function agentBrowserSessionListed(binary, sessionName) {
-  const result = await runCommand(binary, ["session", "list"], { allowFailure: true, timeoutMs: 5_000 });
+  const result = await runCommand(binary, ["session", "list"], { allowFailure: true, timeoutMs: 5_000, env: withAgentBrowserEnvDefaults() });
   if (result.code !== 0) throw new Error(`agent-browser session inventory is unavailable: ${result.stderr || result.stdout || `exit code ${result.code}`}`);
   return result.stdout.split("\n").some((line) => line.trim() === sessionName);
 }
@@ -156,14 +214,18 @@ async function agentBrowserSessionListed(binary, sessionName) {
  * @returns {Promise<boolean>} whether a listed session was closed
  */
 export async function closeAgentBrowserSession(binary, sessionArgs, sessionName, { timeoutMs, killGraceMs }) {
-  if (!(await agentBrowserSessionListed(binary, sessionName))) return false;
-  const result = await runCommand(binary, [...sessionArgs, "close"], { allowFailure: true, timeoutMs, killGraceMs });
+  if (!(await agentBrowserSessionListed(binary, sessionName))) {
+    await removeAgentBrowserSessionSidecars(sessionName);
+    return false;
+  }
+  const result = await runCommand(binary, [...sessionArgs, "close"], { allowFailure: true, timeoutMs, killGraceMs, env: withAgentBrowserEnvDefaults() });
   if (result.code !== 0) throw new Error(result.stderr || result.stdout || `agent-browser close exited with code ${result.code}`);
   const deadline = Date.now() + timeoutMs;
   while (await agentBrowserSessionListed(binary, sessionName)) {
     if (Date.now() >= deadline) throw new Error(`agent-browser session ${sessionName} is still active after close`);
     await sleep(50);
   }
+  await removeAgentBrowserSessionSidecars(sessionName);
   return true;
 }
 

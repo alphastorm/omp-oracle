@@ -55,6 +55,11 @@ matching the driver's session-name character rules. Use the current keys `browse
 and `browser.authSeedProfileDir`: the legacy `browser.sessionName` and `browser.profileDir`
 mapping runs after defaults are merged and therefore does not override those defaults.
 
+Driver eval output is decoded identically in the job and auth workers: the bare `undefined` token emitted by
+agent-browser 0.41.2 becomes JavaScript `undefined` (the earlier `null` token still becomes `null`). Worker and
+host session-helper commands set `AGENT_BROWSER_NO_WEBMCP=1` and `AGENT_BROWSER_NO_VERSION_CHECK=1` so page tool
+announcements and Chrome release/CVE checks do not alter parsed output or add background network requests.
+
 ## Providers
 
 | Provider | Selection | Archive format | Upload ceiling | Transports | Status |
