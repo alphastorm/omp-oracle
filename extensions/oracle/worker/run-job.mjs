@@ -2849,8 +2849,6 @@ async function run() {
 
 async function runRecollection() {
   // Separate entrypoint: never reaches configure/upload/composer/send or the submit queue.
-  // Checked before any lease or job mutation, so an unsupported driver leaves the completed job untouched.
-  await assertAgentBrowserVersionSupported(AGENT_BROWSER_BIN);
   await withLock(ORACLE_STATE_DIR, "recollect", jobId, { processPid: process.pid }, async () => {
     currentJob = await readJob();
     const explicit = process.argv[4] ? JSON.parse(process.argv[4]) : undefined;
@@ -2878,6 +2876,9 @@ async function runRecollection() {
     const priorWorker = { runtimeSessionName: currentJob.runtimeSessionName, workerPid: currentJob.workerPid, workerStartedAt: currentJob.workerStartedAt,
       cleanupPending: currentJob.cleanupPending, cleanupWarnings: currentJob.cleanupWarnings,
       cleanupAttemptCount: currentJob.cleanupAttemptCount, cleanupRetryAt: currentJob.cleanupRetryAt };
+    // Checked after the request is validated and before any lease or job mutation, so an unsupported
+    // driver leaves the completed job untouched and invalid input fails without touching the driver.
+    await assertAgentBrowserVersionSupported(AGENT_BROWSER_BIN);
     let acquired = false;
     await withLock(ORACLE_STATE_DIR, "admission", "global", { processPid: process.pid, jobId }, async () => {
       currentJob = await readJob();
