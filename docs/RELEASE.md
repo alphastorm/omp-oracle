@@ -162,6 +162,107 @@ time they were written, not this fork; current support claims live in
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
 Artifact run ids live under the gitignored `.artifacts/` root.
 
+#### 0.4.14 (2026-11-09, `0137c0c`)
+
+- Scope, each pull request squash-merged except the upstream sync:
+  - [#33](https://github.com/alphastorm/omp-oracle/pull/33), fast-forwarded as merge `65b10b4`
+    (second parent upstream `bf2c031`): the upstream sync. The fork adopts upstream #74's Pi 1.5.0
+    floor as its development baseline and drops the `undici` and `minimatch` overrides, since Pi
+    1.5.0 pins patched versions. Nothing else was ported (`docs/UPSTREAM.md`).
+  - [#34](https://github.com/alphastorm/omp-oracle/pull/34) `a686ddf` and
+    [#35](https://github.com/alphastorm/omp-oracle/pull/35) `fa51503`: the release workflow
+    publishes only a tag on `main`, from the `npm-publish` environment, which admits only `v*`
+    tags. Repository rulesets limit `v*` tags to admins, block force pushes and deletion of
+    `main`, and require `local-gate` for non-admins.
+  - [#36](https://github.com/alphastorm/omp-oracle/pull/36) `bf90eec`: sanity harness stages 0–1.
+    It removes 234 source-text pins that behavioral tests already cover, keeps 179, and moves the
+    fixtures into one module.
+  - [#37](https://github.com/alphastorm/omp-oracle/pull/37) `ec65d81`: host fixes. Every marked
+    wake-up is delivered; a rejected `sendUserMessage` is handled; test files are left out of the
+    package; `sessionPrefix` characters are checked; preflight enforces the agent-browser 0.41.2
+    floor; the host closes only sessions the driver lists.
+  - [#38](https://github.com/alphastorm/omp-oracle/pull/38) `483f11c`: job and state-root
+    ownership checks, cached and batched process start-time reads, and archive probe compression.
+  - [#39](https://github.com/alphastorm/omp-oracle/pull/39) `0e8b19c`: worker fixes. Provider
+    signals are isolated from prompt and history text; the prompt goes through
+    `agent-browser batch` stdin with a digest check; driver commands are bounded; the driver
+    version is checked at worker start; driver sidecars are removed. The first CI run failed on a
+    runner with no driver installed, because the recollection driver check ran before request
+    validation. That was fixed in the pull request before merge and reproduced red, then green,
+    in a container with no driver.
+  - Red-before/green-after evidence is recorded in each pull request.
+- Preconditions: `main` was clean and even with origin. Upstream `main` was at `bf2c031`, the sync
+  that #33 records. The design proposal #17 was open and is not part of this release. No oracle
+  worker, non-terminal job, or Chrome on the managed profile was running.
+- Live pre-release validation ran through the normal worker on a throwaway copy of the managed
+  profile, from source at `bd4254d`. That is the #39 tree before the recollection-check reorder.
+  - `8d496058` instant, 46.5 s, with a 59 KB prompt full of trigger phrases. The composer digest
+    matched 55,860 normalized characters, and the reply counted all 120 paragraphs.
+  - `74a59b72`, its same-thread follow-up, 31.5 s: same `chatUrl`, `followUpToJobId` set,
+    `responseIndex` 1.
+  - `31fbb437` thinking_light, 33.5 s.
+  - The private driver socket directory was empty afterwards.
+  - Before the sidebar fix, an `instant` job failed one second after Send with
+    `transient outage/rate-limit page … Too many requests`. ChatGPT had titled the new chat in
+    the sidebar with the prompt. The fix's regression replays that snapshot shape.
+- Prep commit `0137c0c` (`chore(release): prepare omp-oracle 0.4.14`). The preset proof ran on it
+  in one runner invocation (8/8, 319 s), through the normal worker on a throwaway copy of the
+  managed profile. The usual local proof model was unavailable; a hosted model drove the proof.
+  - Jobs: `4afea960` pro_standard 40.9 s, `cc462530` pro_extended 41.6 s, `e1a902f0`
+    thinking_light 41.1 s, `4895557c` thinking_standard 40.8 s, `c975745c` thinking_extended
+    36.2 s, `3f025896` thinking_heavy 34.9 s, `b0319d86` instant 40.0 s, `1710d484`
+    instant_auto_switch 41.6 s.
+  - Each worker log records one slider read, the stop it set (`Pro (5 of 5)` twice,
+    `Medium (2 of 5)` twice, `High (3 of 5)`, `Extra High (4 of 5)`, `Instant (1 of 5)` twice),
+    and the composer digest match. No job reopened the picker or took a stale-stop or
+    missing-turn reload.
+  - `observedSelection.effortLabel` is `null` after submission, as it has been since 0.4.10;
+    `modelLabel` names the stop.
+- `release:check` passed on `0137c0c` in 154 s: `verify:oracle` (126 helper tests), the
+  capture proof (synthetic, zero sends), the preset check, and doctor (0 failures).
+  - Crabbox macOS: platform-build 41.6 s, real-extension 4.2 s. Ubuntu: 39.0 s and 6.3 s, on
+    the smoke image rebuilt with agent-browser 0.41.2.
+  - Run ids `run-1794252236841-ze6rnk`, `run-1794252245050-b4uuf3`,
+    `run-1794252278399-gp6yjy`, `run-1794252284015-byakc4`. Gate `pack:check`: 91 files.
+- Release: `v0.4.14` at `0137c0c` pushed. Release run
+  [42683232999](https://github.com/alphastorm/omp-oracle/actions/runs/42683232999): `verify`
+  19:25:45–19:27:08Z, `publish` 19:27:13–19:27:23Z.
+  - `verify` pack: shasum `ef8870b072318866f9da44dfd8a608587c8ab27d`, integrity
+    `sha512-kmCS3Puq95TWN…Rm0v3a1qMBucw==`, 91 files.
+  - `publish` logged `Signed provenance statement`, transparency log index **3768795825**, and
+    `+ omp-oracle@0.4.14`.
+  - The [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.14) uses
+    the CHANGELOG section.
+- Registry, visible within about two minutes of the publish:
+  - `dist.shasum` equals the `verify` pack shasum; `dist.fileCount` 91; `dist-tags.latest`
+    `0.4.14`.
+  - The SLSA provenance names commit `0137c0c821a8d78abd11217548b21b78d867ef81`,
+    `refs/tags/v0.4.14`, `.github/workflows/release.yml`, run attempt 1.
+  - Consumer check: `npm audit signatures` reported 2 verified registry signatures and 1
+    verified attestation.
+- MacBook activation: `omp plugin uninstall omp-oracle` and `omp plugin install
+  omp-oracle@0.4.14` passed extension validation. `omp plugin list` confirmed 0.4.14 on Oh My Pi
+  18.18.3. The global agent-browser had moved from 0.39.1 to 0.41.2 earlier in the release work.
+- Second workstation:
+  - The global agent-browser moved from 0.39.1 to 0.41.2 while no worker or driver session ran,
+    and 12 stale `oracle-*` driver sidecars were removed.
+  - A dry run validated the plugin install. `git pull --ff-only` and
+    `bun install --frozen-lockfile` followed, leaving the worktree clean and even with origin.
+  - A model-free `/oracle-run preflight` from the installed entry point reported `ready: true` on
+    the managed profile under Oh My Pi 18.18.3. No browser launched and nothing was sent.
+- Post-install job `2b7647d8` ran through the installed entry point (`pro_standard`,
+  `package.json`, 42.7 s), with the operator's configuration pointed at a throwaway copy of the
+  managed profile.
+  - The job completed with `extensionProvenance.packageVersion` 0.4.14 and the installed
+    `sourcePath`. The slider went from `Instant (1 of 5)` to `Pro (5 of 5)`, the composer digest
+    matched, and the marker came back. The account's saved tier is Pro again.
+  - The driving agent's feedback: the preflight and submit output include internal paths
+    (session file, profile directory, job paths) that bury the fact that the job was admitted.
+- Sessions started before the install keep the old extension code until restarted: 3 on the
+  MacBook (including the release session) and 1 on the second workstation.
+- Not exercised: no live `/oracle-auth` run, and no Deep Research job. No Deep Research code
+  changed, and `proof:capture` covers the research-widget capture offline.
+
 #### 0.4.13 (2026-11-02, `d0724e1`)
 
 - Scope: [#31](https://github.com/alphastorm/omp-oracle/pull/31), squash `8d556fa`, the
