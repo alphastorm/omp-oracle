@@ -4,6 +4,12 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Changed
+
+- `npm run typecheck` compiles `tsconfig.extension.json`, and the root `tsconfig.json` only references the extension and both worker projects, so editors and language servers check each file with its own project's options (#32)
+
 ## 0.4.13 - 2026-11-02
 
 ### Fixed
