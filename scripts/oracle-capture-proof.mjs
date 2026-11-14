@@ -10,6 +10,10 @@ import { createServer } from 'node:http';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import ts from 'typescript';
+import { EventEmitter } from 'node:events';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as lifecycle from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
+import { withLock } from '../extensions/oracle/worker/state-locks.mjs';
 import { AgentBrowserTimeoutError, AGENT_BROWSER_TIMEOUTS, batchInvocation } from '../extensions/oracle/worker/agent-browser-helpers.mjs';
 import { composerTextDigest, composerTextDigestExpression } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 import { detectCompletionFailure, throwIfProviderTransientError } from '../extensions/oracle/worker/provider-page-signals.mjs';
@@ -21,6 +25,7 @@ import { CHATGPT_COMPOSER_EDITOR_SELECTOR, CHATGPT_STOP_CONTROL_SELECTOR, classi
 import { chatGptGenerationActive, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStaleStopState } from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'oracle-capture-proof-'));
+console.log(`Owned synthetic browser directory: ${root}`);
 const chrome = process.env.CHROME_BIN || ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium', '/usr/bin/google-chrome'].find(existsSync);
 assert(chrome, 'Supply CHROME_BIN; this proof never attaches to an existing browser');
 const processHandle = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', `--user-data-dir=${root}/chrome`, 'about:blank'], { stdio: 'ignore' });
@@ -567,6 +572,7 @@ ${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, 
     await assert.rejects(runSend({ ok: true }, false), /did not leave the composer/);
     assert.deepEqual(sendStates.splice(0), ['attempted'], 'An unconfirmed send may have reached the provider');
   }
+  await recollectionCases({ root, origin, pages, evaluate, navigate });
   console.log(JSON.stringify({ status: 'passed', syntheticOnly: true, exactCode: true, richDom: true, genericDownload: true, frameExport: true, hostDelegatedNativeExport: true,
     researchWidgetState: true, researchCitations: true, idempotentCollection: true, partialPreserved: true, conversationGuard: true, anchoredRecollection: true,
     composerHydration: true, restoredDraftReplacement: true, frameFreeControlWait: true, promptSendState: true, oldTurnClicks: 0, sends: 0 }));
@@ -576,4 +582,306 @@ ${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, 
   processHandle.kill('SIGTERM');
   await new Promise((resolve) => { if (processHandle.exitCode !== null) resolve(); else processHandle.once('exit', resolve); });
   await rm(root, { recursive: true, force: true });
+}
+
+// These cases execute the production declarations and their serialized page expressions. Only
+// transport, time and resource ownership are fixtures; capture, collection and disk writes are real.
+async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
+  const candidateRoot = fileURLToPath(new URL('../', import.meta.url));
+  const directory = join(root, 'recollection');
+  const timeoutText = 'Timed out waiting for ChatGPT response completion';
+  const at = '2026-01-01T00:00:00.000Z';
+  const cases = [];
+  const terminal = job => [job.status, job.phase, job.error, job.completedAt,
+    lifecycle.getLatestOracleTerminalLifecycleEvent(job), job.recollectionCompletionVerifiedAt];
+  const fileMap = async directory => {
+    const result = {};
+    const visit = async (path, prefix = '') => {
+      for (const entry of (await readdir(path, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        const name = prefix + entry.name;
+        if (entry.isDirectory()) await visit(join(path, entry.name), name + '/');
+        else result[name] = (await readFile(join(path, entry.name))).toString('base64');
+      }
+    };
+    await visit(directory);
+    return result;
+  };
+  async function fixture(options = {}, sourceRoot = candidateRoot, change = text => text) {
+    await rm(directory, { recursive: true, force: true });
+    await mkdir(directory);
+    const jobPath = join(directory, 'job.json');
+    const source = change(await readFile(join(sourceRoot, 'extensions/oracle/worker/run-job.mjs'), 'utf8'));
+    const syntax = ts.createSourceFile('worker.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const declarations = names => {
+      const found = syntax.statements.filter(node => (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && names.includes(node.name?.text));
+      assert.equal(found.length, names.length, names.join(', '));
+      return found.map(node => node.getText(syntax)).join('\n');
+    };
+    const load = path => import(pathToFileURL(join(sourceRoot, 'extensions/oracle', path)).href);
+    const life = await load('shared/job-lifecycle-helpers.mjs');
+    const capture = await load('worker/response-capture.mjs');
+    const flow = await load('worker/chatgpt-flow-helpers.mjs');
+    const ui = await load('worker/chatgpt-ui-helpers.mjs');
+    const signals = await load('worker/provider-page-signals.mjs');
+    const page = { id: 'bound', text: 'Complete reply', stop: false, ...options.page };
+    let now = Date.parse(at), evaluations = 0, opens = 0, sent = options.mode !== 'ordinary', failed = false;
+    const events = { writes: [], calls: [], captures: 0, afterShutdown: 0, readsAfterOutcome: 0, history: [] };
+    const fakeProcess = new EventEmitter();
+    Object.assign(fakeProcess, { pid: process.pid, argv: ['node', 'worker', 'fixture', '--recollect'], exitCode: 0 });
+    let exited;
+    const exit = new Promise(resolve => { exited = resolve; });
+    let signalled = false, outcomeSaved = false, api;
+    const signal = () => { if (!signalled) { signalled = true; fakeProcess.emit('SIGTERM'); } };
+    fakeProcess.exit = () => exited();
+    const escape = text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+    const body = () => `<div data-message-author-role="user"><span>context-fixture.tar.zst</span></div>` + (sent
+      ? `<article data-message-author-role="assistant" ${page.id ? `data-message-id="${page.id}"` : ''} ${options.research ? 'data-report-id="report"' : ''}>${page.html ?? `<p>${escape(page.text)}</p>`}${options.artifact ? '<a download="result.txt" href="/payload.txt">Download result.txt</a>' : ''}</article>` : '')
+      + (page.stop ? '<button data-testid="stop-button">Stop</button>' : '')
+      + (page.retry ? '<button id="retry">Retry</button>' : '')
+      + '<div contenteditable="true">DO_NOT_SEND</div>';
+    const render = async () => {
+      pages.set('/c/recollection', '<!doctype html><body>' + body());
+      await evaluate(`document.body.innerHTML=${JSON.stringify(body())};`);
+    };
+    pages.set('/c/recollection', '<!doctype html><body>' + body());
+    pages.set('/payload.txt', 'artifact payload\n');
+    await navigate(`${origin}/c/recollection`);
+    const job = { id: 'fixture', status: options.mode === 'complete' ? 'complete' : 'failed', phase: options.mode === 'complete' ? 'complete' : 'failed',
+      createdAt: at, submittedAt: at, phaseAt: at, completedAt: at, error: options.mode === 'complete' ? undefined : timeoutText,
+      promptSendState: 'accepted', archivePath: '/fixture/context-fixture.tar.zst', conversationId: 'recollection', chatUrl: `${origin}/c/recollection`,
+      collectionBinding: { conversationId: 'recollection', responseIndex: 0, ...options.binding }, recollectionNeeded: true,
+      runtimeId: 'fixture', runtimeSessionName: 'prior', cleanupPending: false, responsePath: join(directory, 'response.md'),
+      promptPath: join(directory, 'prompt.txt'), selection: { provider: options.grok ? 'grok' : 'chatgpt', ...(options.research ? { tool: 'deep_research' } : {}) },
+      config: { browser: { chatUrl: `${origin}/c/recollection`, chatGptRelayEndpoint: 'synthetic' }, worker: { completionTimeoutMs: 100, pollMs: 10 }, artifacts: { capture: Boolean(options.artifact) } },
+      ...(options.proof ? { recollectionCompletionVerifiedAt: options.proof } : {}) };
+    if (options.mode === 'ordinary') Object.assign(job, { status: 'submitted', phase: 'submitted', completedAt: undefined, error: undefined, collectionBinding: undefined });
+    await writeFile(jobPath, JSON.stringify(job, null, 2) + '\n');
+    await writeFile(job.promptPath, 'Fixture prompt');
+    if (options.oldResponse !== undefined) await writeFile(job.responsePath, options.oldResponse);
+    const initial = structuredClone(job);
+    class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
+    const deps = {
+      ...life, ...capture, ...flow, ...ui, ...signals,
+      Date: Clock, process: fakeProcess, createHash, existsSync, chmod, mkdir, join, basename,
+      jobId: job.id, jobDir: directory, jobPath, ORACLE_STATE_DIR: join(root, 'locks'), AGENT_BROWSER_BIN: 'unused',
+      AgentBrowserTimeoutError, RELOAD_RECONCILE_TIMEOUT_MS: 100, RELOAD_RECONCILE_POLL_MS: 10,
+      STALE_STOP_CONTROL_MS: 120000, MISSING_TURN_RELOAD_MS: 300000, MISSING_TURN_RELOAD_MAX: 1,
+      DEEP_RESEARCH_FRAME_WAIT_MS: 100, DEEP_RESEARCH_REPORT_EXPRESSION: 'document.body.innerText', POST_SEND_SETTLE_MS: 0,
+      ARTIFACT_DOWNLOAD_TIMEOUT_MS: 1000, GROK_LABELS: { stop: 'Stop model response' },
+      readFile: async (path, ...args) => {
+        const value = await readFile(path, ...args);
+        if (path === jobPath && outcomeSaved) {
+          events.readsAfterOutcome++;
+          if (options.signalAt === 'callback') signal();
+        }
+        return value;
+      },
+      writeFile: async (path, bytes, ...args) => {
+        const text = String(bytes);
+        if (path.startsWith(jobPath + '.') && text.includes('"recollectionCompletionVerifiedAt"') && options.signalAt === 'after-callback') signal();
+        const point = path.startsWith(jobPath + '.') ? (text.includes('"recollectionCompletionVerifiedAt"') ? 'commit'
+          : text.includes('"responseCapturePath"') ? 'outcome' : text.includes('"turnSha256"') ? 'binding' : 'job')
+          : path.includes('/artifacts/') ? 'artifact' : path.includes('artifacts.json') && text.includes('"downloaded"') ? 'downloaded-manifest'
+          : ['response.block-0.txt', 'response.raw.txt', 'response.raw.html', 'response.md', 'response.capture.json', 'artifacts.json'].find(name => path.includes('/' + name + '.'));
+        if (!failed && options.failAt === point) { failed = true; throw new Error('Injected persistence failure: ' + point); }
+        return writeFile(path, bytes, ...args);
+      },
+      rename: async (from, to) => {
+        await rename(from, to); events.writes.push(to.slice(directory.length + 1));
+        if (to === jobPath) {
+          const state = JSON.parse(await readFile(to, 'utf8')); events.history.push(state);
+          if (state.responseCapturePath && !state.recollectionCompletionVerifiedAt) {
+            outcomeSaved = true;
+            if (options.signalAt === 'before-commit') signal();
+          }
+        }
+      },
+      withLock, readProcessStartedAt: () => 'fixture-start', randomUUID: () => 'fixture-session',
+      jobBlocksAdmission: () => false, usesSharedBrowser: () => true,
+      assertAgentBrowserVersionSupported: async () => {}, assertManagedBrowserUnchanged: async () => {},
+      tryAcquireRuntimeLeaseForJob: async () => { events.calls.push('runtime-lease'); return true; },
+      tryAcquireConversationLeaseForJob: async () => { events.calls.push('conversation-lease'); return true; }, releaseLease: async () => {},
+      launchBrowser: async () => { events.calls.push('launch'); }, closeBrowser: async () => {}, cleanupRuntime: async () => [],
+      withHeartbeatWhile: async task => task(), heartbeat: async () => {}, log: async () => {}, sleep: async ms => { now += ms; },
+      evalPage: async (_job, expression) => {
+        evaluations++;
+        if (signalled) events.afterShutdown++;
+        if (expression.includes('function captureScopedResponse')) events.captures++;
+        await options.beforeRead?.({ page, evaluations, opens, expression, render });
+        let result = await evaluate(expression);
+        while (typeof result === 'string') { try { result = JSON.parse(result); } catch { break; } }
+        if (options.signalAt === 'wait' && events.captures === 1) signal();
+        if (options.lateId && events.captures === 1) { page.id = 'bound'; await render(); }
+        return result;
+      },
+      agentBrowser: async (_job, command, url) => {
+        events.calls.push(command);
+        assert.equal(command, 'open', 'Only conversation navigation is permitted');
+        if (!url.startsWith(origin)) return { stdout: '' };
+        opens++;
+        if (opens > 1 && options.reloadFailure) throw new Error('Fixture reload failed');
+        await options.onOpen?.({ page, opens });
+        await render(); await navigate(url); return { stdout: '' };
+      },
+      snapshotText: async () => (page.stop ? '- button "Stop" [ref=stop]\n' : '') + (page.retry ? '- button "Retry" [ref=retry]' : ''),
+      readPageSignals: async () => ({ text: page.failure || '' }),
+      findEntry: (_snapshot, predicate) => [{ kind: 'button', label: 'Retry', ref: 'retry', disabled: false }].find(predicate),
+      clickRef: async () => { events.calls.push('retry'); throw new Error('Retry activated'); },
+      installSignalHandlers: () => {}, waitForOracleReady: async () => {}, configureModel: async () => { events.calls.push('configure'); },
+      uploadArchive: async () => { events.calls.push('upload'); }, setComposerText: async () => { events.calls.push('composer'); },
+      clickSend: async () => { events.calls.push('send'); sent = true; await render(); },
+      observeSelection: async () => undefined, enableDeepResearch: async () => true,
+      waitForStableChatUrl: async () => job.chatUrl, currentUrl: async () => job.chatUrl,
+      stripChatGptResponseChrome: text => text, captureDiagnostics: async () => {}, promoteQueuedJobsAfterCleanup: async () => {},
+      armDeepResearchFrameCapture: async () => {}, boundResearchFrame: async () => {
+        if (options.frameFailure) throw new Error('Fixture frame missing');
+        return { sessionId: 'fixture-frame', targetId: 'fixture-frame' };
+      },
+      deepResearchCdp: { evaluate: async (_session, expression) => evaluate(expression) },
+      parseEvalResult: value => value,
+    };
+    const names = ['run', 'runRecollection', 'waitForChatCompletion', 'reconcileStreamedTurn', 'waitForDeepResearchReport',
+      'captureBoundTurn', 'acquireBoundTurn', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile',
+      'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'observeTurns', 'assistantMessages',
+      'collectArtifactCandidates', 'returnToOwnConversation', 'noteOwnConversation', 'readJobUnlocked', 'readJob',
+      'writeJobUnlocked', 'mutateJob', 'OracleWorkerError', 'isGrokJob', 'providerForJob'];
+    api = new Function(...Object.keys(deps), `let currentJob, shuttingDown=false, conversationLeftEpisode=false, managedBrowserChangedError;
+      ${declarations(names)}
+      return { run, runRecollection, collectBoundResult, state:()=>currentJob };`)(...Object.values(deps));
+    return { initial, page, events, source, render, signal,
+      read: async () => JSON.parse(await readFile(jobPath, 'utf8')),
+      run: async () => {
+        let error;
+        try { await (options.mode === 'ordinary' ? api.run() : api.runRecollection()); } catch (caught) { error = caught; }
+        if (signalled) await exit;
+        return { job: JSON.parse(await readFile(jobPath, 'utf8')), files: await fileMap(directory), events, error: error?.message };
+      } };
+  }
+  const add = (name, run) => cases.push({ name, run });
+  const unchanged = (f, result) => {
+    assert.deepEqual(terminal(result.job), terminal(f.initial));
+    for (const state of result.events.history) assert.deepEqual(terminal(state), terminal(f.initial));
+  };
+  add('streaming-preserves-terminal-failure', async change => {
+    const f = await fixture({ page: { stop: true, text: 'partial' } }, candidateRoot, change);
+    const result = await f.run(); unchanged(f, result);
+    assert.match(result.job.recollectionError, /generat|completion|deadline/i);
+    assert(!result.events.writes.some(path => /response|artifacts/.test(path)));
+    const retry = await fixture({}, candidateRoot, change); assert.equal((await retry.run()).job.status, 'complete');
+  });
+  add('stable-identity-saves-verified-capture', async change => {
+    const f = await fixture({ beforeRead: async ({ page, opens, expression, render }) => {
+      if (opens > 1 && expression.includes('function captureScopedResponse')) {
+        page.text = 'Verified final bytes'; await render();
+      }
+    } }, candidateRoot, change);
+    const result = await f.run(); assert.equal(result.job.status, 'complete');
+    assert.match(result.job.recollectionCompletionVerifiedAt, /^\d{4}-\d\d-\d\dT.*Z$/);
+    assert.equal(Buffer.from(result.files['response.md'], 'base64').toString(), 'Verified final bytes');
+    assert.equal(result.job.collectionBinding.messageId, 'bound');
+    assert(result.events.history.filter(state => state.recollectionCompletionVerifiedAt).every(state => state.status === 'complete'));
+    assert(!result.events.calls.some(call => ['send', 'retry', 'composer', 'upload', 'configure'].includes(call)));
+  });
+  add('anchored-identity-required', async change => {
+    for (const lateId of [false, true]) {
+      const f = await fixture({ page: { id: undefined }, lateId }, candidateRoot, change);
+      const result = await f.run(); unchanged(f, result);
+      assert.equal(result.events.captures, 1, 'R1 refusal must precede a second read');
+      assert(!result.events.writes.some(path => /response|artifacts/.test(path)));
+      assert.deepEqual(result.job.collectionBinding, f.initial.collectionBinding);
+    }
+  });
+  add('saved-identity-must-match', async change => {
+    for (const id of ['bound', 'replacement', undefined]) {
+      const f = await fixture({ binding: { messageId: 'bound' }, page: { id } }, candidateRoot, change);
+      const result = await f.run();
+      if (id === 'bound') assert.equal(result.job.status, 'complete'); else unchanged(f, result);
+    }
+  });
+  add('empty-current-rendering-borrows-nothing', async change => {
+    for (const html of ['<button>Copy</button>', '<p>   </p>', '<pre><code class="language-markdown">   </code></pre>']) {
+      const f = await fixture({ page: { html }, oldResponse: 'Earlier response' }, candidateRoot, change);
+      const result = await f.run(); unchanged(f, result);
+      assert.equal(Buffer.from(result.files['response.md'], 'base64').toString(), 'Earlier response');
+    }
+  });
+  add('collector-error-never-commits', async change => {
+    for (const failAt of ['binding', 'response.block-0.txt', 'response.raw.txt', 'response.raw.html', 'response.md',
+      'response.capture.json', 'artifacts.json', 'downloaded-manifest', 'artifact', 'outcome', 'commit']) {
+      const f = await fixture({ failAt, artifact: true, page: { html: '<pre><code class="language-markdown">Current response</code></pre>' } }, candidateRoot, change);
+      const result = await f.run(); unchanged(f, result);
+      assert.match(result.job.recollectionError, /Injected persistence failure/, failAt);
+    }
+  });
+  add('reload-failure-never-commits', async change => {
+    const f = await fixture({ reloadFailure: true }, candidateRoot, change);
+    unchanged(f, await f.run());
+  });
+  add('shutdown-before-callback-prevents-proof', async change => {
+    for (const signalAt of ['wait', 'before-commit', 'callback']) {
+      const f = await fixture({ signalAt }, candidateRoot, change);
+      const result = await f.run(); unchanged(f, result);
+      if (signalAt === 'wait') assert.equal(result.events.afterShutdown, 0);
+    }
+  });
+  add('shutdown-after-callback-is-publication-limit', async change => {
+    const f = await fixture({ signalAt: 'after-callback' }, candidateRoot, change);
+    const result = await f.run(); assert.equal(result.job.status, 'complete'); assert(result.job.recollectionCompletionVerifiedAt);
+  });
+  add('completed-recollection-never-initializes-proof', async change => {
+    for (const proof of [undefined, at]) {
+      const f = await fixture({ mode: 'complete', binding: { messageId: 'bound' }, proof }, candidateRoot, change);
+      assert.equal((await f.run()).job.recollectionCompletionVerifiedAt, proof);
+    }
+  });
+  add('recollection-never-sends-or-retries', async change => {
+    for (const failure of ['', 'Something went wrong']) {
+      const f = await fixture({ page: { retry: true, failure } }, candidateRoot, change);
+      const result = await f.run();
+      assert(!result.events.calls.some(call => ['retry', 'send', 'composer', 'upload', 'configure'].includes(call)));
+    }
+  });
+  add('read-projects-durable-proof-and-staging', async () => {
+    const source = await readFile(join(candidateRoot, 'extensions/oracle/lib/tools.ts'), 'utf8');
+    const tree = ts.createSourceFile('tools.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const declaration = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'redactJobDetails');
+    const deps = { ...lifecycle, buildOracleQueueSnapshot: () => ({}), getJobDir: () => directory };
+    const project = new Function(...Object.keys(deps), ts.transpile(declaration.getText(tree)) + '; return redactJobDetails;')(...Object.values(deps));
+    for (const status of ['failed', 'complete']) {
+      const job = { id: 'fixture', status, phase: status, responsePath: '/staging/response.md', generationStatus: 'completed',
+        collectionStatus: 'partial', collectionBinding: { messageId: 'bound' }, recollectionCompletionVerifiedAt: status === 'complete' ? at : undefined };
+      const result = project(job);
+      for (const key of ['status', 'responsePath', 'generationStatus', 'collectionStatus', 'collectionBinding', 'recollectionCompletionVerifiedAt']) assert.deepEqual(result[key], job[key], key);
+    }
+  });
+  const results = [];
+  for (const item of cases) {
+    if (process.env.PI_ORACLE_CAPTURE_CASE && !item.name.includes(process.env.PI_ORACLE_CAPTURE_CASE)) continue;
+    try { await item.run(text => text); results.push({ name: item.name, passed: true }); }
+    catch (error) { results.push({ name: item.name, passed: false, error: error.stack || String(error) }); }
+    console.log(JSON.stringify(results.at(-1)));
+  }
+  if (process.env.PI_ORACLE_CAPTURE_BASELINE_ROOT) {
+    const fixtures = [
+      { page: { html: '<h1>Rich reply</h1><p>Body</p>' } },
+      { page: { html: '<pre><code class="language-markdown"># Exact\n\nBody</code></pre>' } },
+      { page: { id: undefined } },
+      { page: { id: undefined }, binding: { turnSha256: turnContentSha256('Complete reply') } },
+      { page: { id: undefined }, binding: { turnSha256: turnContentSha256('Changed reply') }, oldResponse: 'Earlier response' },
+      { binding: { messageId: 'missing' }, oldResponse: 'Earlier response' },
+      { page: { html: '<div data-message-id="other">Ambiguous</div>' } },
+      { page: { html: '<button>Copy</button>' }, oldResponse: 'Earlier response' },
+      { artifact: true }, { grok: true }, { research: true, frameFailure: true },
+      { research: true, page: { html: '<p>Research completed in 1m · 2 sources</p><h1>Report</h1><p>Report body</p>' } },
+    ];
+    for (const mode of ['ordinary', 'complete']) for (const [index, options] of fixtures.entries()) {
+      const baseline = await (await fixture({ ...options, mode }, process.env.PI_ORACLE_CAPTURE_BASELINE_ROOT)).run();
+      const candidate = await (await fixture({ ...options, mode })).run();
+      assert.deepEqual(candidate.files, baseline.files, `differential ${mode}/${index} file bytes`);
+      assert.equal(candidate.error, baseline.error, `differential ${mode}/${index} return error`);
+      console.log(`Differential matched: ${mode}/${index}`);
+    }
+  } else console.log('SKIP differential: set PI_ORACLE_CAPTURE_BASELINE_ROOT to a second source root (no fetch or vendored baseline).');
+  console.log(`Recollection cases: ${results.filter(result => result.passed).length} passed, ${results.filter(result => !result.passed).length} failed`);
+  assert(results.every(result => result.passed), 'Recollection acceptance failed');
 }
