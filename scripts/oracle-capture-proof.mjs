@@ -592,6 +592,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
   const timeoutText = 'Timed out waiting for ChatGPT response completion';
   const at = '2026-01-01T00:00:00.000Z';
   const cases = [];
+  // The lifecycle log is bounded at 64 entries; these tuple cases use short histories, not a full log.
   const terminal = job => [job.status, job.phase, job.error, job.completedAt,
     lifecycle.getLatestOracleTerminalLifecycleEvent(job), job.recollectionCompletionVerifiedAt];
   const fileMap = async directory => {
@@ -889,6 +890,53 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       assert.equal((await f.run()).job.recollectionCompletionVerifiedAt, proof);
     }
   });
+  const verifiedHtml = '<h1>Verified heading</h1><p>Original body</p>';
+  const assertVerifiedReplyKept = (before, after) => {
+    for (const key of ['status', 'phase', 'error', 'errorCode', 'completedAt', 'recollectionCompletionVerifiedAt',
+      'collectionBinding', 'collectionStatus', 'collectionRequiredMissing', 'collectionOptionalMissing']) {
+      assert.deepEqual(after.job[key], before.job[key], key);
+    }
+    assert.match(after.job.recollectionError, /verified reply.*saved hash.*verified response.*kept/);
+    assert.deepEqual(Object.keys(after.files), Object.keys(before.files));
+    for (const name of Object.keys(before.files)) if (name !== 'job.json') assert.equal(after.files[name], before.files[name], name);
+    assert(!Object.keys(after.files).some(name => name.endsWith('.previous')));
+  };
+  add('verified-reply-change-is-refused', async change => {
+    for (const afterAnchor of [false, true]) {
+      let armed = false, reads = 0;
+      const f = await fixture({ page: { html: verifiedHtml }, beforeRead: async ({ page, expression, render }) => {
+        if (armed && expression.includes('function captureScopedResponse') && ++reads === 2 && afterAnchor) {
+          page.html = '<h1>Verified heading</h1><p>Changed body</p>'; await render();
+        }
+      } }, candidateRoot, change);
+      const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+      if (!afterAnchor) { f.page.html = '<h1>Verified heading</h1><p>Changed body</p>'; await f.render(); }
+      armed = true;
+      const result = await f.run(); assertVerifiedReplyKept(verified, result);
+      assert.equal(reads, afterAnchor ? 2 : 1, 'A changed verified reply is not a retryable hydration failure');
+    }
+  });
+  add('verified-reply-equal-text-recollects', async change => {
+    const f = await fixture({ artifact: true, page: { html: verifiedHtml } }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    assert.notEqual(turnContentSha256(Buffer.from(verified.files['response.md'], 'base64').toString()), verified.job.collectionBinding.turnSha256,
+      'Rendered Markdown differs from raw text, so hashing response.md is a discriminating mutation');
+    const result = await f.run(); assert.equal(result.job.recollectionError, undefined);
+    assert.equal(result.job.recollectionCompletionVerifiedAt, verified.job.recollectionCompletionVerifiedAt);
+    assert.deepEqual(result.job.collectionBinding, verified.job.collectionBinding);
+    assert.equal(result.job.collectionStatus, verified.job.collectionStatus);
+    assert.equal(result.files['response.md'], verified.files['response.md']);
+    assert.equal(f.events.returns.length, 2, 'Equal raw text still reaches artifact collection');
+    assert.equal(f.events.downloads, 1, 'The validated artifact is reused');
+  });
+  add('verified-reply-missing-hash-is-refused', async change => {
+    const f = await fixture({ page: { html: verifiedHtml } }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    const withoutHash = { ...verified.job, collectionBinding: { ...verified.job.collectionBinding } };
+    delete withoutHash.collectionBinding.turnSha256;
+    await writeFile(join(directory, 'job.json'), JSON.stringify(withoutHash, null, 2) + '\n');
+    assertVerifiedReplyKept({ job: withoutHash, files: verified.files }, await f.run());
+  });
   add('recollection-never-sends-or-retries', async change => {
     for (const failure of ['', 'There was an error generating a response']) {
       const f = await fixture({ page: { retry: true, failure } }, candidateRoot, change);
@@ -973,7 +1021,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       ['second read supplies identity', 'anchored-identity-required', once('const anchoredTurn = await acquireBoundTurn(currentJob, binding);', 'let anchoredTurn = await acquireBoundTurn(currentJob, binding); if (!anchoredTurn.captured.messageId) anchoredTurn = await acquireBoundTurn(currentJob, anchoredTurn.binding);')],
       ['nonempty guard', 'empty-current-rendering-borrows-nothing', removeLine('if (!redactTransportSecrets(rendered).trim())')],
       ['old response borrowing', 'strict-old-response-fallback-is-excluded', once('else if (!verifiedRecollection && job.responsePath', 'else if (job.responsePath')],
-      ['strict rethrow', 'collector-error-never-commits', removeLine('if (verifiedRecollection) throw error;')],
+      ['strict rethrow', 'collector-error-never-commits', once('if (verifiedRecollection || (error instanceof OracleWorkerError && error.code === "verified_reply_changed")) throw error;', 'if (error instanceof OracleWorkerError && error.code === "verified_reply_changed") throw error;')],
       ['artifact persistence rethrow', 'collector-error-never-commits', removeLine('if (verifiedRecollection && persisting) throw error;')],
       ['bound reload rethrow', 'reload-failure-retains-original-error', removeLine('if (binding) throw error;')],
       ['later capture substitution', 'stable-identity-saves-verified-capture', once('verifiedRecollection ? verifiedRecollection.verifiedTurn : await acquireBoundTurn(job, binding)', 'await acquireBoundTurn(job, binding)')],
@@ -987,6 +1035,11 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       ['Grok refusal', 'unsupported-timeouts-are-mutation-free', Object.assign(text => text, { lifecycle: removeLine('if (job.error === "Timed out waiting for Grok response completion"') })],
       ['Grok provider mismatch', 'grok-provider-with-chatgpt-timeout-is-refused', Object.assign(text => text, { lifecycle: once(' || job.selection?.provider === "grok"', '') })],
       ['Grok timeout-text mismatch', 'chatgpt-provider-with-grok-timeout-is-refused', Object.assign(text => text, { lifecycle: once('job.error === "Timed out waiting for Grok response completion" || ', '') })],
+      ['verified reply refusal', 'verified-reply-change-is-refused', once('job.recollectionCompletionVerifiedAt && (!binding.turnSha256 || turnSha256 !== binding.turnSha256)', 'false')],
+      ['response-file hash substitution', 'verified-reply-equal-text-recollects', once('turnSha256 !== binding.turnSha256', 'turnContentSha256(await readFile(job.responsePath, "utf8")) !== binding.turnSha256')],
+      ['verified reply retry suppression', 'verified-reply-change-is-refused', removeLine('if (error instanceof OracleWorkerError && error.code === "verified_reply_changed") throw error;')],
+      ['verified reply collector rethrow', 'verified-reply-change-is-refused', once('if (verifiedRecollection || (error instanceof OracleWorkerError && error.code === "verified_reply_changed"))', 'if (verifiedRecollection)')],
+      ['verified reply partial-marking exclusion', 'verified-reply-change-is-refused', once('if (timedOutChat || (error instanceof OracleWorkerError && error.code === "verified_reply_changed"))', 'if (timedOutChat)')],
     ];
     for (const [name, caseName, change] of mutations) {
       const mutated = change(await readFile(join(candidateRoot, 'extensions/oracle/worker/run-job.mjs'), 'utf8'));
