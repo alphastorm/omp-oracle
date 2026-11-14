@@ -2430,8 +2430,12 @@ async function captureBoundTurn(job, binding, options = {}) {
   const captured = options.observeGeneration ? result?.captured : result;
   if (!captured || typeof captured.rawHtml !== "string") throw new Error("Bound response capture failed.");
   const turnSha256 = turnContentSha256(captured.rawText);
-  if (job.recollectionCompletionVerifiedAt && (!binding.turnSha256 || turnSha256 !== binding.turnSha256)) {
-    throw new OracleWorkerError("verified_reply_changed", "The verified reply's text changed or its saved hash is missing; the verified response was kept and nothing was replaced.");
+  if (job.recollectionCompletionVerifiedAt) {
+    let savedRawText;
+    try { savedRawText = await readFile(join(jobDir, "response.raw.txt")); } catch {}
+    if (turnSha256 !== binding.turnSha256 || !savedRawText?.equals(Buffer.from(redactTransportSecrets(captured.rawText)))) {
+      throw new OracleWorkerError("verified_reply_changed", "The verified reply's text changed or its saved hash or raw text is missing or unreadable; the verified response was kept and nothing was replaced.");
+    }
   }
   if (!binding.messageId && binding.turnSha256 && binding.turnSha256 !== turnSha256) throw new Error("Bound response content changed; refusing index-only recollection.");
   const { anchorFileName: _anchor, ...durable } = binding;
