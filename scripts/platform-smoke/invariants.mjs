@@ -20,8 +20,12 @@ function runNode(args) {
 function testHelpTextIncludesTargetsAndExamples() {
   const result = runNode(["scripts/platform-smoke.mjs", "--help"]);
   assert.equal(result.status, 0, `help should exit cleanly: ${result.stderr}`);
-  assert.match(result.stdout, /Supported: macos,ubuntu,windows-native/, "help should list supported targets");
-  assert.match(result.stdout, /--suite\s+Suite name\. Supported: platform-build,real-extension/, "help should list supported suites");
+  // Help names only what `run` accepts; it once listed windows-native, which the runner rejected.
+  assert.match(result.stdout, new RegExp(`--target\\s+Comma-separated target names\\. Supported: ${config.requiredTargets.join(",")}\\n`), "help should list exactly the configured targets");
+  assert.match(result.stdout, new RegExp(`--suite\\s+Suite name\\. Supported: ${config.requiredSuites.join(",")}\\n`), "help should list exactly the configured suites");
+  for (const [, targets] of result.stdout.matchAll(/run --target ([\w,-]+)/g)) {
+    for (const target of targets.split(",")) assert(config.requiredTargets.includes(target), `help example names target ${target}, which run rejects`);
+  }
   assert.match(result.stdout, /npm run release:check/, "help should name the full release gate");
   assert.match(result.stdout, /PLATFORM_SMOKE_CRABBOX/, "help should document reusable platform-smoke env knobs");
 }
