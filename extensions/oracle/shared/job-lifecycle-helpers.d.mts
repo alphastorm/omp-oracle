@@ -137,3 +137,16 @@ export declare function markOracleJobWakeupSettled<TJob extends OracleLifecycleT
   job: TJob,
   options: OracleWakeupSettlementOptions,
 ): TJob;
+
+export declare function timedOutRecollectionBinding(
+  job: {
+    status?: string;
+    error?: string;
+    promptSendState?: string;
+    archivePath?: string;
+    conversationId?: string;
+    collectionBinding?: { responseIndex?: number; messageId?: string; turnSha256?: string } | undefined;
+  },
+  explicit: { responseIndex?: number } | undefined,
+  basenameOf: (path: string) => string,
+): { conversationId: string | undefined; responseIndex: number; anchorFileName: string } | undefined;

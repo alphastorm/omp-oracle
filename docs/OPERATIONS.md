@@ -322,7 +322,8 @@ Provider writing the answer is generation, saving that answer and its files to d
 - `collectionStatus` (`collection-status`) is `complete`, `partial`, or `failed`, paired with `response.capture.json` (`conversationId`, `responseIndex`, `messageId`, content hash, fidelity, source URLs, code blocks, and artifact inspection).
 - `collection-optional-missing` (`native_markdown_export`, `artifact:<id>`) means a secondary file failed while `response.md` is intact; `collection-required-missing` (`bound_response_capture`, `rich_response_fidelity` when rich formatting fell back to plain text, `unresolved_source_links`, `redacted_transport_links` when signed URLs were scrubbed) means the saved answer is degraded or missing; `recollection-needed` means the bound turn was not captured and no `response.md` was written.
 - `promptSendState` in `job.json` (`prompt-send-state` in `oracle_read`) is `not_sent`, `attempted`, or `accepted`, showing whether resubmitting is safe.
-- To retry collection on a `complete` job without resending the prompt, ask the agent to call `oracle_read({ jobId: "<job-id>", action: "recollect" })` or invoke `/oracle-run read` while the job's sign-in transport is available (for legacy jobs recorded before automatic turn binding, pass zero-based `responseIndex` and DOM `data-message-id` `messageId` together).
+- To retry collection without resending the prompt, ask the agent to call `oracle_read({ jobId: "<job-id>", action: "recollect" })` or invoke `/oracle-run read` while the job's sign-in transport is available. This works on a `complete` job, and on a job that failed with `Timed out waiting for ChatGPT response completion` after `prompt-send-state: accepted`, which becomes `complete` once its reply is collected.
+- Most jobs need no binding arguments. A legacy completed job recorded before automatic turn binding takes zero-based `responseIndex` and DOM `data-message-id` `messageId` together; a timed-out job recorded before its reply index was saved takes `responseIndex` alone.
 
 ### Capacity and queueing
 
@@ -380,15 +381,15 @@ Agents call five tools; provider parameters normalize `"chatgpt"`, `"chat-gpt"`,
 | `followUpJobId` | Optional | Completed job id | Continues an earlier completed Oracle job in the current project |
 | `chatGptConversationId` | Optional | ChatGPT id or `https://chatgpt.com/c/...` URL | Continues a ChatGPT thread; mutually exclusive with `followUpJobId` |
 
-`oracle_read` reads saved job status and up to `4000` characters of `response.md`, or recollects a completed turn:
+`oracle_read` reads saved job status and up to `4000` characters of `response.md`, or recollects the reply of a completed or timed-out job:
 
 | Parameter | Required | Allowed values | What it does |
 | --- | --- | --- | --- |
 | `jobId` | Required | Job id | Job to inspect or recollect |
 | `projectId` | Optional | Non-empty path | Acknowledges the owning root when reading another project's job |
-| `action` | Optional | `"read"` \| `"recollect"` | `"read"` (default) reads saved files; `"recollect"` re-captures a `complete` job |
-| `responseIndex` | Optional | Integer `>= 0` | Zero-based assistant turn index for legacy `recollect` (paired with `messageId`) |
-| `messageId` | Optional | Non-empty string | Observed `data-message-id` for legacy `recollect` (paired with `responseIndex`) |
+| `action` | Optional | `"read"` \| `"recollect"` | `"read"` (default) reads saved files; `"recollect"` re-captures the reply of a `complete` job, or of a job that timed out after its prompt was accepted |
+| `responseIndex` | Optional | Integer `>= 0` | Zero-based assistant turn index when no binding was saved: with `messageId` for a legacy completed job, alone for a timed-out job |
+| `messageId` | Optional | Non-empty string | Observed `data-message-id` for a legacy completed job (paired with `responseIndex`) |
 
 `oracle_cancel` stops a queued or active job in the current project:
 
@@ -444,6 +445,7 @@ Match what you see to the first action and recovery section below, or look up a 
 | `/oracle-auth` reads the wrong browser profile | Set `auth.chromeProfile` or `auth.chromeCookiePath` in agent `oracle.json` | [Wrong browser profile](#auto-detection-picked-the-wrong-browser-profile) |
 | Deep Research fails with `deep_research_*` | Check `errorCode`, `chatUrl`, and `prompt-send-state` before retrying | [Deep Research failed](#a-deep-research-job-failed) |
 | Completed job reads `collection-status: partial` or `failed` | Run `oracle_read({ jobId, action: "recollect" })`; do not resubmit | [Partial or failed collection](#a-completed-job-reads-collection-status-partial-or-failed) |
+| Job failed with `Timed out waiting for ChatGPT response completion` | Run `oracle_read({ jobId, action: "recollect" })` before resubmitting | [May prompt have been sent?](#a-failed-job-may-the-prompt-have-been-sent) |
 | Unsure whether a failed job sent its prompt | Check `prompt-send-state` in `oracle_read({ jobId })` | [May prompt have been sent?](#a-failed-job-may-the-prompt-have-been-sent) |
 | Worker fails with `agent_browser_timeout` | Check `prompt-send-state` before retrying; adjust timeout if needed | [Driver command timed out](#a-driver-command-timed-out) |
 | Leftover `.config` or `.target` driver session files | List active sessions with `agent-browser session list`, then remove absent ones | [Old session sidecars](#old-agent-browser-session-sidecars) |
@@ -556,6 +558,7 @@ Failed jobs record `promptSendState` in `job.json` (`prompt-send-state` in `orac
 
 1. Run `oracle_read({ jobId: "<job-id>" })` or `/oracle-status <job-id>` and check `prompt-send-state`.
 2. Act on its value: if `not_sent`, nothing reached the provider and resubmitting is safe; if `attempted`, open `chatUrl` in Chrome to check the thread before resubmitting; if `accepted`, open `chatUrl` in Chrome to inspect the reply or pass `chatGptConversationId` to continue that ChatGPT conversation without resending the original prompt.
+3. If an `accepted` job failed with `Timed out waiting for ChatGPT response completion`, the reply may have finished after the timeout: run `oracle_read({ jobId: "<job-id>", action: "recollect" })` first. It collects the reply without sending anything and marks the job `complete`.
 
 ### A driver command timed out
 

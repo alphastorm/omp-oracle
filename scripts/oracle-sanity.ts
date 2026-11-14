@@ -54,7 +54,7 @@ import {
     stripChatGptResponseChrome,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
-import { composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash, timedOutRecollectionBinding } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
+import { composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
 import {
     buildConversationLeaseMetadata,
     buildRuntimeLeaseMetadata,
@@ -78,6 +78,7 @@ import {
     markOracleJobNotified,
     markOracleJobWakeupSettled,
     noteOracleJobWakeupRequested,
+    timedOutRecollectionBinding,
     transitionOracleJobPhase,
 } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import type { OracleLifecycleTrackedJobLike } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
@@ -2183,6 +2184,58 @@ async function testCleanupPendingRecoveryTerminatesStaleLiveWorker(config: Oracl
     if (isPidAlive(holderPid)) process.kill(holderPid, "SIGKILL");
     await waitForPidExit(holderPid);
     await cleanupJob(jobId);
+  }
+}
+
+// 0.4.10 taught the worker to recover a reply that finished after the completion timeout
+// (timedOutRecollectionBinding), and the job's own summary tells callers to recollect it, but
+// oracle_read refused every job that was not complete, so the recovery was unreachable from the tool.
+async function testOracleReadRecollectsTimedOutJobs(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-recollect-timeout-${randomUUID()}-`));
+  const argvLog = join(fixtureDir, "worker-argv.jsonl");
+  const fakeWorkerPath = join(fixtureDir, "fake-worker.mjs");
+  await writeFile(fakeWorkerPath, `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`, { encoding: "utf8", mode: 0o600 });
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as ExtensionAPI, fakeWorkerPath);
+  const readTool = pi.tools.get("oracle_read");
+  assert(readTool?.execute, "oracle read tool should register for timed-out recollection coverage");
+  const sessionFile = join(fixtureDir, "session.jsonl");
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as ExtensionContext["sessionManager"], createUiStub(), process.cwd());
+  const jobIds: string[] = [];
+  const timedOutJob = async (patch: Record<string, unknown> = {}) => {
+    const jobId = await createJobForTest(config, process.cwd(), sessionFile);
+    jobIds.push(jobId);
+    await completeJob(jobId, "failed");
+    await updateJob(jobId, (job) => ({ ...job, error: "Timed out waiting for ChatGPT response completion", promptSendState: "accepted",
+      conversationId: "c0ffee", chatUrl: "https://chatgpt.com/c/c0ffee", collectionBinding: { conversationId: "c0ffee", responseIndex: 2 }, recollectionNeeded: true, ...patch }));
+    return jobId;
+  };
+  const recollect = async (jobId: string, extra: Record<string, unknown> = {}) => {
+    const result = await readTool.execute!("oracle-read-recollect-timeout", { jobId, action: "recollect", ...extra }, undefined, () => { }, ctx) as { details?: unknown };
+    return asRecord(asRecord(result.details)?.error);
+  };
+  const workerCalls = async () => (await readFile(argvLog, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]);
+  try {
+    const saved = await timedOutJob();
+    assert(!(await recollect(saved)), "oracle_read should recollect a job that timed out after its prompt was accepted");
+    assert(JSON.stringify((await workerCalls()).at(-1)) === JSON.stringify([saved, "--recollect"]), "a timed-out job with a saved index should start the recollection worker without an explicit binding");
+
+    const unindexed = await timedOutJob({ collectionBinding: undefined });
+    assert(!(await recollect(unindexed, { responseIndex: 3 })), "a timed-out job recorded without an index should be recollected at an explicit responseIndex alone");
+    assert(JSON.stringify((await workerCalls()).at(-1)) === JSON.stringify([unindexed, "--recollect", JSON.stringify({ responseIndex: 3 })]), "an explicit responseIndex should reach the recollection worker");
+
+    const started = (await workerCalls()).length;
+    const otherFailure = await timedOutJob({ error: "ChatGPT is showing a transient outage/rate-limit page" });
+    assert(String((await recollect(otherFailure))?.message).startsWith("Recollection requires a completed job"), "a job that failed for another reason should not be recollected");
+    const neverAccepted = await timedOutJob({ promptSendState: "attempted" });
+    assert(String((await recollect(neverAccepted))?.message).startsWith("Recollection requires a completed job"), "a timed-out job whose prompt was never accepted has no reply to recollect");
+    assert(String((await recollect(saved, { responseIndex: 3 }))?.message).includes("cannot move the saved turn index"), "an explicit index should never move the one the timeout saved");
+    assert(String((await recollect(unindexed, { responseIndex: 3, messageId: "m-1" }))?.message).includes("without messageId"), "a timed-out job should refuse a messageId, which its archive-anchored binding never uses");
+    assert((await workerCalls()).length === started, "a refused recollection should never start the worker");
+  } finally {
+    for (const jobId of jobIds) await cleanupJob(jobId);
+    await rm(fixtureDir, { recursive: true, force: true });
   }
 }
 
@@ -6229,6 +6282,7 @@ async function main() {
   await testOracleToolResultsExposeStructuredJobDetails(config);
   await testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(config);
   await testOracleReadSummaryShowsHeartbeatFreshness(config);
+  await testOracleReadRecollectsTimedOutJobs(config);
   await testOracleToolErrorsExposeStructuredMetadata();
   await testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(config);
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
