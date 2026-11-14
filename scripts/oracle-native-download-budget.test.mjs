@@ -65,6 +65,15 @@ test('native setup issues no command at an exhausted absolute deadline', async t
   assert.equal(calls, 0);
 });
 
+test('exhausted restoration does not replace the original native export failure', async t => {
+  let now = 0;
+  t.mock.method(Date, 'now', () => now);
+  const cdp = { on: () => () => {}, send: async method => method === 'Page.getFrameTree'
+    ? { frameTree: { frame: { id: 'main' } } } : { result: { value: 1 } } };
+  await assert.rejects(collectNativeDownload({ cdp, pageSessionId: 'page', deadlineAt: 20,
+    activate: async () => { now = 20; throw new Error('Export control refused the request.'); } }), /Export control refused/);
+});
+
 test('an export menu arriving at the activation deadline is not clicked', async t => {
   let now = 0, menuClicks = 0;
   t.mock.method(Date, 'now', () => now);
