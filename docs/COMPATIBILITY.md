@@ -8,7 +8,7 @@ Scan this table for current package and runtime support before checking the evid
 
 | Area | Supported | Notes |
 | --- | --- | --- |
-| Package | `omp-oracle` `0.4.14` on npm (`main` on GitHub) | Remove upstream `pi-oracle` before installing |
+| Package | `omp-oracle` `0.4.15` on npm (`main` on GitHub) | Remove upstream `pi-oracle` before installing |
 | Hosts | Oh My Pi (OMP) and `pi` (`^1.5.0` baseline) | Persisted host session required |
 | Platforms | macOS and Ubuntu Linux; Windows native (declared) | Node.js `>=22.19.0`; Node 24 for release validation |
 | Providers | ChatGPT (`.tar.zst`, `250 MiB`) and Grok (`.tar.gz`, `200 MiB`) | Nine ChatGPT presets; Grok `heavy` mode |
