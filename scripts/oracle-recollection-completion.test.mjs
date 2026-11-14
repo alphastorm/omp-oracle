@@ -6,15 +6,15 @@ import test from 'node:test';
 import ts from 'typescript';
 import * as lifecycle from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
 import * as flow from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
-import { deriveAssistantCompletionSignature } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
+import { deriveAssistantCompletionSignature, parseDeepResearchWidgetText } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 import { detectCompletionFailure } from '../extensions/oracle/worker/provider-page-signals.mjs';
 import { buildConversationLeaseMetadata, buildRuntimeLeaseMetadata, jobBlocksAdmission } from '../extensions/oracle/shared/job-coordination-helpers.mjs';
 
 // Like proof:capture, execute production functions with injected observations, never a browser.
 const source = readFileSync(new URL('../extensions/oracle/worker/run-job.mjs', import.meta.url), 'utf8');
 const tree = ts.createSourceFile('run-job.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-const wanted = ['runRecollection', 'waitForChatCompletion'];
-const functions = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && wanted.includes(node.name?.text));
+const wanted = ['runRecollection', 'waitForChatCompletion', 'waitForDeepResearchReport', 'OracleWorkerError'];
+const functions = tree.statements.filter((node) => (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && wanted.includes(node.name?.text));
 assert.equal(functions.length, wanted.length);
 const timeoutText = 'Timed out waiting for ChatGPT response completion';
 function failedJob() {
@@ -40,9 +40,10 @@ function harness(job, observations) {
   const history = [], collected = [], bindings = [], clicks = [];
   let observation;
   const deps = {
-    ...lifecycle, ...flow, deriveAssistantCompletionSignature, detectCompletionFailure,
+    ...lifecycle, ...flow, deriveAssistantCompletionSignature, parseDeepResearchWidgetText, detectCompletionFailure,
     Date: Clock, process, basename, join, jobId: job.id, ORACLE_STATE_DIR: 'state', jobDir: 'job', AGENT_BROWSER_BIN: 'unused',
     STALE_STOP_CONTROL_MS: 120000, MISSING_TURN_RELOAD_MS: 300000, MISSING_TURN_RELOAD_MAX: 1,
+    DEEP_RESEARCH_FRAME_WAIT_MS: 60000, DEEP_RESEARCH_REPORT_EXPRESSION: 'report-frame-text',
     initialJob: structuredClone(job), history, collected, bindings, clicks,
     randomUUID: () => 'fresh-session', readProcessStartedAt: () => 'identity',
     withLock: async (...args) => args.at(-1)(),
@@ -67,10 +68,20 @@ function harness(job, observations) {
       return observation.messages;
     },
     throwIfProviderTransientError: () => {}, readPageSignals: async () => ({ text: '' }),
+    armDeepResearchFrameCapture: async () => {},
+    boundResearchFrame: async (_job, binding) => {
+      assert.equal(binding.messageId, 'bound', 'Research must read the acquired bound turn');
+      return observation?.frameMissing ? undefined : { sessionId: 'bound-report' };
+    },
+    deepResearchCdp: { evaluate: async (sessionId) => {
+      assert.equal(sessionId, 'bound-report');
+      if (observation?.reportError) throw new Error(observation.reportError);
+      return observation?.reportText;
+    } },
     collectArtifactCandidates: async () => [],
     findEntry: () => ({ ref: 'retry' }), clickRef: async () => { clicks.push('retry'); },
     sleep: async (ms) => { now += ms; },
-    OracleWorkerError: class extends Error {}, AgentBrowserTimeoutError: class extends Error {},
+    AgentBrowserTimeoutError: class extends Error {},
     capture: async (_job, binding) => {
       bindings.push({ ...binding });
       const messages = observation?.messages ?? [{ text: 'partial', messageId: 'bound' }];
@@ -87,7 +98,8 @@ function harness(job, observations) {
     async function reconcileStreamedTurn(_job, _index, text) { return text; }
     async function collectBoundResult(job, binding) {
       const turn = await capture(job, binding);
-      collected.push(turn.captured.rawText);
+      collected.push(job.selection.tool === 'deep_research'
+        ? parseDeepResearchWidgetText(await deepResearchCdp.evaluate('bound-report')).report : turn.captured.rawText);
       await mutateJob(job => ({ ...job, responsePath: 'response.md', collectionStatus: 'complete', collectionRequiredMissing: [], generationStatus: 'completed' }));
     }
     ${functions.map(node => node.getText(tree)).join('\n')}
@@ -235,6 +247,59 @@ test('Grok timeout recollection uses its generation signal and preserves its tim
   assert.equal(result.status, 'complete', result.recollectionError);
   assert(result.recollectionCompletionVerifiedAt);
   assert.deepEqual(finished.collected, ['Grok full reply']);
+});
+
+test('Deep Research still running cannot complete recollection or create a receipt', async () => {
+  const job = { ...failedJob(), selection: { provider: 'chatgpt', tool: 'deep_research' },
+    config: { worker: { pollMs: 1000, completionTimeoutMs: 100 } } };
+  // A frame and partial report text already exist: neither is completion evidence.
+  const run = harness(job, [{ ...page('Research started', false), reportText: 'Researching…\nPartial report body' }]);
+  const result = await run.run();
+  assert.equal(result.status, 'failed');
+  assert.equal(result.phase, job.phase);
+  assert.equal(result.error, job.error);
+  assert.equal(result.completedAt, job.completedAt);
+  assert.equal(result.errorCode, 'deep_research_report_unreadable');
+  assert.match(result.recollectionError, /report did not appear before the completion timeout/);
+  assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+  assert(!run.history.some(state => state.status === 'complete'));
+  assert.deepEqual(run.collected, []);
+  assert(lifecycle.timedOutRecollectionBinding(result, undefined, basename));
+  // A later attempt is admitted and receives a receipt only after the widget marks completion.
+  const finished = harness(result, [
+    { ...page('Research started', false), reportText: 'Researching…\nPartial report body' },
+    { ...page('Research started', false), reportText: 'Research completed in 2m · 3 citations · 4 searches\n# Full report\nAll findings.' },
+  ]);
+  const recovered = await finished.run();
+  assert.equal(recovered.status, 'complete', recovered.recollectionError);
+  assert(recovered.recollectionCompletionVerifiedAt);
+  assert.deepEqual(finished.collected, ['# Full report\nAll findings.']);
+});
+
+test('Deep Research completion marker without a report body cannot create a receipt', async () => {
+  const job = { ...failedJob(), selection: { provider: 'chatgpt', tool: 'deep_research' },
+    config: { worker: { pollMs: 1000, completionTimeoutMs: 100 } } };
+  const run = harness(job, [{ ...page('Research started', false), reportText: 'Research completed in 2m · 3 citations · 4 searches\n' }]);
+  const result = await run.run();
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error, job.error);
+  assert.equal(result.completedAt, job.completedAt);
+  assert.match(result.recollectionError, /report did not appear before the completion timeout/);
+  assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+  assert.deepEqual(run.collected, []);
+});
+
+test('Deep Research missing report frame cannot create a receipt', async () => {
+  const job = { ...failedJob(), selection: { provider: 'chatgpt', tool: 'deep_research' },
+    config: { worker: { pollMs: 1000, completionTimeoutMs: 100 } } };
+  const run = harness(job, [{ ...page('Research started', false), frameMissing: true }]);
+  const result = await run.run();
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error, job.error);
+  assert.equal(result.completedAt, job.completedAt);
+  assert.equal(result.errorCode, 'deep_research_report_unreadable');
+  assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+  assert.deepEqual(run.collected, []);
 });
 
 test('runtime and conversation leases do not expire during a long recollection', async () => {
