@@ -520,13 +520,16 @@ export async function captureDownload(selector) {
 // A report's Export control opens an asynchronous menu; the actual option is "Export to Markdown".
 // Activation only: the bytes are observed by the pre-armed native download collector, because the
 // sandboxed report frame delegates the download to a realm this document cannot see.
-export async function activateDownloadControl(selector, report = false) {
+export async function activateDownloadControl(selector, report = false, timeoutMs = 5000) {
+  const deadline = Date.now() + Math.min(5000, timeoutMs);
+  if (Date.now() >= deadline) throw new Error('Report activation deadline reached.');
   const element = document.querySelector(selector);
   if (!element) throw new Error('Bound download control disappeared.');
   element.click();
   if (!report) return { activated: true };
   for (let poll = 0; poll < 50; poll += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+    if (Date.now() >= deadline) throw new Error('Report activation deadline reached.');
     const options = [...document.querySelectorAll('[role=menuitem],button,a')].filter((node) => node.getClientRects().length && /^(?:Export to )?Markdown(?:\s*\(.*\))?$/i.test((node.textContent || '').trim()));
     if (options.length === 1 && options[0] !== element) {
       options[0].click();
@@ -606,7 +609,13 @@ async function evaluateOrThrow(cdp, sessionId, expression, timeoutMs) {
 // download destination is never touched. Accepted origins are exact: the tab's main frame (the
 // host performs sandboxed exports) or the bound report frame tree. Bytes come only from the UI's
 // own blob or data URL; a transport URL is reported as a precise gap instead of being refetched.
-export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId, activate, timeoutMs = 30_000, onWait }) {
+export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId, activate, timeoutMs = 30_000, deadlineAt, onWait }) {
+  const deadline = Math.min(Date.now() + timeoutMs, deadlineAt ?? Infinity);
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error('Native export collection deadline reached.');
+    return ms;
+  };
   const sessions = frameSessionId ? [pageSessionId, frameSessionId] : [pageSessionId];
   const events = [];
   const unsubscribe = [cdp.on('Page.downloadWillBegin', (event) => events.push(event)), cdp.on('Page.downloadProgress', (event) => events.push(event))];
@@ -614,22 +623,22 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
   try {
     const accepted = new Set();
     for (const sessionId of sessions) {
-      await cdp.send('Page.enable', {}, sessionId);
-      const { frameTree } = await cdp.send('Page.getFrameTree', {}, sessionId);
+      await cdp.send('Page.enable', {}, sessionId, remaining());
+      const { frameTree } = await cdp.send('Page.getFrameTree', {}, sessionId, remaining());
       for (const id of sessionId === pageSessionId && frameSessionId ? [frameTree.frame.id] : frameTreeIds(frameTree)) accepted.add(id);
-      await evaluateOrThrow(cdp, sessionId, `(${armDownloadRegistry.toString()})()`);
+      await evaluateOrThrow(cdp, sessionId, `(${armDownloadRegistry.toString()})()`, remaining());
       armedRealms.push(sessionId);
     }
     // Only downloads that begin at or after activation are candidates; anything observed while
     // arming (Page.enable, frame discovery, registry hooks) is not caused by the export control.
     const activationBoundary = events.length;
-    const activation = await activate();
+    const activation = await activate(remaining());
+    remaining();
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const deadline = Date.now() + timeoutMs;
     let begin;
     while (!begin && Date.now() < deadline) {
       begin = events.slice(activationBoundary).find((event) => event.method === 'Page.downloadWillBegin' && sessions.includes(event.sessionId || '') && accepted.has(event.params.frameId));
-      if (!begin) { await sleep(100); onWait?.(); }
+      if (!begin) { await sleep(Math.min(100, remaining())); onWait?.(); }
     }
     if (!begin) {
       const foreign = events.slice(activationBoundary).find((event) => event.method === 'Page.downloadWillBegin');
@@ -638,7 +647,7 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
     let final;
     while (!final && Date.now() < deadline) {
       final = events.find((event) => event.method === 'Page.downloadProgress' && event.params.guid === begin.params.guid && event.params.state !== 'inProgress');
-      if (!final) { await sleep(100); onWait?.(); }
+      if (!final) { await sleep(Math.min(100, remaining())); onWait?.(); }
     }
     if (!final) throw new Error('The browser download did not finish before the collection deadline.');
     if (final.params.state !== 'completed') throw new Error('The browser download was canceled or interrupted.');
@@ -647,9 +656,10 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
     let source;
     if (url.startsWith('data:')) { bytes = decodeDataUrl(url); source = 'data'; }
     else if (url.startsWith('blob:')) {
-      bytes = Buffer.from(String(await evaluateOrThrow(cdp, begin.sessionId, `(${readRegisteredDownload.toString()})(${JSON.stringify(url)})`, timeoutMs)), 'base64');
+      bytes = Buffer.from(String(await evaluateOrThrow(cdp, begin.sessionId, `(${readRegisteredDownload.toString()})(${JSON.stringify(url)})`, remaining())), 'base64');
       source = 'blob';
     } else throw new Error('The browser download came from a transport URL the capture hooks do not read; the relay reports no saved path.');
+    remaining();
     const totalBytes = Number(final.params.totalBytes) || 0;
     return {
       bytesBase64: bytes.toString('base64'), fileName: String(begin.params.suggestedFilename || ''), contentType: '',
@@ -658,7 +668,14 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
     };
   } finally {
     for (const listener of unsubscribe) listener();
-    for (const sessionId of armedRealms) await cdp.evaluate(sessionId, `(${disarmDownloadRegistry.toString()})()`);
+    let cleanupError;
+    for (const sessionId of armedRealms) {
+      try { await evaluateOrThrow(cdp, sessionId, `(${disarmDownloadRegistry.toString()})()`, remaining()); }
+      catch (error) { cleanupError ??= error; }
+    }
+    // No fresh timeout for restoration. If its budget is gone, normal job cleanup closes the
+    // owned document; the artifact is unconfirmed rather than spending the persistence reserve.
+    if (cleanupError) throw cleanupError;
   }
 }
 

@@ -266,6 +266,11 @@ test('worker stage deadlines precede the synchronous read backstop', () => {
         + Math.max(budgets.RECOLLECTION_POST_WAIT_BUDGET_MS, budgets.RECOLLECTION_FINALIZE_RESERVE_MS);
       assert.equal(budgets.recollectionReadTimeoutMs(job) - latestWorkerExit, budgets.RECOLLECTION_READ_MARGIN_MS);
       assert(budgets.RECOLLECTION_READ_MARGIN_MS > 0);
+      for (const [path, exit] of [
+        ['startup/refusal', budgets.RECOLLECTION_STARTUP_BUDGET_MS],
+        ['wait failure or wait signal', budgets.RECOLLECTION_STARTUP_BUDGET_MS + budgets.recollectionWaitMs(job) + budgets.RECOLLECTION_FINALIZE_RESERVE_MS],
+        ['collection/cleanup or collection signal', latestWorkerExit],
+      ]) assert(exit < budgets.recollectionReadTimeoutMs(job), `${tool ?? 'chat'} ${path} must end before the read`);
     }
   }
   assert.equal(budgets.recollectionReadTimeoutMs({ selection: {}, config: { worker: { completionTimeoutMs: 90 * 60 * 1000 } } }), 106 * 60 * 1000);

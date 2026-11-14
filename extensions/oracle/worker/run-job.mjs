@@ -88,7 +88,7 @@ import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { classifyChatGptJobPage, classifyGrokPage, detectProviderSignals, detectCompletionFailure, providerPageSignalsExpression, visibleBlockerInSnapshot, formatProviderTransientErrorMessage, providerTransientErrorMessage, throwIfProviderTransientError } from "./provider-page-signals.mjs";
 import { assertNotKnownBrowserUserDataPath, assertSafeBrowserLaunchArg, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
-import { RECOLLECTION_STARTUP_BUDGET_MS, RECOLLECTION_POST_WAIT_BUDGET_MS, RECOLLECTION_FINALIZE_RESERVE_MS, recollectionWaitMs, recollectionOperationTimeoutMs } from "../shared/recollection-budget.mjs";
+import { RECOLLECTION_STARTUP_BUDGET_MS, RECOLLECTION_POST_WAIT_BUDGET_MS, RECOLLECTION_FINALIZE_RESERVE_MS, RECOLLECTION_RESEARCH_WAIT_MS, recollectionWaitMs, recollectionOperationTimeoutMs } from "../shared/recollection-budget.mjs";
 
 const jobId = process.argv[2];
 if (!isValidOracleJobId(jobId)) {
@@ -2094,7 +2094,13 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText, binding =
       let reloaded = "";
       let turn;
       if (binding) {
-        turn = await captureBoundTurn(job, binding, { timeoutMs: recollectionOperationTimeoutMs(deadline, RELOAD_RECONCILE_TIMEOUT_MS) });
+        turn = await captureBoundTurn(job, binding, { observeGeneration: true, timeoutMs: recollectionOperationTimeoutMs(deadline, RELOAD_RECONCILE_TIMEOUT_MS) });
+        const snapshot = await snapshotText(job);
+        if (turn.observation?.onConversation !== true || chatGptGenerationActive({ snapshot, domStopButton: turn.observation.stopPresent })) {
+          previous = "";
+          stableReads = 0;
+          continue;
+        }
         reloaded = turn.captured.rawText;
       } else if (conversationId) {
         const observation = await observeTurns(job, { conversationId }).catch(() => undefined);
@@ -2109,9 +2115,10 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText, binding =
         reloaded = (await assistantMessages(job).catch(() => []))[responseIndex]?.text || "";
       }
       if (reloaded.length > best.length) best = reloaded;
-      // A reload renders the committed turn in one pass, but hydration takes a moment; require
-      // two identical non-empty reads so a half-hydrated page is never mistaken for the turn.
-      stableReads = reloaded && reloaded === previous ? stableReads + 1 : 0;
+      // Reload can rehydrate a frozen turn. Require stable non-empty text; recollection also
+      // checks generation with the capture above. These UI observations cannot attest hidden
+      // provider state if the reloaded page exposes neither generation nor further text.
+      stableReads = (binding ? reloaded.trim() : reloaded) && reloaded === previous ? stableReads + 1 : 0;
       previous = reloaded;
       if (stableReads >= 1) {
         if (binding && Date.now() < deadline) return turn;
@@ -2134,8 +2141,7 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText, binding =
 // button labeled Stop in the current one) is the authoritative generation signal; observeTurns reads
 // rendered controls (not retained hidden workspaces) in the same evaluation as the turns, and the
 // accessibility labels remain a fallback.
-async function waitForChatCompletion(job, baselineAssistantCount, recollectionBinding = undefined, beginCollection = undefined) {
-  const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
+async function waitForChatCompletion(job, baselineAssistantCount, recollectionBinding = undefined, beginCollection = undefined, timeoutAt = Date.now() + job.config.worker.completionTimeoutMs) {
   const conversationId = isGrokJob(job) ? undefined : job.conversationId;
   let lastCompletionSignature = "";
   let stableCount = 0;
@@ -2329,7 +2335,7 @@ async function waitForChatCompletion(job, baselineAssistantCount, recollectionBi
 // same-origin child frame holds the report). Chrome surfaces that iframe as a CDP child session
 // only if auto-attach was armed before the frame was created, so the client is armed before send.
 const DEEP_RESEARCH_REPORT_EXPRESSION = `(() => { try { return (frames[0]?.document || globalThis.document).body.innerText; } catch { return ""; } })()`;
-const DEEP_RESEARCH_FRAME_WAIT_MS = 60_000;
+const DEEP_RESEARCH_FRAME_WAIT_MS = RECOLLECTION_RESEARCH_WAIT_MS;
 
 /** @type {RelayCdpClient | undefined} */
 let deepResearchCdp;
@@ -2417,22 +2423,32 @@ async function collectArtifactCandidates(job, responseIndex) {
 
 async function withHeartbeatWhile(task) {
   let active = true;
-  const timer = setInterval(() => { if (active) void heartbeat().catch(() => undefined); }, ARTIFACT_DOWNLOAD_HEARTBEAT_MS);
+  let pending;
+  const timer = setInterval(() => {
+    if (active && !pending) pending = heartbeat().catch(() => undefined).finally(() => { pending = undefined; });
+  }, ARTIFACT_DOWNLOAD_HEARTBEAT_MS);
   timer.unref?.();
   try { return await task(); }
-  finally { active = false; clearInterval(timer); }
+  finally { active = false; clearInterval(timer); await pending; }
 }
 
 // The conversation is checked inside the capture's own evaluation (captureScopedResponse), so the
 // location that authorizes a capture is always the page the capture read.
 async function captureBoundTurn(job, binding, options = {}) {
   if (!binding.conversationId) throw new Error("Collection needs the job's conversation binding.");
-  const captured = await evalPage(job, toJsonScript(`return ${captureExpression(binding)};`), options);
+  const { observeGeneration, ...commandOptions } = options;
+  // No await inside this evaluation: navigation/Stop and the capture cannot straddle a page update.
+  const result = await evalPage(job, toJsonScript(observeGeneration
+    ? `const observation = ${observeConversationExpression({ conversationId: binding.conversationId, stopSelector: CHATGPT_STOP_CONTROL_SELECTOR })};
+       return { observation, captured: ${captureExpression(binding)} };`
+    : `return ${captureExpression(binding)};`), commandOptions);
+  const captured = observeGeneration ? result?.captured : result;
   if (!captured || typeof captured.rawHtml !== "string") throw new Error("Bound response capture failed.");
   const turnSha256 = turnContentSha256(captured.rawText);
   if (!binding.messageId && binding.turnSha256 && binding.turnSha256 !== turnSha256) throw new Error("Bound response content changed; refusing index-only recollection.");
   const { anchorFileName: _anchor, ...durable } = binding;
-  return { captured, binding: { ...durable, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
+  return { captured, ...(observeGeneration ? { observation: result.observation } : {}),
+    binding: { ...durable, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
 }
 
 // Persist identity immediately, not a still-changing content hash. Later attempts retain the
@@ -2503,11 +2519,11 @@ async function boundResearchFrame(job, binding) {
 
 // The Export control and its asynchronous "Export to Markdown" option live in the report document
 // nested inside the sandboxed widget frame; the download itself is delegated to the host page.
-async function activateReportExport(frame, selector) {
+async function activateReportExport(frame, selector, timeoutMs = ARTIFACT_DOWNLOAD_TIMEOUT_MS) {
   const result = await deepResearchCdp.send("Runtime.evaluate", {
-    expression: `(async () => { const document = frames[0]?.document || globalThis.document; return await (${activateDownloadControl.toString()})(${JSON.stringify(selector)}, true); })()`,
+    expression: `(async () => { const document = frames[0]?.document || globalThis.document; return await (${activateDownloadControl.toString()})(${JSON.stringify(selector)}, true, ${timeoutMs}); })()`,
     returnByValue: true, awaitPromise: true,
-  }, frame.sessionId, ARTIFACT_DOWNLOAD_TIMEOUT_MS);
+  }, frame.sessionId, timeoutMs);
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description?.split("\n")[0] || result.exceptionDetails.text || "Report export activation failed.");
   return result.result?.value;
 }
@@ -2543,6 +2559,8 @@ async function collectBoundResult(job, binding, fallbackText = "", recollection 
   let reportState;
   let citations;
   let turnDurationLabel;
+  let verifiedResearchDom = false;
+  const normalizedReportText = (text) => String(text || "").replace(/\s+/g, " ").trim();
   /** @type {import("./response-capture.d.mts").OracleArtifactInspectionState} */
   let inspection = "not_performed";
   /** @type {import("./response-capture.d.mts").OracleCaptureFidelity} */
@@ -2554,6 +2572,15 @@ async function collectBoundResult(job, binding, fallbackText = "", recollection 
   const artifacts = Array.isArray(oldManifest) ? [...oldManifest] : [];
   const artifactsDir = join(jobDir, "artifacts");
   await ensurePrivateDir(artifactsDir);
+  const preserveUnconfirmedResearch = async (name, text) => {
+    const file = await preserveCaptureFile(join(artifactsDir, `research-${name}.md`), redactTransportSecrets(text || ""));
+    const candidateId = `research:${name}`;
+    const record = { candidateId, displayName: `Unconfirmed research ${name}`, state: "failed", required: false,
+      unconfirmed: true, copiedPath: file.path, sha256: file.sha256, size: file.size,
+      error: "This representation was not bound to the verified completed report body." };
+    const index = artifacts.findIndex((item) => item.candidateId === candidateId);
+    if (index < 0) artifacts.push(record); else artifacts[index] = record;
+  };
   try {
     // A timed-out chat recollection saves the second stable reload capture itself. Re-reading the
     // page here could save different text under the proof earned by that earlier observation.
@@ -2569,8 +2596,16 @@ async function collectBoundResult(job, binding, fallbackText = "", recollection 
       const completionText = await deepResearchCdp.evaluate(frame.sessionId, DEEP_RESEARCH_REPORT_EXPRESSION);
       const completedReport = parseDeepResearchWidgetText(typeof completionText === "string" ? completionText : "");
       if (!report?.rawHtml || !completedReport.completed
-        || (recollection && (!completedReport.report || completedReport.report !== recollection.expectedReport || !report.markdown?.trim()))) {
+        || (recollection && (!completedReport.report || normalizedReportText(completedReport.report) !== normalizedReportText(recollection.expectedReport)))) {
         throw new Error(recollection ? "Bound research frame is not the completed non-empty report that recollection verified." : "Bound research frame is not a completed report.");
+      }
+      if (recollection) {
+        const visible = parseDeepResearchWidgetText(report.rawText);
+        // Only DOM Markdown whose co-captured visible body equals the verified report after
+        // whitespace normalization may replace it; unbound widget/native renderings stay optional evidence.
+        verifiedResearchDom = Boolean(report.markdown?.trim())
+          && normalizedReportText(visible.completed ? visible.report : report.rawText) === normalizedReportText(recollection.expectedReport);
+        if (!verifiedResearchDom) await preserveUnconfirmedResearch("dom", report.markdown);
       }
       // The reply that starts research reads "Worked for 5s"; the research itself is timed by the
       // widget's status line ("Research completed in 7m · …").
@@ -2578,6 +2613,7 @@ async function collectBoundResult(job, binding, fallbackText = "", recollection 
       if (researchDuration) turnDurationLabel = `Research completed in ${researchDuration}`;
       reportState = /** @type {import("./response-capture.d.mts").OracleResearchReportState | undefined} */ (await deepResearchCdp.evaluate(frame.sessionId, `(${readResearchReportState.toString()})()`));
       if (!reportState?.markdown) optionalMissing.push("research_widget_state");
+      else if (recollection) await preserveUnconfirmedResearch("widget", reportState.markdown);
       capture = report;
       binding = { ...binding, frameId: frame.targetId };
     }
@@ -2585,6 +2621,11 @@ async function collectBoundResult(job, binding, fallbackText = "", recollection 
     fidelity = "derived_markdown";
     method = "scoped_dom";
     response = capture.markdown;
+    if (frame && recollection && !verifiedResearchDom) {
+      response = recollection.expectedReport;
+      fidelity = "text_only";
+      method = "verified_report_text";
+    }
     const markdownBlocks = capture.codeBlocks.filter((block) => /^(?:markdown|md)$/i.test(block.language));
     if (markdownBlocks.length === 1 && job.selection.tool !== "deep_research") {
       response = markdownBlocks[0].text;
@@ -2629,7 +2670,8 @@ async function collectBoundResult(job, binding, fallbackText = "", recollection 
             downloaded = await withHeartbeatWhile(() => collectNativeDownload({
               cdp: deepResearchCdp, pageSessionId: deepResearchPageSession, frameSessionId: frame.sessionId,
               timeoutMs: recollectionOperationTimeoutMs(recollection?.deadline, ARTIFACT_DOWNLOAD_TIMEOUT_MS),
-              activate: () => activateReportExport(frame, candidate.selector),
+              deadlineAt: recollection?.deadline,
+              activate: (remaining) => activateReportExport(frame, candidate.selector, remaining),
             }));
             await log(`Native report export collected (${downloaded.native.source} download ${downloaded.native.guid} from frame ${downloaded.native.frameId}, ${downloaded.native.totalBytes} bytes)`);
           } else {
@@ -2666,13 +2708,22 @@ async function collectBoundResult(job, binding, fallbackText = "", recollection 
     if (frame) {
       const native = artifacts.find((item) => item.nativeMarkdown && item.state === "validated");
       if (!native) optionalMissing.push("native_markdown_export");
-      const research = composeResearchResponse({ capture, reportState, nativeMarkdown: native ? await readFile(native.copiedPath, "utf8") : undefined });
-      response = research.markdown;
-      fidelity = research.fidelity;
-      method = research.method;
-      citations = research.citations;
-      capture.sources = research.sources;
-      requiredMissing.push(...research.requiredMissing);
+      if (recollection) {
+        for (const artifact of artifacts.filter((item) => item.nativeMarkdown)) {
+          Object.assign(artifact, { state: "failed", unconfirmed: true,
+            error: "Native Markdown bytes were collected, but their body was not bound to the verified report." });
+        }
+      }
+      if (!recollection || verifiedResearchDom) {
+        const research = composeResearchResponse({ capture, ...(!recollection ? { reportState,
+          nativeMarkdown: native ? await readFile(native.copiedPath, "utf8") : undefined } : {}) });
+        response = research.markdown;
+        fidelity = research.fidelity;
+        method = research.method;
+        citations = research.citations;
+        capture.sources = research.sources;
+        requiredMissing.push(...research.requiredMissing);
+      } else capture.sources = [];
     }
     if (capture.sources.some((item) => item.kind !== "artifact" && item.unresolved)) requiredMissing.push("unresolved_source_links");
   } catch (error) {
@@ -2920,31 +2971,50 @@ async function run() {
 
 async function runRecollection() {
   // Separate entrypoint: never reaches configure/upload/composer/send or the submit queue.
+  // Charge bootstrap time too: entering this function late must not move the read's envelope.
+  const budgetStartedAt = Date.now() - Math.ceil(process.uptime() * 1000);
   let deadlineTimer, deadlineRecordTimer;
-  const armDeadline = (timeoutMs, stage) => {
+  let stageDeadline, lifetimeDeadline = budgetStartedAt + RECOLLECTION_STARTUP_BUDGET_MS;
+  let admitted = false;
+  const deadlineWrites = new Set();
+  const armDeadline = (requestedDeadline, stage) => {
+    if (shuttingDown || (stageDeadline !== undefined && Date.now() >= stageDeadline)) throw new Error("Recollection stage deadline reached or interrupted; nothing was resent.");
     clearTimeout(deadlineTimer);
     clearTimeout(deadlineRecordTimer);
+    stageDeadline = Math.min(requestedDeadline, lifetimeDeadline);
+    const timeoutMs = Math.max(0, stageDeadline - Date.now());
     // A hard process deadline also bounds stuck filesystem/transport/cleanup operations, without
     // leaving a raced Promise running against a tab being torn down. Record the reason just before
     // exit; the durable admission hint still covers a lock or disk that cannot accept that write.
     deadlineRecordTimer = setTimeout(() => {
-      void mutateJob((job) => job.status === "complete" ? job : { ...job,
+      if (!admitted) return;
+      const pending = mutateJob((job) => job.status === "complete" ? job : { ...job,
         recollectionError: `Recollection reached its ${stage} deadline; nothing was resent.` }).catch(() => undefined);
+      deadlineWrites.add(pending);
+      void pending.then(() => deadlineWrites.delete(pending));
     }, Math.max(0, timeoutMs - 1000));
     deadlineTimer = setTimeout(() => process.exit(1), timeoutMs);
     deadlineRecordTimer.unref?.();
     deadlineTimer.unref?.();
-    return Date.now() + timeoutMs;
+    return stageDeadline;
   };
-  const beginCollection = () => armDeadline(RECOLLECTION_POST_WAIT_BUDGET_MS, "post-wait collection/cleanup") - RECOLLECTION_FINALIZE_RESERVE_MS;
+  const beginCollection = () => armDeadline(Date.now() + RECOLLECTION_POST_WAIT_BUDGET_MS, "post-wait collection/cleanup") - RECOLLECTION_FINALIZE_RESERVE_MS;
+  // Include the recollection lock and first read, not merely the work after the job is known.
+  armDeadline(lifetimeDeadline, "startup");
   try {
   await withLock(ORACLE_STATE_DIR, "recollect", jobId, { processPid: process.pid }, async () => {
     currentJob = await readJob();
+    if (currentJob.status === "complete") {
+      // Already-complete artifact recollection keeps its existing ten-minute read allowance,
+      // not timeout recovery's stage ceilings. Only its pre-read entry window is newly bounded.
+      clearTimeout(deadlineTimer);
+      clearTimeout(deadlineRecordTimer);
+    }
     const explicit = process.argv[4] ? JSON.parse(process.argv[4]) : undefined;
     // A job that timed out waiting for its reply is recollected through its archive anchor and,
     // on success, becomes complete; nothing is ever resent.
     const timedOut = timedOutRecollectionBinding(currentJob, explicit, basename);
-    if (timedOut) armDeadline(RECOLLECTION_STARTUP_BUDGET_MS, "startup");
+    if (timedOut) lifetimeDeadline = budgetStartedAt + RECOLLECTION_STARTUP_BUDGET_MS + recollectionWaitMs(currentJob) + RECOLLECTION_POST_WAIT_BUDGET_MS;
     if (currentJob.status !== "complete" && !timedOut) throw new Error("Recollection requires a completed job, or one that timed out waiting for its reply after the prompt was accepted.");
     let binding = timedOut ?? currentJob.collectionBinding;
     if (timedOut) {
@@ -2987,6 +3057,7 @@ async function runRecollection() {
         workerPid: process.pid, workerStartedAt: readProcessStartedAt(process.pid), cleanupPending: true, heartbeatAt: at, lastCleanupAt: undefined,
         ...(timedOut ? { recollectionError: "Recollection is verifying completion; if its worker stops before this message is replaced, the attempt was interrupted or its stage deadline expired. Nothing was resent." } : {}) }));
       acquired = true;
+      admitted = true;
     });
     // After a clean teardown the predecessor's identity returns; after a warning the fresh
     // identity stays persisted so terminal-cleanup reconciliation retries against the resources
@@ -3007,31 +3078,39 @@ async function runRecollection() {
           cleanupWarnings: prior.cleanupWarnings?.length ? [...new Set(prior.cleanupWarnings)] : undefined, lastCleanupAt };
       });
     };
+    let foreground;
     const onSignal = (signal) => {
       if (shuttingDown) return;
       shuttingDown = true;
       void (async () => {
+        // Do not exit gracefully while the foreground heartbeat wrapper still owns a mutation.
+        // A hung foreground/recorder remains under the currently armed hard deadline.
+        await foreground?.catch(() => undefined);
         await log(`Received ${signal} during recollection, cleaning up oracle runtime`).catch(() => undefined);
         if (timedOut) await mutateJob((job) => job.status === "complete" ? job : { ...job, recollectionError: `Recollection interrupted by ${signal}; nothing was resent.` }).catch(() => undefined);
         const warnings = await cleanupRuntime(currentJob).catch((error) => [`Runtime cleanup failed on ${signal}: ${error instanceof Error ? error.message : String(error)}`]);
         await finalizeRecollection(warnings).catch(() => undefined);
+        clearTimeout(deadlineRecordTimer);
+        await Promise.all(deadlineWrites);
         process.exit(0);
       })();
     };
     process.on("SIGTERM", () => onSignal("SIGTERM"));
     process.on("SIGINT", () => onSignal("SIGINT"));
     try {
-      await withHeartbeatWhile(async () => {
+      foreground = withHeartbeatWhile(async () => {
       await ensurePrivateDir(join(jobDir, "logs"));
       if (!usesSharedBrowser(currentJob.config)) await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
       // Arm before navigation; only the newly owned tab is touched.
       await launchBrowser(currentJob, "about:blank");
       if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);
       await agentBrowser(currentJob, "open", currentJob.chatUrl);
+      if (shuttingDown) return;
       let verifiedTurn, collectionDeadline, expectedReport;
       if (timedOut && currentJob.selection.tool !== "deep_research") {
-        armDeadline(recollectionWaitMs(currentJob) + RECOLLECTION_FINALIZE_RESERVE_MS, "completion wait/cleanup");
-        const completion = await waitForChatCompletion(currentJob, binding.responseIndex, binding, beginCollection);
+        const waitDeadline = Math.min(Date.now() + recollectionWaitMs(currentJob), budgetStartedAt + RECOLLECTION_STARTUP_BUDGET_MS + recollectionWaitMs(currentJob));
+        armDeadline(waitDeadline + RECOLLECTION_FINALIZE_RESERVE_MS, "completion wait/cleanup");
+        const completion = await waitForChatCompletion(currentJob, binding.responseIndex, binding, beginCollection, waitDeadline);
         binding = completion.binding;
         verifiedTurn = completion.verifiedTurn;
         collectionDeadline = completion.collectionDeadline;
@@ -3042,8 +3121,9 @@ async function runRecollection() {
       if (!verifiedTurn) binding = (await acquireBoundTurn(currentJob, binding)).binding;
       if (currentJob.selection.tool === "deep_research") {
         if (timedOut) await persistRecollectionIdentity(binding);
-        const reportDeadline = Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS;
-        if (timedOut) armDeadline(recollectionWaitMs(currentJob) + RECOLLECTION_FINALIZE_RESERVE_MS, "research wait/cleanup");
+        const reportDeadline = timedOut ? Math.min(Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, budgetStartedAt + RECOLLECTION_STARTUP_BUDGET_MS + DEEP_RESEARCH_FRAME_WAIT_MS)
+          : Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS;
+        if (timedOut) armDeadline(reportDeadline + RECOLLECTION_FINALIZE_RESERVE_MS, "research wait/cleanup");
         expectedReport = await waitForDeepResearchReport(currentJob, reportDeadline, binding);
         if (timedOut) {
           if (Date.now() >= reportDeadline) throw new Error("Recollection research report deadline reached; nothing was resent.");
@@ -3068,6 +3148,7 @@ async function runRecollection() {
         await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
       }
       });
+      await foreground;
     } catch (thrown) {
       if (shuttingDown) return;
       await assertManagedBrowserUnchanged(currentJob).catch(() => undefined);
@@ -3085,8 +3166,9 @@ async function runRecollection() {
     // A signal handler may still be cleaning up asynchronously; its hard stage deadline stays
     // armed until that handler exits the process.
     if (!shuttingDown) {
-      clearTimeout(deadlineTimer);
       clearTimeout(deadlineRecordTimer);
+      await Promise.all(deadlineWrites);
+      clearTimeout(deadlineTimer);
     }
   }
 }

@@ -131,7 +131,7 @@ const ORACLE_AUTH_PARAMS = Type.Object({
 const ORACLE_READ_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
   projectId: Type.Optional(Type.String({ minLength: 1, description: "Owning project root recorded at submission. Defaults to the current project; another project's job requires this explicit acknowledgment." })),
-  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect the reply of a completed job, or of a job that timed out waiting for its reply after the prompt was accepted, without sending a prompt: by its message ID, its content hash, or the user turn that carries the job's archive. Default: read saved files only." })),
+  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect a completed job's reply, or a ChatGPT job that timed out after its prompt was accepted, without sending a prompt. Timed-out Grok recollection is unsupported. Binding uses the saved message ID, an identity-less completed turn's content hash, or the user turn carrying the archive. Default: read saved files only." })),
   responseIndex: Type.Optional(Type.Integer({ minimum: 0, description: "Only for a job without a saved turn binding: explicit zero-based assistant turn index, paired with messageId for a legacy completed job, alone for a timed-out job." })),
   messageId: Type.Optional(Type.String({ minLength: 1, description: "Only for a legacy completed job without a saved turn binding: exact observed data-message-id of the assistant turn, paired with responseIndex." })),
 }, { additionalProperties: false });
@@ -1276,6 +1276,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         let job = readJobForProject(params.jobId, params.projectId ?? getProjectId(ctx.cwd));
+        let workerError: ReturnType<typeof buildOracleToolErrorDetails> | undefined;
         if (params.action === "recollect") {
           // A job that timed out waiting for its reply after the prompt was accepted is recollected
           // through the user turn that carries its archive; the worker applies the same binding.
@@ -1286,10 +1287,16 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           if (!timedOut && (params.responseIndex === undefined) !== (params.messageId === undefined)) throw new Error("Legacy turn binding requires responseIndex and messageId together.");
           const explicit = params.responseIndex !== undefined || params.messageId !== undefined
             ? JSON.stringify({ responseIndex: params.responseIndex, messageId: params.messageId }) : undefined;
-          // Shared stage budgets include startup, the completion wait, collection and cleanup.
-          // The read backstop outlives the worker's own hard deadline.
+          // Timeout recovery budgets include startup, waiting, collection and cleanup; its read
+          // backstop outlives the worker deadline. Complete jobs keep their ten-minute allowance.
           const timeout = timedOut ? recollectionReadTimeoutMs(job) : 10 * 60 * 1000;
-          await execFileAsync(resolveNodeExecutable(), [workerPath, job.id, "--recollect", ...(explicit ? [explicit] : [])], { maxBuffer: 1024 * 1024, timeout });
+          try {
+            await execFileAsync(resolveNodeExecutable(), [workerPath, job.id, "--recollect", ...(explicit ? [explicit] : [])], { maxBuffer: 1024 * 1024, timeout });
+          } catch (error) {
+            workerError = buildOracleToolErrorDetails("oracle_read", error, params);
+          }
+          // A hard exit can follow successful response persistence and even completion. Return
+          // the durable state alongside the subprocess failure, never an exit-derived status.
           job = readJobForProject(params.jobId, params.projectId ?? getProjectId(ctx.cwd));
         } else if (params.responseIndex !== undefined || params.messageId !== undefined) throw new Error("Turn binding parameters require action=recollect.");
         const readerSessionFile = getSessionFile(ctx);
@@ -1320,17 +1327,18 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           content: [
             {
               type: "text",
-              text: formatOracleJobSummary(current, {
+              text: [formatOracleJobSummary(current, {
                 queuePosition,
                 artifactsPath: `${getJobDir(current.id)}/artifacts`,
                 responsePreview,
                 responseLength,
                 responseAvailable,
                 heartbeatStaleMs: ORACLE_STALE_HEARTBEAT_MS,
-              }),
+              }), workerError ? `Recollection worker: ${workerError.message}` : undefined].filter(Boolean).join("\n"),
             },
           ],
           details: {
+            ...(workerError ? { error: workerError } : {}),
             job: redactJobDetails(current, {
               queue: buildOracleQueueSnapshot(current, queuePosition),
               responsePreview,

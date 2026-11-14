@@ -40,7 +40,7 @@ for (const slowStage of ['setup', 'activation', 'bytes', 'teardown']) {
     };
     const activate = new Function('deepResearchCdp', 'activateDownloadControl',
       `const ARTIFACT_DOWNLOAD_TIMEOUT_MS=90000; ${activateNode.getText(tree)}; return activateReportExport;`)(cdp, activateDownloadControl);
-    await assert.rejects(collectNativeDownload({ cdp, pageSessionId: 'page', timeoutMs: 20, deadlineAt: 20,
+    await assert.rejects(collectNativeDownload({ cdp, pageSessionId: 'page', timeoutMs: 90000, deadlineAt: 20,
       activate: remaining => activate({ sessionId: 'page' }, '#export', remaining) }), /deadline|budget/);
     assert(now <= 20, `${slowStage} spent ${now}ms beyond the 20ms whole-operation deadline`);
     assert.equal(listeners.size, 0);
@@ -55,6 +55,14 @@ test('an exhausted activation budget cannot click the export control', async t =
   t.after(() => { if (priorDocument === undefined) delete globalThis.document; else globalThis.document = priorDocument; });
   await assert.rejects(activateDownloadControl('#export', true, 0), /deadline/);
   assert.equal(clicks, 0);
+});
+
+test('native setup issues no command at an exhausted absolute deadline', async t => {
+  t.mock.method(Date, 'now', () => 0);
+  let calls = 0;
+  const cdp = { on: () => () => {}, send: async () => { calls++; throw new Error('Unexpected command after expiry'); } };
+  await assert.rejects(collectNativeDownload({ cdp, pageSessionId: 'page', deadlineAt: 0, activate: async () => {} }), /deadline/);
+  assert.equal(calls, 0);
 });
 
 test('an export menu arriving at the activation deadline is not clicked', async t => {
