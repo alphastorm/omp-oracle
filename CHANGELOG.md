@@ -4,6 +4,14 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+
+- Timed-out ChatGPT chat recollection requires an archive-anchored message identity, observed completion and stable reload captures before saving a nonempty response. Collector/persistence failure cannot become completion; one final transition writes `recollectionCompletionVerifiedAt`, also exposed in structured read details. Already-complete recollection and ordinary collection keep their existing behavior.
+- Timed-out Deep Research and Grok recollection are refused before job, worker, lease or browser changes. Their previous unverified timeout recovery is no longer available; completed-job artifact recollection remains unchanged.
+- Failed attempts may leave staging files but cannot borrow an older response as a fresh capture. Shutdown checks stop a transition before its callback, not a write already authorized by that callback. Hidden-text rendering, Retry beside a finished reply, artifact budgets, cleanup/heartbeat behavior and the ten-minute read backstop are unchanged.
+
 ## 0.4.15 - 2026-11-13
 
 ### Changed
