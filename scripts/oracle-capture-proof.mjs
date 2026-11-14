@@ -16,6 +16,7 @@ import { detectCompletionFailure, throwIfProviderTransientError } from '../exten
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
 import { usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
 import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, timedOutRecollectionBinding, transitionOracleJobPhase } from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
+import * as recollectionBudgets from '../extensions/oracle/shared/recollection-budget.mjs';
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, composeResearchResponse, durationLabelSeconds, observeConversationExpression, readResearchReportState, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
 import { CHATGPT_COMPOSER_EDITOR_SELECTOR, CHATGPT_STOP_CONTROL_SELECTOR, classifyDeepResearchTurn, deriveAssistantCompletionSignature, isChatGptComposerEntry, waitForStationaryControl } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 import { chatGptGenerationActive, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStaleStopState } from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
@@ -118,11 +119,12 @@ try {
   const openUrl = async (url) => { opens.push(url); if (url.startsWith(origin)) await navigate(url); };
   // `sleep` is imported by the worker from the shared time helpers, so it is injected, not extracted;
   // bounded capture retries need no wall-clock delay against a static synthetic page.
-  const workerSource = extract(['captureBoundTurn', 'acquireBoundTurn', 'returnToOwnConversation', 'noteOwnConversation', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection', 'OracleWorkerError', 'waitForChatCompletion', 'reconcileStreamedTurn', 'observeTurns', 'observedPagePath']);
-  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','composeResearchResponse','durationLabelSeconds','readResearchReportState','redactTransportSecrets','turnContentSha256','validateArtifactBytes','appendOracleJobLifecycleEvent','applyOracleJobCleanupWarnings','jobDir','evalPage','openUrl','conversationIdFromUrl','sleep','usesSharedBrowser','timedOutRecollectionBinding','AgentBrowserTimeoutError','completionDependencies'];
+  const workerSource = extract(['captureBoundTurn', 'persistRecollectionIdentity', 'acquireBoundTurn', 'returnToOwnConversation', 'noteOwnConversation', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection', 'OracleWorkerError', 'waitForChatCompletion', 'reconcileStreamedTurn', 'observeTurns', 'observedPagePath']);
+  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','composeResearchResponse','durationLabelSeconds','readResearchReportState','redactTransportSecrets','turnContentSha256','validateArtifactBytes','appendOracleJobLifecycleEvent','applyOracleJobCleanupWarnings','jobDir','evalPage','openUrl','conversationIdFromUrl','sleep','usesSharedBrowser','timedOutRecollectionBinding','AgentBrowserTimeoutError','completionDependencies','budgets'];
   // The browser adapter retains dead session identities and enforces the Unix socket limit.
   // Collection itself still executes production functions against real Chromium above.
   const factory = new Function(...dependencyNames, `let currentJob; let shuttingDown=false; let conversationLeftEpisode=false;
+    const { RECOLLECTION_STARTUP_BUDGET_MS, RECOLLECTION_POST_WAIT_BUDGET_MS, RECOLLECTION_FINALIZE_RESERVE_MS, recollectionWaitMs, recollectionOperationTimeoutMs } = budgets;
     const { transitionOracleJobPhase, observeConversationExpression, CHATGPT_STOP_CONTROL_SELECTOR, chatGptGenerationActive,
       deriveAssistantCompletionSignature, nextStaleStopState, isConversationPathUrl, classifyDeepResearchTurn,
       nextMissingTurnState, nextMissingTurnReloadState, detectCompletionFailure, throwIfProviderTransientError } = completionDependencies;
@@ -169,7 +171,8 @@ try {
     redactTransportSecrets,turnContentSha256,validateArtifactBytes,appendOracleJobLifecycleEvent,applyOracleJobCleanupWarnings,dir,evalPage,openUrl,conversationIdFromUrl,() => sleep(1),usesSharedBrowser,timedOutRecollectionBinding,AgentBrowserTimeoutError,
     { transitionOracleJobPhase, observeConversationExpression, CHATGPT_STOP_CONTROL_SELECTOR, chatGptGenerationActive,
       deriveAssistantCompletionSignature, nextStaleStopState, isConversationPathUrl, classifyDeepResearchTurn,
-      nextMissingTurnState, nextMissingTurnReloadState, detectCompletionFailure, throwIfProviderTransientError });
+      nextMissingTurnState, nextMissingTurnReloadState, detectCompletionFailure, throwIfProviderTransientError },
+    recollectionBudgets);
   const jobDir = join(root, 'job');
   await mkdir(jobDir);
   const job = { id: 'synthetic', phase: 'downloading_artifacts', status: 'waiting', submittedAt: new Date().toISOString(), responsePath: join(jobDir, 'response.md'), conversationId: 'synthetic', selection: { provider: 'chatgpt' }, config: { artifacts: { capture: true } } };

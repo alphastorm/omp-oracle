@@ -88,6 +88,7 @@ import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { classifyChatGptJobPage, classifyGrokPage, detectProviderSignals, detectCompletionFailure, providerPageSignalsExpression, visibleBlockerInSnapshot, formatProviderTransientErrorMessage, providerTransientErrorMessage, throwIfProviderTransientError } from "./provider-page-signals.mjs";
 import { assertNotKnownBrowserUserDataPath, assertSafeBrowserLaunchArg, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
+import { RECOLLECTION_STARTUP_BUDGET_MS, RECOLLECTION_POST_WAIT_BUDGET_MS, RECOLLECTION_FINALIZE_RESERVE_MS, recollectionWaitMs, recollectionOperationTimeoutMs } from "../shared/recollection-budget.mjs";
 
 const jobId = process.argv[2];
 if (!isValidOracleJobId(jobId)) {
@@ -2061,22 +2062,40 @@ const STALE_STOP_CONTROL_MS = 120_000;
 const MISSING_TURN_RELOAD_MS = 300_000;
 const MISSING_TURN_RELOAD_MAX = 1;
 
-async function reconcileStreamedTurn(job, responseIndex, streamedText, binding = undefined) {
+/** @overload
+ * @param {any} job
+ * @param {number} responseIndex
+ * @param {string} streamedText
+ * @returns {Promise<string>}
+ */
+/** @overload
+ * @param {any} job
+ * @param {number} responseIndex
+ * @param {string} streamedText
+ * @param {any} binding
+ * @param {number} collectionDeadline
+ * @returns {Promise<Awaited<ReturnType<typeof captureBoundTurn>>>}
+ */
+async function reconcileStreamedTurn(job, responseIndex, streamedText, binding = undefined, collectionDeadline = undefined) {
   const conversationUrl = job.chatUrl;
+  if (binding && (!conversationUrl || !isConversationPathUrl(conversationUrl))) throw new Error("Recollection needs its saved conversation URL for reload verification.");
   if (!conversationUrl || !isConversationPathUrl(conversationUrl)) return streamedText;
   const conversationId = isGrokJob(job) ? undefined : job.conversationId;
   let best = streamedText;
   try {
-    await agentBrowser(job, "open", conversationUrl);
-    const deadline = Date.now() + RELOAD_RECONCILE_TIMEOUT_MS;
+    const boundDeadline = binding ? Math.min(Date.now() + RELOAD_RECONCILE_TIMEOUT_MS, collectionDeadline ?? Infinity) : undefined;
+    await agentBrowser(job, "open", conversationUrl, ...(binding ? [{ timeoutMs: recollectionOperationTimeoutMs(boundDeadline, RELOAD_RECONCILE_TIMEOUT_MS) }] : []));
+    const deadline = boundDeadline ?? Date.now() + RELOAD_RECONCILE_TIMEOUT_MS;
     let previous = "";
     let stableReads = 0;
     while (Date.now() < deadline) {
       await heartbeat();
       await sleep(RELOAD_RECONCILE_POLL_MS);
       let reloaded = "";
+      let turn;
       if (binding) {
-        reloaded = (await captureBoundTurn(job, binding)).captured.rawText;
+        turn = await captureBoundTurn(job, binding, { timeoutMs: recollectionOperationTimeoutMs(deadline, RELOAD_RECONCILE_TIMEOUT_MS) });
+        reloaded = turn.captured.rawText;
       } else if (conversationId) {
         const observation = await observeTurns(job, { conversationId }).catch(() => undefined);
         if (observation && !observation.onConversation) {
@@ -2094,9 +2113,14 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText, binding =
       // two identical non-empty reads so a half-hydrated page is never mistaken for the turn.
       stableReads = reloaded && reloaded === previous ? stableReads + 1 : 0;
       previous = reloaded;
-      if (stableReads >= 1) break;
+      if (stableReads >= 1) {
+        if (binding && Date.now() < deadline) return turn;
+        if (!binding) break;
+      }
     }
+    if (binding) throw new Error("Recollection reload did not produce two identical non-empty reads of the bound reply before its deadline.");
   } catch (error) {
+    if (binding) throw error;
     await log(`Reload reconciliation failed, keeping the streamed read: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (best.length > streamedText.length) {
@@ -2110,7 +2134,7 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText, binding =
 // button labeled Stop in the current one) is the authoritative generation signal; observeTurns reads
 // rendered controls (not retained hidden workspaces) in the same evaluation as the turns, and the
 // accessibility labels remain a fallback.
-async function waitForChatCompletion(job, baselineAssistantCount, recollectionBinding = undefined) {
+async function waitForChatCompletion(job, baselineAssistantCount, recollectionBinding = undefined, beginCollection = undefined) {
   const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
   const conversationId = isGrokJob(job) ? undefined : job.conversationId;
   let lastCompletionSignature = "";
@@ -2168,7 +2192,10 @@ async function waitForChatCompletion(job, baselineAssistantCount, recollectionBi
       // Do not freeze a streaming turn's content hash when the UI has no message identity.
       const turn = await captureBoundTurn(job, recollectionBinding).catch(() => undefined);
       targetMessage = turn ? { text: turn.captured.rawText } : undefined;
-      if (turn?.binding.messageId) recollectionBinding = { ...recollectionBinding, messageId: turn.binding.messageId };
+      if (turn?.binding.messageId && !recollectionBinding.messageId) {
+        recollectionBinding = { ...recollectionBinding, messageId: turn.binding.messageId };
+        await persistRecollectionIdentity(recollectionBinding);
+      }
     }
     const targetText = targetMessage?.text || "";
     const responseFailureText = await detectCompletionFailure({ hasStopStreaming, hasRetryButton, turnText: targetText, readSignals: () => readPageSignals(job) });
@@ -2258,6 +2285,7 @@ async function waitForChatCompletion(job, baselineAssistantCount, recollectionBi
       else stableCount = 1;
       lastCompletionSignature = completionSignature;
       if (stableCount >= 2) {
+        if (recollectionBinding && Date.now() >= timeoutAt) break;
         if (job.selection.tool === "deep_research") {
           // The turn is stable, but for Deep Research the assistant text is never the report: it
           // renders inside a cross-origin App iframe. Read it from the frame session captured
@@ -2272,8 +2300,13 @@ async function waitForChatCompletion(job, baselineAssistantCount, recollectionBi
           const report = await waitForDeepResearchReport(job, timeoutAt, { responseIndex: baselineAssistantCount });
           return { responseIndex: baselineAssistantCount, responseText: report };
         }
-        return { responseIndex: baselineAssistantCount, responseText: await reconcileStreamedTurn(job, baselineAssistantCount, targetText, recollectionBinding),
-          ...(recollectionBinding ? { binding: recollectionBinding } : {}) };
+        if (recollectionBinding) {
+          const collectionDeadline = beginCollection();
+          const verifiedTurn = await reconcileStreamedTurn(job, baselineAssistantCount, targetText, recollectionBinding, collectionDeadline);
+          return { responseIndex: baselineAssistantCount, responseText: verifiedTurn.captured.rawText,
+            binding: verifiedTurn.binding, verifiedTurn, collectionDeadline };
+        }
+        return { responseIndex: baselineAssistantCount, responseText: await reconcileStreamedTurn(job, baselineAssistantCount, targetText) };
       }
     } else {
       lastCompletionSignature = "";
@@ -2392,14 +2425,27 @@ async function withHeartbeatWhile(task) {
 
 // The conversation is checked inside the capture's own evaluation (captureScopedResponse), so the
 // location that authorizes a capture is always the page the capture read.
-async function captureBoundTurn(job, binding) {
+async function captureBoundTurn(job, binding, options = {}) {
   if (!binding.conversationId) throw new Error("Collection needs the job's conversation binding.");
-  const captured = await evalPage(job, toJsonScript(`return ${captureExpression(binding)};`));
+  const captured = await evalPage(job, toJsonScript(`return ${captureExpression(binding)};`), options);
   if (!captured || typeof captured.rawHtml !== "string") throw new Error("Bound response capture failed.");
   const turnSha256 = turnContentSha256(captured.rawText);
   if (!binding.messageId && binding.turnSha256 && binding.turnSha256 !== turnSha256) throw new Error("Bound response content changed; refusing index-only recollection.");
   const { anchorFileName: _anchor, ...durable } = binding;
   return { captured, binding: { ...durable, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
+}
+
+// Persist identity immediately, not a still-changing content hash. Later attempts retain the
+// exact turn across index drift; learning identity must never move the saved position.
+async function persistRecollectionIdentity(binding) {
+  if (!binding.messageId) return;
+  await mutateJob((latest) => {
+    const saved = latest.collectionBinding;
+    if (saved && (saved.responseIndex !== binding.responseIndex
+      || (saved.messageId && saved.messageId !== binding.messageId))) throw new Error("Recollection cannot replace the saved turn binding.");
+    return { ...latest, collectionBinding: { ...saved, conversationId: binding.conversationId,
+      responseIndex: binding.responseIndex, messageId: binding.messageId } };
+  });
 }
 
 // Capture the bound turn of the job's own conversation. A page showing another conversation is
@@ -2489,7 +2535,7 @@ async function preserveCaptureFile(path, content) {
 // ChatGPT collection saves only what a bound capture read: a failed capture writes no response, and
 // the job records that recollection (never resubmission) recovers it. Grok has no bound capture, so
 // its streamed text remains its response.
-async function collectBoundResult(job, binding, fallbackText = "") {
+async function collectBoundResult(job, binding, fallbackText = "", recollection = undefined) {
   const requiredMissing = [];
   const optionalMissing = [];
   let capture;
@@ -2509,7 +2555,9 @@ async function collectBoundResult(job, binding, fallbackText = "") {
   const artifactsDir = join(jobDir, "artifacts");
   await ensurePrivateDir(artifactsDir);
   try {
-    const turn = await acquireBoundTurn(job, binding);
+    // A timed-out chat recollection saves the second stable reload capture itself. Re-reading the
+    // page here could save different text under the proof earned by that earlier observation.
+    const turn = recollection?.verifiedTurn ?? await acquireBoundTurn(job, binding);
     binding = turn.binding;
     capture = turn.captured;
     turnDurationLabel = capture.durationLabel;
@@ -2519,7 +2567,11 @@ async function collectBoundResult(job, binding, fallbackText = "") {
       frame = await boundResearchFrame(job, binding);
       const report = /** @type {import("./response-capture.d.mts").OracleScopedCapture | undefined} */ (await deepResearchCdp.evaluate(frame.sessionId, captureExpression({ report: true }, true)));
       const completionText = await deepResearchCdp.evaluate(frame.sessionId, DEEP_RESEARCH_REPORT_EXPRESSION);
-      if (!report?.rawHtml || !parseDeepResearchWidgetText(typeof completionText === "string" ? completionText : "").completed) throw new Error("Bound research frame is not a completed report.");
+      const completedReport = parseDeepResearchWidgetText(typeof completionText === "string" ? completionText : "");
+      if (!report?.rawHtml || !completedReport.completed
+        || (recollection && (!completedReport.report || completedReport.report !== recollection.expectedReport || !report.markdown?.trim()))) {
+        throw new Error(recollection ? "Bound research frame is not the completed non-empty report that recollection verified." : "Bound research frame is not a completed report.");
+      }
       // The reply that starts research reads "Worked for 5s"; the research itself is timed by the
       // widget's status line ("Research completed in 7m · …").
       const researchDuration = String(completionText).match(/Research completed in ([^·\n]+)/)?.[1]?.trim();
@@ -2549,6 +2601,9 @@ async function collectBoundResult(job, binding, fallbackText = "") {
     const rawHtml = await preserveCaptureFile(join(jobDir, "response.raw.html"), redactTransportSecrets(capture.rawHtml));
     capture.rawEvidence = { text: rawText, html: rawHtml, scope: "bound_turn",
       sanitization: "active content, transient attributes, and signed transport URLs removed" };
+    // Preserve the verified reply before spending the bounded remainder on optional downloads.
+    // The job does not become complete until the capture manifest and outcome are saved below.
+    if (recollection && response) await preserveCaptureFile(job.responsePath || join(jobDir, "response.md"), redactTransportSecrets(response));
     if (!job.config.artifacts.capture) inspection = "not_performed";
     else {
       let candidates = capture.candidates;
@@ -2567,23 +2622,24 @@ async function collectBoundResult(job, binding, fallbackText = "") {
         if (at >= 0) artifacts[at] = record; else artifacts.push(record);
         await flushArtifactsState(artifacts);
         try {
+          recollectionOperationTimeoutMs(recollection?.deadline, ARTIFACT_DOWNLOAD_TIMEOUT_MS);
           let downloaded;
           let nativeDownloadPath;
           if (frame) {
             downloaded = await withHeartbeatWhile(() => collectNativeDownload({
               cdp: deepResearchCdp, pageSessionId: deepResearchPageSession, frameSessionId: frame.sessionId,
-              timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS,
+              timeoutMs: recollectionOperationTimeoutMs(recollection?.deadline, ARTIFACT_DOWNLOAD_TIMEOUT_MS),
               activate: () => activateReportExport(frame, candidate.selector),
             }));
             await log(`Native report export collected (${downloaded.native.source} download ${downloaded.native.guid} from frame ${downloaded.native.frameId}, ${downloaded.native.totalBytes} bytes)`);
           } else {
             const expression = "(" + captureDownload.toString() + ")(" + JSON.stringify(candidate.selector) + ")";
             try {
-              downloaded = await withHeartbeatWhile(() => evalPage(job, toAsyncJsonScript(`return await ${expression};`), { timeoutMs: 105_000 }));
+              downloaded = await withHeartbeatWhile(() => evalPage(job, toAsyncJsonScript(`return await ${expression};`), { timeoutMs: recollectionOperationTimeoutMs(recollection?.deadline, 105_000) }));
             } catch (browserCaptureError) {
               nativeDownloadPath = join(artifactsDir, `.download-${candidate.candidateId}-${randomUUID()}`);
               await log(`Browser byte capture for ${candidate.candidateId} did not observe a file; using the driver's pre-armed native download listener.`);
-              await withHeartbeatWhile(() => agentBrowser(job, "download", candidate.selector, nativeDownloadPath, { timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS }));
+              await withHeartbeatWhile(() => agentBrowser(job, "download", candidate.selector, nativeDownloadPath, { timeoutMs: recollectionOperationTimeoutMs(recollection?.deadline, ARTIFACT_DOWNLOAD_TIMEOUT_MS) }));
               downloaded = { bytesBase64: (await readFile(nativeDownloadPath)).toString("base64"), fileName: candidate.fileName || "", contentType: "" };
             } finally {
               if (nativeDownloadPath) await rm(nativeDownloadPath, { force: true }).catch(() => undefined);
@@ -2864,12 +2920,31 @@ async function run() {
 
 async function runRecollection() {
   // Separate entrypoint: never reaches configure/upload/composer/send or the submit queue.
+  let deadlineTimer, deadlineRecordTimer;
+  const armDeadline = (timeoutMs, stage) => {
+    clearTimeout(deadlineTimer);
+    clearTimeout(deadlineRecordTimer);
+    // A hard process deadline also bounds stuck filesystem/transport/cleanup operations, without
+    // leaving a raced Promise running against a tab being torn down. Record the reason just before
+    // exit; the durable admission hint still covers a lock or disk that cannot accept that write.
+    deadlineRecordTimer = setTimeout(() => {
+      void mutateJob((job) => job.status === "complete" ? job : { ...job,
+        recollectionError: `Recollection reached its ${stage} deadline; nothing was resent.` }).catch(() => undefined);
+    }, Math.max(0, timeoutMs - 1000));
+    deadlineTimer = setTimeout(() => process.exit(1), timeoutMs);
+    deadlineRecordTimer.unref?.();
+    deadlineTimer.unref?.();
+    return Date.now() + timeoutMs;
+  };
+  const beginCollection = () => armDeadline(RECOLLECTION_POST_WAIT_BUDGET_MS, "post-wait collection/cleanup") - RECOLLECTION_FINALIZE_RESERVE_MS;
+  try {
   await withLock(ORACLE_STATE_DIR, "recollect", jobId, { processPid: process.pid }, async () => {
     currentJob = await readJob();
     const explicit = process.argv[4] ? JSON.parse(process.argv[4]) : undefined;
     // A job that timed out waiting for its reply is recollected through its archive anchor and,
     // on success, becomes complete; nothing is ever resent.
     const timedOut = timedOutRecollectionBinding(currentJob, explicit, basename);
+    if (timedOut) armDeadline(RECOLLECTION_STARTUP_BUDGET_MS, "startup");
     if (currentJob.status !== "complete" && !timedOut) throw new Error("Recollection requires a completed job, or one that timed out waiting for its reply after the prompt was accepted.");
     let binding = timedOut ?? currentJob.collectionBinding;
     if (timedOut) {
@@ -2910,7 +2985,7 @@ async function runRecollection() {
       // The predecessor's provenance is persisted, not held in memory, so a killed worker loses nothing.
       await mutateJob((job) => ({ ...job, runtimeSessionName: `oracle-${randomUUID()}`, recollectionPriorWorker: priorWorker,
         workerPid: process.pid, workerStartedAt: readProcessStartedAt(process.pid), cleanupPending: true, heartbeatAt: at, lastCleanupAt: undefined,
-        ...(timedOut ? { recollectionError: "Recollection is verifying completion; if its worker stops before this message is replaced, the attempt was interrupted. Nothing was resent." } : {}) }));
+        ...(timedOut ? { recollectionError: "Recollection is verifying completion; if its worker stops before this message is replaced, the attempt was interrupted or its stage deadline expired. Nothing was resent." } : {}) }));
       acquired = true;
     });
     // After a clean teardown the predecessor's identity returns; after a warning the fresh
@@ -2946,23 +3021,37 @@ async function runRecollection() {
     process.on("SIGTERM", () => onSignal("SIGTERM"));
     process.on("SIGINT", () => onSignal("SIGINT"));
     try {
+      await withHeartbeatWhile(async () => {
       await ensurePrivateDir(join(jobDir, "logs"));
       if (!usesSharedBrowser(currentJob.config)) await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
       // Arm before navigation; only the newly owned tab is touched.
       await launchBrowser(currentJob, "about:blank");
       if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);
       await agentBrowser(currentJob, "open", currentJob.chatUrl);
+      let verifiedTurn, collectionDeadline, expectedReport;
       if (timedOut && currentJob.selection.tool !== "deep_research") {
-        const completion = await waitForChatCompletion(currentJob, binding.responseIndex, binding);
+        armDeadline(recollectionWaitMs(currentJob) + RECOLLECTION_FINALIZE_RESERVE_MS, "completion wait/cleanup");
+        const completion = await waitForChatCompletion(currentJob, binding.responseIndex, binding, beginCollection);
         binding = completion.binding;
+        verifiedTurn = completion.verifiedTurn;
+        collectionDeadline = completion.collectionDeadline;
       }
       if (shuttingDown) return;
       // Reacquire before collecting: an anchored binding becomes an exact one (message ID and turn
       // hash) here, and a page that shows another conversation is reopened on the job's own.
-      binding = (await acquireBoundTurn(currentJob, binding)).binding;
-      if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
+      if (!verifiedTurn) binding = (await acquireBoundTurn(currentJob, binding)).binding;
+      if (currentJob.selection.tool === "deep_research") {
+        if (timedOut) await persistRecollectionIdentity(binding);
+        const reportDeadline = Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS;
+        if (timedOut) armDeadline(recollectionWaitMs(currentJob) + RECOLLECTION_FINALIZE_RESERVE_MS, "research wait/cleanup");
+        expectedReport = await waitForDeepResearchReport(currentJob, reportDeadline, binding);
+        if (timedOut) {
+          if (Date.now() >= reportDeadline) throw new Error("Recollection research report deadline reached; nothing was resent.");
+          collectionDeadline = beginCollection();
+        }
+      }
       if (shuttingDown) return;
-      await collectBoundResult(currentJob, binding);
+      await collectBoundResult(currentJob, binding, "", timedOut ? { verifiedTurn, expectedReport, deadline: collectionDeadline } : undefined);
       if (shuttingDown) return;
       if (timedOut && currentJob.collectionRequiredMissing?.includes("bound_response_capture")) throw new Error("The verified turn could not be collected; recollect again, nothing was resent.");
       if (!timedOut) await mutateJob((job) => ({ ...job, recollectionError: undefined }));
@@ -2978,6 +3067,7 @@ async function runRecollection() {
         }));
         await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
       }
+      });
     } catch (thrown) {
       if (shuttingDown) return;
       await assertManagedBrowserUnchanged(currentJob).catch(() => undefined);
@@ -2988,9 +3078,17 @@ async function runRecollection() {
         ...((error instanceof OracleWorkerError || error instanceof AgentBrowserTimeoutError) ? { errorCode: error.code } : {}),
         collectionRequiredMissing: [...new Set([...(job.collectionRequiredMissing || []), "bound_response_capture"])] }));
     } finally {
-      if (acquired && !shuttingDown) await finalizeRecollection(await cleanupRuntime(currentJob));
+      if (acquired && !shuttingDown) await withHeartbeatWhile(async () => finalizeRecollection(await cleanupRuntime(currentJob)));
     }
   });
+  } finally {
+    // A signal handler may still be cleaning up asynchronously; its hard stage deadline stays
+    // armed until that handler exits the process.
+    if (!shuttingDown) {
+      clearTimeout(deadlineTimer);
+      clearTimeout(deadlineRecordTimer);
+    }
+  }
 }
 
 if (process.argv[3] === "--recollect") {

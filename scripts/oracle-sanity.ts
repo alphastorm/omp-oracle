@@ -2226,6 +2226,12 @@ async function testOracleReadRecollectsTimedOutJobs(config: OracleConfig): Promi
     assert(JSON.stringify((await workerCalls()).at(-1)) === JSON.stringify([unindexed, "--recollect", JSON.stringify({ responseIndex: 3 })]), "an explicit responseIndex should reach the recollection worker");
 
     const started = (await workerCalls()).length;
+    const grok = await timedOutJob({ error: "Timed out waiting for Grok response completion",
+      selection: { provider: "grok" }, collectionBinding: undefined });
+    const grokPath = join(getJobDir(grok), "job.json");
+    const grokBefore = await readFile(grokPath, "utf8");
+    assert(String((await recollect(grok))?.message).includes("Timed-out Grok recollection is not supported"), "Grok timeout recovery must be refused explicitly");
+    assert(await readFile(grokPath, "utf8") === grokBefore, "refused Grok recollection must leave the saved job untouched");
     const otherFailure = await timedOutJob({ error: "ChatGPT is showing a transient outage/rate-limit page" });
     assert(String((await recollect(otherFailure))?.message).startsWith("Recollection requires a completed job"), "a job that failed for another reason should not be recollected");
     const neverAccepted = await timedOutJob({ promptSendState: "attempted" });

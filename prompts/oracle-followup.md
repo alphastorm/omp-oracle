@@ -12,7 +12,7 @@ Hard requirements:
 - If a required tool call is unavailable or fails, stop and report that exact blocker instead of fabricating progress.
 - After a successful or queued `oracle_submit`, your final answer must be only a terse dispatch summary with the job id and response path. Do not ask questions, offer to watch/poll/read, list next steps, or continue working.
 - Do not poll while waiting for the one-time completion wake-up in this session. If the user later asks for status, call `oracle_read` with the submitted `jobId`.
-- If later asked to recover a reply after a completion timeout, use `oracle_read` with `action: "recollect"`, never resubmit. That synchronous read can take the completion wait; the job stays failed until its bound reply is verified and collected, when `recollectionCompletionVerifiedAt` records the check. An expired or interrupted recollection keeps the timeout failure; already-complete artifact recollection does not set that field.
+- To recover a ChatGPT reply after a completion timeout, use `oracle_read` with `action: "recollect"`, never resubmit. That synchronous read can take the completion wait plus bounded startup and collection; the job stays failed until its bound reply is verified and collected, when `recollectionCompletionVerifiedAt` records the check. Chat requires stable non-empty reads after reloading; Deep Research requires its completion marker and non-empty report within its existing 60-second wait. An expired or interrupted recollection keeps the timeout failure; already-complete artifact recollection does not set that field. Timed-out Grok recollection is unsupported by this version; inspect its conversation without resending.
 
 Required workflow:
 1. Parse the user request as `<job-id> <follow-up request>`.

@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import ts from 'typescript';
 import * as lifecycle from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
+import * as budgets from '../extensions/oracle/shared/recollection-budget.mjs';
 import * as flow from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
 import { deriveAssistantCompletionSignature, parseDeepResearchWidgetText } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 import { detectCompletionFailure } from '../extensions/oracle/worker/provider-page-signals.mjs';
@@ -13,7 +14,7 @@ import { buildConversationLeaseMetadata, buildRuntimeLeaseMetadata, jobBlocksAdm
 // Like proof:capture, execute production functions with injected observations, never a browser.
 const source = readFileSync(new URL('../extensions/oracle/worker/run-job.mjs', import.meta.url), 'utf8');
 const tree = ts.createSourceFile('run-job.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-const wanted = ['runRecollection', 'waitForChatCompletion', 'waitForDeepResearchReport', 'OracleWorkerError'];
+const wanted = ['runRecollection', 'waitForChatCompletion', 'waitForDeepResearchReport', 'persistRecollectionIdentity', 'OracleWorkerError'];
 const functions = tree.statements.filter((node) => (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && wanted.includes(node.name?.text));
 assert.equal(functions.length, wanted.length);
 const timeoutText = 'Timed out waiting for ChatGPT response completion';
@@ -40,7 +41,7 @@ function harness(job, observations) {
   const history = [], collected = [], bindings = [], clicks = [];
   let observation;
   const deps = {
-    ...lifecycle, ...flow, deriveAssistantCompletionSignature, parseDeepResearchWidgetText, detectCompletionFailure,
+    ...lifecycle, ...flow, ...budgets, deriveAssistantCompletionSignature, parseDeepResearchWidgetText, detectCompletionFailure,
     Date: Clock, process, basename, join, jobId: job.id, ORACLE_STATE_DIR: 'state', jobDir: 'job', AGENT_BROWSER_BIN: 'unused',
     STALE_STOP_CONTROL_MS: 120000, MISSING_TURN_RELOAD_MS: 300000, MISSING_TURN_RELOAD_MAX: 1,
     DEEP_RESEARCH_FRAME_WAIT_MS: 60000, DEEP_RESEARCH_REPORT_EXPRESSION: 'report-frame-text',
@@ -51,6 +52,7 @@ function harness(job, observations) {
     assertAgentBrowserVersionSupported: async () => {}, tryAcquireRuntimeLeaseForJob: async () => true,
     tryAcquireConversationLeaseForJob: async () => true, releaseLease: async () => {},
     ensurePrivateDir: async () => {}, usesSharedBrowser: () => true, launchBrowser: async () => {},
+    withHeartbeatWhile: async task => task(),
     agentBrowser: async (_job, command) => { assert.equal(command, 'open', 'recollection must never send'); },
     assertManagedBrowserUnchanged: async () => {}, cleanupRuntime: async () => [], log: async () => {},
     redactTransportSecrets: (text) => text, existsSync: () => false,
@@ -95,7 +97,7 @@ function harness(job, observations) {
     async function readJob() { return currentJob; }
     async function mutateJob(fn) { currentJob = fn(currentJob); history.push(structuredClone(currentJob)); return currentJob; }
     const captureBoundTurn = capture, acquireBoundTurn = capture;
-    async function reconcileStreamedTurn(_job, _index, text) { return text; }
+    async function reconcileStreamedTurn(job, _index, text, binding) { return binding ? capture(job, binding) : text; }
     async function collectBoundResult(job, binding) {
       const turn = await capture(job, binding);
       collected.push(job.selection.tool === 'deep_research'
@@ -234,19 +236,12 @@ test('a reply without message identity keeps its archive anchor while the text g
   assert(run.bindings.every(binding => binding.anchorFileName === failedJob().archivePath && !binding.turnSha256));
 });
 
-test('Grok timeout recollection uses its generation signal and preserves its timeout text', async () => {
+test('Grok timeout recollection is refused without changing the job', async () => {
   const job = { ...failedJob(), selection: { provider: 'grok' }, error: 'Timed out waiting for Grok response completion' };
   const streaming = harness(job, [page('partial', true)]);
-  const failed = await streaming.run();
-  assert.equal(failed.status, 'failed');
-  assert.equal(failed.error, job.error);
-  assert.equal(failed.recollectionCompletionVerifiedAt, undefined);
+  await assert.rejects(streaming.run(), /Grok.*not supported.*nothing.*resent/);
+  assert.deepEqual(streaming.current(), job);
   assert.deepEqual(streaming.collected, []);
-  const finished = harness(failed, [page('Grok full reply', false)]);
-  const result = await finished.run();
-  assert.equal(result.status, 'complete', result.recollectionError);
-  assert(result.recollectionCompletionVerifiedAt);
-  assert.deepEqual(finished.collected, ['Grok full reply']);
 });
 
 test('Deep Research still running cannot complete recollection or create a receipt', async () => {

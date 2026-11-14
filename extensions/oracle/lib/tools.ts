@@ -18,6 +18,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type, type Static } from "typebox";
 import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
 import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, timedOutRecollectionBinding, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
+import { recollectionReadTimeoutMs } from "../shared/recollection-budget.mjs";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import {
   coerceOracleSubmitPresetId,
@@ -1268,9 +1269,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
   pi.registerTool({
     name: "oracle_read",
     label: "Oracle Read",
-    description: "Read saved status and outputs, optionally naming the owning projectId for an external-project job, or recollect the reply of a completed or timed-out job without sending a prompt.",
+    description: "Read saved status and outputs, optionally naming the owning projectId for an external-project job, or recollect a completed job or timed-out ChatGPT reply without sending a prompt.",
     promptSnippet: "Read oracle job status, queue position, artifacts, and response preview by job id.",
-    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of a completed job's reply, or of a job that timed out waiting for its reply after the prompt was accepted; it never submits or regenerates a response."],
+    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of a completed job's reply, or of a ChatGPT job that timed out after its prompt was accepted. Timed-out Grok recollection is unsupported. Recollection never submits or regenerates a response; the synchronous read can take the completion wait plus bounded startup and collection."],
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
@@ -1285,9 +1286,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           if (!timedOut && (params.responseIndex === undefined) !== (params.messageId === undefined)) throw new Error("Legacy turn binding requires responseIndex and messageId together.");
           const explicit = params.responseIndex !== undefined || params.messageId !== undefined
             ? JSON.stringify({ responseIndex: params.responseIndex, messageId: params.messageId }) : undefined;
-          // The saved completion timeout (90 minutes by default) plus the existing ten-minute
-          // launch/collection/cleanup allowance. Never kill a healthy wait at the old backstop.
-          const timeout = (timedOut && job.selection.tool !== "deep_research" ? job.config.worker.completionTimeoutMs : 0) + 10 * 60 * 1000;
+          // Shared stage budgets include startup, the completion wait, collection and cleanup.
+          // The read backstop outlives the worker's own hard deadline.
+          const timeout = timedOut ? recollectionReadTimeoutMs(job) : 10 * 60 * 1000;
           await execFileAsync(resolveNodeExecutable(), [workerPath, job.id, "--recollect", ...(explicit ? [explicit] : [])], { maxBuffer: 1024 * 1024, timeout });
           job = readJobForProject(params.jobId, params.projectId ?? getProjectId(ctx.cwd));
         } else if (params.responseIndex !== undefined || params.messageId !== undefined) throw new Error("Turn binding parameters require action=recollect.");

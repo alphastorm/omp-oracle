@@ -8,7 +8,7 @@ history is kept below the divider.
 
 ### Fixed
 
-- recollecting a job that timed out waiting for its reply now verifies completion of the bound turn before saving it or marking the job complete; a still-streaming reply could previously be saved partial and reported complete. Successful timeout recovery records `recollectionCompletionVerifiedAt`; a wait that expires or is interrupted keeps the original failure and can be recollected again without resending. If you recollected a reply after a timeout with 0.4.15, check that the saved reply is complete
+- recollecting a ChatGPT job that timed out waiting for its reply now verifies completion of the bound turn before saving it or marking the job complete; a still-streaming or frozen partial reply could previously be reported complete. Chat replies require two identical non-empty reads after reloading; Deep Research requires its completion marker and non-empty report. Successful timeout recovery records `recollectionCompletionVerifiedAt`; an expired or interrupted attempt keeps the original failure and can be recollected again without resending. Timed-out Grok recollection is explicitly unsupported and leaves the job untouched. If you recollected a reply after a timeout with 0.4.15, check that the saved reply is complete
 
 ## 0.4.15 - 2026-11-13
 
