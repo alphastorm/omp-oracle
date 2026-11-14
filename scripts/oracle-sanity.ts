@@ -3661,9 +3661,6 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
   const followUpPromptSource = await readFile(new URL("../prompts/oracle-followup.md", import.meta.url), "utf8");
-  const designSource = await readFile(new URL("../docs/ARCHITECTURE.md", import.meta.url), "utf8");
-  const recoveryDrillSource = await readFile(new URL("../docs/TEST_PLAN.md", import.meta.url), "utf8");
-  const operationsSource = await readFile(new URL("../docs/OPERATIONS.md", import.meta.url), "utf8");
   const readmeSource = await readFile(new URL("../README.md", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
     files?: string[];
@@ -3734,28 +3731,6 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("For any other `oracle_submit` submit-time error, stop and report the error"), "/oracle prompt should still stop immediately on non-archive submit-time errors");
   assert(promptSource.includes("After a successful or queued `oracle_submit`, end your turn"), "/oracle prompt should only end the turn after successful/queued submit results, not retryable oversize failures");
   assert(promptSource.includes("If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success"), "/oracle prompt should explain queued oracle submissions as successful waits");
-  assert(designSource.includes("`oracle_preflight`"), "design doc should document the oracle_preflight tool");
-  assert(designSource.includes("`oracle_auth`"), "design doc should document the agent-facing oracle_auth tool");
-  assert(designSource.includes("`/oracle-followup <job-id> <request>`"), "design doc should document the user-facing follow-up command");
-  assert(designSource.includes("`chatGptConversationId` into a user/browser-created ChatGPT"), "design doc should document explicit existing ChatGPT browser thread targeting");
-  assert(designSource.includes("Omit both for the default fresh-thread behavior"), "design doc should state thread-target options preserve fresh-thread defaults when omitted");
-  assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
-  assert(designSource.includes("bias toward context-rich archives when they fit within the provider ceiling"), "design doc should describe the context-rich /oracle flow within the upload ceiling");
-  assert(designSource.includes("retryable archive-selection miss"), "design doc should explain that archive-too-large submit failures are retryable archive-selection misses");
-  assert(designSource.includes("biases toward omitting provider/model fields and using configured defaults"), "design doc should explain the default provider/model bias for /oracle prompt ergonomics");
-  assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
-  assert(designSource.includes("/tmp/pi-oracle-auth-*/oracle-auth.log"), "design doc should reference the per-run oracle-auth diagnostics bundle");
-  assert(designSource.includes("returns a retry-after timestamp"), "design doc should explain that oracle-clean returns a retry-after timestamp when retention grace blocks cleanup");
-  assert(recoveryDrillSource.includes("/tmp/pi-oracle-auth-*/"), "recovery drill should reference the per-run oracle-auth diagnostics bundle");
-  assert(!recoveryDrillSource.includes("/tmp/oracle-auth.log"), "recovery drill should not reference the old fixed oracle-auth log path");
-  assert(designSource.includes("For ChatGPT, **`preset` is the only model-selection parameter"), "design doc should state preset is the only ChatGPT selector");
-  assert(designSource.includes("matching human-readable labels/common hyphen-space variants"), "design doc should mention preset label normalization");
-  assert(designSource.includes("chromiumKeychain"), "design doc should document configured Chromium keychain cookie sources");
-  assert(designSource.includes("SWEET_COOKIE_LINUX_KEYRING"), "design doc should document Sweet Cookie Linux keyring options");
-  assert(designSource.includes("defaults to `apfs-clone` on macOS and `copy` on Linux"), "design doc should document platform-specific clone strategy defaults");
-  for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
-    assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
-  }
   assert(toolsSource.includes("call oracle_auth at most once before retrying"), "oracle submit tool guidance should tell agents to refresh auth once before retrying stale-auth failures");
   assert(toolsSource.includes("details.error.code is 'archive_too_large'"), "oracle submit tool guidance should explicitly recognize retryable archive_too_large failures");
   assert(toolsSource.includes("retry once with a smaller archive"), "oracle submit tool guidance should tell agents to retry archive-too-large failures once");
@@ -3768,45 +3743,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("For ChatGPT, use preset only when the user requests model control"), "oracle tool guidance should say preset is the ChatGPT selector");
   assert(toolsSource.includes("omit it for configured defaults") && toolsSource.includes("matching labels are normalized"), "oracle tool description should mention preset defaults and label normalization");
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
-  assert(readmeSource.includes("Start a normal persisted `pi` session"), "README quickstart should surface the persisted-session requirement before oracle usage");
-  assert(readmeSource.includes("/oracle-followup <job-id> <request>"), "README should document the user-facing same-thread follow-up command shape");
-  assert(readmeSource.includes("chatGptConversationId"), "README should document explicit existing ChatGPT thread targeting through chatGptConversationId");
-  assert(readmeSource.includes("Normal `/oracle` jobs still start a fresh provider thread"), "README should state existing ChatGPT thread targeting is opt-in and defaults remain fresh-thread");
-  assert(readmeSource.includes("6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6"), "README should include an existing ChatGPT conversation id example");
-  assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
-  assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
-  assert(readmeSource.includes("context-rich relevant archive up to the selected provider's upload ceiling"), "README should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
-  assert(readmeSource.includes("docs/PLATFORM_SMOKE.md") && readmeSource.includes("npm run smoke:platform:all"), "README should document the Crabbox macOS/Ubuntu/Windows platform smoke gate");
-  assert(designSource.includes("docs/PLATFORM_SMOKE.md") && designSource.includes("npm run smoke:platform:all"), "architecture doc should link the macOS/Ubuntu/Windows platform smoke source of truth");
-  assert(readmeSource.includes("retryable archive-selection failure"), "README should explain that archive-too-large local packing failures are retryable and should auto-narrow before surfacing to the user");
-  assert(readmeSource.includes("omit `preset` and use the configured default model"), "README should explain the default-preset bias for /oracle prompt ergonomics");
-  assert(readmeSource.includes("Archive README.md plus any nearby docs or implementation files that help answer accurately"), "README should include a narrow /oracle example that still keeps relevant surrounding context");
-  assert(readmeSource.includes("Agent preflights, then gathers a context-rich relevant repo slice"), "README high-level flow should reflect the context-rich /oracle path");
-  assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
-  assert(readmeSource.includes("`oracle_auth`"), "README should document the oracle_auth agent-facing tool");
-  assert(readmeSource.includes("chromiumKeychain"), "README should document configured Chromium keychain cookie sources");
-  assert(readmeSource.includes("SWEET_COOKIE_LINUX_KEYRING"), "README should document Sweet Cookie Linux keyring options");
-  assert(readmeSource.includes("macOS, Linux, or Windows native"), "README should document Linux and Windows native as supported platforms");
-  assert(readmeSource.includes("leave `auth.chromiumKeychain` unset"), "README should explain Linux uses Sweet Cookie options instead of macOS Keychain config");
-  assert(readmeSource.includes("oracle_auth({})"), "README should explain that agent callers can refresh stale oracle auth through oracle_auth before retrying once");
-  assert(readmeSource.includes("/oracle-cancel <job-id>"), "README should document oracle-cancel as an explicit-id command");
-  assert(!readmeSource.includes("/oracle-cancel [job-id]"), "README should no longer imply that oracle-cancel guesses a latest-job default");
-  assert(readmeSource.includes("Agent callers can use `oracle_read({ jobId })`"), "README should frame oracle_read as the agent-facing fallback instead of the primary user-facing wake-up path");
-  assert(readmeSource.includes("list recent job ids when no explicit id is given"), "README should explain that oracle-status helps users discover job ids for follow-up and cancel flows");
-  assert(!readmeSource.includes("oracle_read(jobId)"), "README should no longer document the old raw oracle_read(jobId) user-facing wording");
-  assert(readmeSource.includes("/oracle-clean <job-id|all>"), "README should document the oracle-clean command");
-  assert(readmeSource.includes("recently woken terminal jobs may stay retained briefly"), "README command summary should explain that oracle-clean can briefly retain terminal jobs after wake-up delivery");
-  assert(readmeSource.includes("returns the next eligible cleanup time"), "README should explain that oracle-clean returns a retry-after hint when post-send retention grace blocks cleanup");
-  assert(operationsSource.includes("### `/oracle-clean` refuses a terminal job right after completion"), "operations troubleshooting should explain oracle-clean retention-grace refusals");
-  assert(operationsSource.includes("Retry after ..."), "operations troubleshooting should mention the oracle-clean retry-after hint");
-  assert(readmeSource.includes("## Available providers and presets"), "README should document available oracle preset ids");
-  assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
-  assert(readmeSource.includes("250 MiB for ChatGPT") && designSource.includes("250 MiB for ChatGPT") && promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "README/design/prompts should use MiB wording for ChatGPT upload ceiling");
-  assert(readmeSource.includes("Node.js 22.19.0 or newer") && readmeSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README should distinguish package Node floor from Node 24 platform validation");
-  assert(readmeSource.includes("npm run check:platform-smoke") && readmeSource.includes("npm run sanity:oracle:platform"), "README verification table should include the cheap platform-focused validation commands");
-  assert(readmeSource.includes("Grok uploads now use `.tar.gz` archives"), "README should document Grok's gzip archive format because Grok lacks zstd extraction tools");
-  assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
-  assert(readmeSource.includes("human-readable preset label"), "README should mention preset label normalization");
+  assert(promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "prompts should use MiB wording for ChatGPT upload ceiling");
+  // The one documentation contract: the README lists every preset the registry defines.
   for (const [presetId, preset] of Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]][]) {
     assert(readmeSource.includes(`\`${presetId}\``), `README should list preset id ${presetId}`);
     assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);

@@ -1,79 +1,68 @@
 # OMP Oracle release
 
-Run the local release gate, produce and verify the live ChatGPT preset proof, and record the evidence before publishing `omp-oracle` for Oh My Pi and `pi`.
+This runbook is for release maintainers cutting, verifying, publishing, and recording an OMP Oracle (`omp-oracle`) release for Oh My Pi (OMP) and `pi`.
+
 Companion docs: [Test plan](TEST_PLAN.md) · [Platform smoke](PLATFORM_SMOKE.md) · [Compatibility](COMPATIBILITY.md) · [Upstream](UPSTREAM.md) · [Changelog](../CHANGELOG.md)
 
 ## Package identity
 
-- npm name: `omp-oracle` (current release `0.4.14`, npm `latest`). The `pi-oracle` package on npm is the upstream project published by its maintainer; it does not carry this fork's commits.
-- Version: the fork's own line, starting at `0.1.0`. It does not inherit upstream's `0.7.x` numbering; `0.1.0` was based on upstream `pi-oracle` 0.7.20, and later releases add the changes listed per version in [`CHANGELOG.md`](../CHANGELOG.md).
-- The GitHub URL install tracks `main`; npm carries the released versions ([README](../README.md#build-and-run)).
-- Runtime identifiers are unchanged by the rename: `/oracle*` commands, `oracle_*` tool names, `PI_ORACLE_*` environment variables, `/tmp/pi-oracle-state`, the job directory format, and the `omp.pi-oracle.programmatic.v1` bridge symbol.
+`omp-oracle` publishes under its own npm package name and version line while keeping upstream runtime identifiers intact:
 
-For everyday validation and choosing which check to run during development, see the [Test plan](TEST_PLAN.md#which-check-to-run).
+- npm name: `omp-oracle` (published on npm `latest`; see [Support at a glance](COMPATIBILITY.md#support-at-a-glance) for the current release version). The `pi-oracle` package on npm is the upstream package published by its maintainer and does not carry this fork's commits.
+- Version line: independent of upstream's `0.7.x` numbering, starting at `0.1.0` from upstream `pi-oracle` `0.7.20`, with per-release changes listed in the [changelog](../CHANGELOG.md).
+- Install sources: npm serves tagged releases, while the GitHub repository URL tracks `main` ([Get started](../README.md#get-started) and [Switch install source](OPERATIONS.md#switch-install-source)).
+- Runtime identifiers: `/oracle*` commands, `oracle_*` tools, `PI_ORACLE_*` variables, `/tmp/pi-oracle-state`, job directories, and the `omp.pi-oracle.programmatic.v1` symbol keep their upstream names; see [What is preserved](UPSTREAM.md#what-is-preserved).
+
+For everyday development checks before a release, see [Which check to run](TEST_PLAN.md#which-check-to-run).
+
+## Release sequence
+
+Before you start, confirm three things: `main` is clean; your ChatGPT relay or managed browser is signed in and idle ([Set up a transport](OPERATIONS.md#set-up-a-transport)); and the `macos` and `ubuntu` Crabbox targets are ready ([Required local setup](PLATFORM_SMOKE.md#required-local-setup)). Release one version at a time.
+
+1. **Prepare the release commit.** Set the version in `package.json` and `package-lock.json`, rename `## Unreleased` in `CHANGELOG.md` to `## X.Y.Z - YYYY-MM-DD`, and update the one place the documentation states the current release: [Support at a glance](COMPATIBILITY.md#support-at-a-glance) in `docs/COMPATIBILITY.md`. Commit to `main` as `chore(release): prepare omp-oracle X.Y.Z`.
+2. **Produce the preset proof.** On that clean commit, run `npm run release:proof:chatgpt-presets:run` until it writes `.artifacts/chatgpt-preset-proof/latest.json` and the checker passes ([ChatGPT preset proof](#chatgpt-preset-proof)).
+3. **Run the release gate.** Run `npm run release:check` and confirm all four stages pass. Review the suite summaries under `.artifacts/platform-smoke/` ([Release gate](#release-gate), [Artifacts and secret scan](PLATFORM_SMOKE.md#artifacts-and-secret-scan)).
+4. **Tag.** Push the tag `vX.Y.Z` on that commit. `.github/workflows/release.yml` repeats the local gate and publishes the packed tarball to npm ([Publishing](#publishing)).
+5. **Check the registry.** Confirm that the registry's `dist.shasum` equals the shasum the workflow's `verify` job printed when it packed the tarball, and that `npm audit signatures` in a clean install reports a verified attestation.
+6. **Record the release.** Add `#### X.Y.Z (YYYY-MM-DD, <commit>)` above the previous entry under [Fork evidence (omp-oracle)](#fork-evidence-omp-oracle). Update the host versions the release was exercised on in [Hosts](COMPATIBILITY.md#hosts) and the `#status` facts in `site/index.html`. Run `npm run verify:oracle`, then commit to `main` as `docs(release): record the X.Y.Z evidence and publish receipts`.
+
+The two release commits go to `main` directly. The `main` ruleset requires the `local-gate` check for everyone except repository admins, so the maintainer who releases needs admin access ([Publishing](#publishing)).
 
 ## Release gate
 
-`npm run release:check` runs the release gate in four stages; `prepublishOnly` runs it too, so a
-local `npm publish` cannot skip it:
+`npm run release:check` runs the local release gate in four stages; `prepublishOnly` runs the same script so a local `npm publish` cannot bypass it:
 
-1. `npm run verify:oracle` (`npm test` is an alias) — runs, in order: syntax and bundle checks
-   (`check:oracle-extension`), platform-smoke invariants (`check:platform-smoke`), helper unit tests
-   (`test:oracle-helpers`), the site coherence test (`test:site`), the documentation link check
-   (`test:docs`), the three typecheck projects (`typecheck`, `typecheck:worker-helpers`,
-   `typecheck:worker-runtime`), the isolated sanity harness (`sanity:oracle`, including pinned
-   documentation literals), and `npm pack --dry-run` (`pack:check`).
-2. `npm run proof:capture` — proves capture and recollection against synthetic pages in an
-   isolated headless browser, with no account or external network. Requires Chrome or Chromium
-   (auto-detected, or selected with `CHROME_BIN`).
-3. `npm run release:proof:chatgpt-presets` — checks the fresh live ChatGPT preset proof for the
-   eight model presets through the loaded extension.
-4. `npm run smoke:platform:all` — runs `npm run smoke:platform:doctor` first, then the macOS and
-   Ubuntu Crabbox lanes (`platform-build` and `real-extension`) using packed-install proof rather
-   than source-tree `pi -e` loading. `windows-native` is an available target, not a
-   release-required lane; see [Compatibility](COMPATIBILITY.md#platforms-and-runtime).
+1. `npm run verify:oracle` (`npm test` is an alias): runs `check:oracle-extension`, `check:platform-smoke`, `test:oracle-helpers`, `test:site`, `test:docs`, `typecheck`, `typecheck:worker-helpers`, `typecheck:worker-runtime`, `sanity:oracle` (including the `README.md` preset table contract), and `pack:check`, in that order ([Local gate](TEST_PLAN.md#local-gate)).
+2. `npm run proof:capture`: proves response capture and recollection against synthetic pages in an isolated headless Chrome or Chromium instance (auto-detected, or selected with `CHROME_BIN`), with no account or external network ([Collection proof](TEST_PLAN.md#collection-proof)).
+3. `npm run release:proof:chatgpt-presets`: validates the fresh live ChatGPT preset proof across the eight model presets through the loaded extension ([ChatGPT preset proof](#chatgpt-preset-proof)).
+4. `npm run smoke:platform:all`: runs `npm run smoke:platform:doctor` first, then the `macos` and `ubuntu` Crabbox lanes (`platform-build` and `real-extension`) using packed-install proof rather than source-tree `pi -e` loading. For `PI_ORACLE_REAL_TEST_*` switches and why `windows-native` is rejected as configured, see [Real runtime suite auth and switches](PLATFORM_SMOKE.md#real-runtime-suite-auth-and-switches) and [Windows template maintenance](PLATFORM_SMOKE.md#windows-template-maintenance).
 
-Hosted CI runs only the local gate (`npm run verify:oracle`): on `main`, on pull requests, and on
-the release tag before publishing. The offline capture proof, live preset proof, and Crabbox
-matrix run locally in the order above, followed by artifact review, before the release tag is
-pushed ([Publishing](#publishing)).
+Hosted CI runs only `npm run verify:oracle`: on `main`, on pull requests, and in the `verify` job on the `v*` tag before publishing. Run the offline capture proof, live preset proof, and Crabbox matrix locally in the order above and review `.artifacts/` before pushing the release tag ([Publishing](#publishing)).
 
 ### ChatGPT preset proof
 
-Release proof covers the **eight model presets** in `ORACLE_SUBMIT_PRESETS` (`pro_standard`,
-`pro_extended`, `thinking_light`, `thinking_standard`, `thinking_extended`, `thinking_heavy`,
-`instant`, `instant_auto_switch`) through the loaded extension. `deep_research` is a composer-tool
-preset and is excluded because each run consumes a Deep Research task on the account; the checker
-prints the exclusion. Ordinary pre-commit smoke runs can use `instant` or `thinking_light`.
+Release proof covers the eight model presets in `ORACLE_SUBMIT_PRESETS` (`pro_standard`, `pro_extended`, `thinking_light`, `thinking_standard`, `thinking_extended`, `thinking_heavy`, `instant`, `instant_auto_switch`) through the loaded extension. `deep_research` is a composer-tool preset and is excluded because each run consumes a Deep Research task on the account; the checker prints the exclusion.
 
-**Produce the proof**
+For pre-commit isolated session smoke presets during development, see [Preset choice](TEST_PLAN.md#preset-choice).
 
-Each job's prompt must make the saved response contain the exact markers `PRESET <preset> OK` and
-`PACKAGE omp-oracle`. Run `npm run release:proof:chatgpt-presets:run` to submit one marker job per
-preset from isolated OMP print-mode sessions (loading this checkout's extension source via
-`omp … --no-extensions -e`), wait for each job to complete, write
-`.artifacts/chatgpt-preset-proof/latest.json`, and run the checker:
+#### Produce the proof
+
+Each job's prompt must make the saved response contain the exact markers `PRESET <preset> OK` and `PACKAGE omp-oracle`. Run `npm run release:proof:chatgpt-presets:run` to submit one marker job per preset from isolated OMP print-mode sessions (loading this checkout's extension source via `omp … --no-extensions -e`), wait for each job to complete, write `.artifacts/chatgpt-preset-proof/latest.json`, and run the checker:
 
 ```bash
 PI_ORACLE_PROOF_MODEL=<omp model id> PI_ORACLE_PROOF_MODELS_YML=<models.yml for that model> \
   npm run release:proof:chatgpt-presets:run
 ```
 
-- `PI_ORACLE_PROOF_MODEL` (required): model id the isolated session uses to call `oracle_submit` (a zero-cost local model is fine).
-- `PI_ORACLE_PROOF_MODELS_YML` (required): `models.yml` copied into the isolated agent directory so `PI_ORACLE_PROOF_MODEL` resolves.
-- `PI_ORACLE_PROOF_RELAY` (optional): existing-Chrome relay endpoint. Because the signed-in Chrome
-  selects the ChatGPT account the eight live jobs consume, the transport has no default: when
-  `PI_ORACLE_PROOF_RELAY` is unset, the runner reads your agent-level config
-  (`$PI_CODING_AGENT_DIR/extensions/oracle.json`, default `~/.omp/agent/extensions/oracle.json`)
-  for `browser.chatGptRelayEndpoint` or `browser.chatGptManagedProfileDir`. It prints the resolved
-  transport, its source, and the isolated config before the first submit, and refuses to run if the
-  config sets neither or sets both.
+- `PI_ORACLE_PROOF_MODEL` (required): model id the isolated session uses to call `oracle_submit` (a zero-cost local model works).
+- `PI_ORACLE_PROOF_MODELS_YML` (required): `models.yml` copied into the isolated agent directory so `PI_ORACLE_PROOF_MODEL` resolves. The isolated agent directory does not hold your host's stored credentials, so choose a model that needs none, or pass its API key in the environment.
+- `PI_ORACLE_PROOF_RELAY` (optional): existing-Chrome relay endpoint. When unset, the runner reads `$PI_CODING_AGENT_DIR/extensions/oracle.json` (default `~/.omp/agent/extensions/oracle.json`) for `browser.chatGptRelayEndpoint` or `browser.chatGptManagedProfileDir`, prints the resolved transport and isolated config before the first submit, and refuses to run if the config sets neither or sets both, so live proof jobs never guess an account.
 - `PI_ORACLE_PROOF_ROOT` (optional, default `/tmp/omp-oracle-proof`): isolated root for `agent`, `sessions`, `jobs`, and `state`. A managed-profile proof uses its own state directory, so its keeper does not see your normal leases; run it while your own jobs are idle, as with the relay.
 - `PI_ORACLE_PROOF_CLI` (optional, default `omp`): OMP executable for the isolated sessions.
 - `--dry-run`: resolves the model, transport, and presets, prints the plan, and exits without submitting (`npm run release:proof:chatgpt-presets:run -- --dry-run`).
 - Subset reruns: pass preset ids as arguments (`npm run release:proof:chatgpt-presets:run -- instant thinking_light`) to rerun only those presets; a partial rerun keeps the remaining presets' entries from the existing proof file.
 
-To assemble a proof manually instead of using the runner, start from the checked, intentionally non-valid template:
+To assemble a proof manually instead of using the runner, generate the non-valid template and run the eight live marker jobs from this clean checkout via `--no-extensions -e`. Only after every job completes, fill each preset's `jobId`, `jobDir`, and `conversation`, and set `validatedAt` to a time later than those completed jobs, in `.artifacts/chatgpt-preset-proof/latest.json`. Then run the checker:
 
 ```bash
 mkdir -p .artifacts/chatgpt-preset-proof
@@ -81,86 +70,48 @@ node scripts/oracle-chatgpt-preset-proof.mjs template > .artifacts/chatgpt-prese
 npm run release:proof:chatgpt-presets
 ```
 
-**Check the proof**
+#### Check the proof
 
-`npm run release:proof:chatgpt-presets` reads `.artifacts/chatgpt-preset-proof/latest.json`
-(override with `PI_ORACLE_CHATGPT_PRESET_PROOF`; job lookup checks `PI_ORACLE_JOBS_DIR` and `/tmp`;
-freshness window defaults to 72 hours via `PI_ORACLE_CHATGPT_PRESET_PROOF_MAX_AGE_HOURS`). It
-rejects the proof if:
+`npm run release:proof:chatgpt-presets` reads `.artifacts/chatgpt-preset-proof/latest.json` (override with `PI_ORACLE_CHATGPT_PRESET_PROOF`; job lookup checks each entry's `jobJsonPath` or `jobDir` first, then `PI_ORACLE_JOBS_DIR` and `/tmp`; freshness window defaults to 72 hours via `PI_ORACLE_CHATGPT_PRESET_PROOF_MAX_AGE_HOURS`). It rejects the proof if any check fails:
 
-- the working tree has uncommitted changes, or the proof file is missing or unreadable;
-- `schemaVersion` is not `1`, `provider` is not `"chatgpt"`, `extensionUnderTest` is not `"loaded-extension"`, or `packageName`, `packageVersion`, or `gitHead` does not match `package.json` and `HEAD`;
-- `validatedAt` or any job's `completedAt` is not a valid ISO timestamp, is in the future, is older than the freshness window (default 72 hours), or is not newer than the current `HEAD` commit time;
-- any of the eight model presets is missing, has a placeholder UUID, or lacks actual persisted
-  `job.json`, `response.md`, and `logs/worker.log` files on disk with `status: "complete"`,
-  `phase: "complete"`, a `.tar.zst` archive and SHA-256, a `https://chatgpt.com/c/...` conversation
-  URL, matching `extensionProvenance` (`packageName`, `packageVersion`, `gitHead`, `sourcePath`),
-  model configuration in the worker log, and both `PRESET <preset> OK` and `PACKAGE omp-oracle` in
-  the saved response.
-
-### Real runtime suite defaults
-
-The real runtime suite (`scripts/oracle-real-smoke.mjs`) defaults to deterministic installed-tool execution (`--mode packed`) so platform proof stays bounded:
-
-- Provider and model defaults are `zai/glm-5.2` for doctor/config and optional model-agent debugging; override with `PI_ORACLE_REAL_TEST_PROVIDER` and `PI_ORACLE_REAL_TEST_MODEL` (per-agent timeout `PI_ORACLE_REAL_TEST_TIMEOUT_MS`, default `180000` ms; artifact root `PI_ORACLE_REAL_TEST_ARTIFACT_ROOT`, default `.artifacts/real-smoke`; set `PI_ORACLE_REAL_TEST_KEEP_TMP=1` to keep the temporary fixture directory).
-- For inner-loop source loading only, use `npm run smoke:real:source`; it is not release proof.
-- Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path.
-- Set `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1` to run the optional second real-agent negative symlink check; `npm run sanity:oracle` covers archive and symlink rejection by default.
+- The working tree has uncommitted changes, or the proof file is missing or unreadable.
+- `schemaVersion` is not `1`, `provider` is not `"chatgpt"`, `extensionUnderTest` is not `"loaded-extension"`, or `packageName`, `packageVersion`, or `gitHead` does not match `package.json` and `HEAD`.
+- `validatedAt` or any job's `completedAt` is not a valid ISO timestamp, is in the future, is older than the freshness window (default 72 hours), or is not newer than the current `HEAD` commit time; or a job completed after `validatedAt`.
+- Any of the eight model presets is missing, carries a placeholder UUID, or lacks persisted `job.json`, `response.md`, and `logs/worker.log` files on disk with `status: "complete"`, `phase: "complete"`, a `.tar.zst` archive and SHA-256, and a `https://chatgpt.com/c/...` conversation URL.
+- Any job's `extensionProvenance` (`packageName`, `packageVersion`, `gitHead`, `sourcePath`) mismatches this checkout, its worker log lacks model configuration, or its saved response lacks both `PRESET <preset> OK` and `PACKAGE omp-oracle`.
 
 ## Publishing
 
-Pushing the tag `vX.Y.Z` publishes that commit to npm from
-[`.github/workflows/release.yml`](../.github/workflows/release.yml) through npm
-[trusted publishing](https://docs.npmjs.com/trusted-publishers/). The workflow authenticates with a
-short-lived OIDC token, so no npm token exists and nobody approves the publish in a browser, and npm
-attaches a provenance attestation naming the workflow run and the commit.
+Pushing the tag `vX.Y.Z` publishes that commit to npm from [`.github/workflows/release.yml`](../.github/workflows/release.yml) through npm [trusted publishing](https://docs.npmjs.com/trusted-publishers/). The workflow authenticates with a short-lived OIDC token, so no npm token exists and nobody approves the publish in a browser, and npm attaches a provenance attestation naming the workflow run and the commit.
 
-- Push the tag only after `npm run release:check` has passed on the tagged commit. The workflow
-  repeats only the local gate; pushing the tag asserts that the preset proof and the Crabbox lanes
-  passed.
-- The `verify` job checks that the tag names the `package.json` version and points at a commit on
-  `main`, runs `npm run verify:oracle`, and packs the tarball. The `publish` job, the only one that
-  can obtain the npm credential, checks nothing out and installs nothing: it publishes that tarball.
-  A tarball publish runs no lifecycle scripts, so `prepublishOnly` does not run there.
-- Repository settings back this up: the `publish` job runs in the `npm-publish` environment,
-  whose deployment policy admits only `v*` tags; a tag ruleset lets only repository admins create,
-  move, or delete `v*` tags; and a `main` ruleset blocks force pushes and branch deletion and
-  requires the `local-gate` check for everyone except repository admins.
-- The registry's `dist.shasum` is the one the `verify` job's `npm pack` printed. A local pack of the
-  same commit on another Node release can differ even when the contents match, because the gzip
-  bytes depend on the Node build: for `v0.4.6`, Node 24 and Node 26 produce different shasums from a
-  byte-identical tar. Ledger entries therefore bind the registry tarball to the workflow run and its
-  provenance, not to a local dry run.
+- Push the tag only after `npm run release:check` has passed on the tagged commit. The workflow repeats only the local gate; pushing the tag asserts that the preset proof and the Crabbox lanes passed.
+- The `verify` job (Node 24) checks that the tag names the `package.json` version and points at a commit on `main`, runs `npm run verify:oracle`, and packs the tarball. The `publish` job, the only one that can obtain the npm credential, checks nothing out and installs nothing: it publishes that tarball, so `prepublishOnly` does not run in CI.
+- Repository settings enforce these boundaries: `publish` runs in the `npm-publish` environment, whose deployment policy admits only `v*` tags; a tag ruleset lets only repository admins create, move, or delete `v*` tags; and a `main` ruleset blocks force pushes and branch deletion and requires the `local-gate` check for everyone except repository admins.
+- The registry's `dist.shasum` equals the shasum the `verify` job's `npm pack` printed. A local pack of the same commit on another Node release can differ even when the tar contents match because gzip bytes depend on the Node build: for `v0.4.6`, Node 24 and Node 26 produce different shasums from a byte-identical tar. Ledger entries therefore bind the registry tarball to the workflow run and its provenance rather than a local dry run.
 - Release one version at a time: tags for different versions run concurrently.
 
-**One-time setup.** At the first release that uses the workflow, the npm account owner links the
-package to the workflow with npm 11.15 or later. An unused link expires after two days, so create it
-just before pushing that release's tag:
+### Restore the npm trust link
+
+The npm trust link between `omp-oracle` and `release.yml` in `alphastorm/omp-oracle` was created for `0.4.7`, and **Publishing access** on npmjs.com is set to "Require two-factor authentication and disallow tokens" (which leaves trusted publishing unaffected). If that link is ever lost or removed, an npm account owner restores it with npm `11.15` or later immediately before pushing the next release tag, because an unused link expires after two days:
 
 ```bash
 npm login --auth-type=web
 npm trust github omp-oracle --file release.yml --repo alphastorm/omp-oracle --allow-publish --yes
 ```
 
-After that first trusted publish succeeds, set the package's **Publishing access** on npmjs.com to
-"Require two-factor authentication and disallow tokens"; trusted publishing is unaffected.
+After that trusted publish succeeds, verify on npmjs.com that **Publishing access** is set to "Require two-factor authentication and disallow tokens".
 
-**Fallback.** If the workflow cannot publish, an interactive `npm publish` from a clean checkout of
-the tag still works: `prepublishOnly` runs `npm run release:check`, and npm asks for browser approval
-of the login and of the publish.
+### Manual publish fallback
+
+If the workflow cannot publish, run an interactive `npm publish` from a clean checkout of the `vX.Y.Z` tag: `prepublishOnly` runs `npm run release:check`, and npm asks for browser approval of both login and publish.
 
 ## Evidence ledger
 
-Fork entries appear first, newest first, and each entry records what was observed for that release.
-The carried upstream records below them keep their original headings (such as "Current
-implementation status" and "Current readiness summary") and describe upstream `pi-oracle` at the
-time they were written, not this fork; current support claims live in
-[`COMPATIBILITY.md`](COMPATIBILITY.md).
+Fork entries appear first, newest first, and each entry records what was observed for that release. The carried upstream records below them keep their original headings (such as "Current implementation status" and "Current readiness summary") and describe upstream `pi-oracle` at the time they were written, not this fork; current support claims are in [Compatibility (`COMPATIBILITY.md`)](COMPATIBILITY.md).
 
 ### Fork evidence (omp-oracle)
 
-Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation.
-Artifact run ids live under the gitignored `.artifacts/` root.
+Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation. Artifact run ids are stored under the gitignored `.artifacts/` root.
 
 #### 0.4.14 (2026-11-09, `0137c0c`)
 
