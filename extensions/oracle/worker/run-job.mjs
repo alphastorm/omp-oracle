@@ -152,7 +152,12 @@ let browserStarted = false;
 let browserProcess;
 let browserProcessError;
 let cleaningUpBrowser = false;
-let cleaningUpRuntime = false;
+/** @type {Promise<string[]> | undefined} */
+let runtimeCleanupPromise;
+/** @type {Set<() => Promise<void> | undefined> | undefined} */
+let heartbeatStops = new Set();
+/** @type {Set<Promise<unknown>>} */
+const heartbeatWrites = new Set();
 let shuttingDown = false;
 let lastHeartbeatMs = 0;
 /** Lease that keeps the managed browser open while this worker's job uses it. */
@@ -273,16 +278,20 @@ async function recordObservedSelection(observation) {
 }
 
 async function heartbeat(patch = undefined, options = {}) {
+  if (!heartbeatStops) return;
   const now = Date.now();
   const force = options.force === true;
   if (!force && !patch && now - lastHeartbeatMs < 10_000) return;
   lastHeartbeatMs = now;
   const heartbeatAt = new Date(now).toISOString();
-  await mutateJob((job) => ({
+  const pending = mutateJob((job) => ({
     ...job,
     ...(patch || {}),
     heartbeatAt,
   }));
+  heartbeatWrites.add(pending);
+  try { await pending; }
+  finally { heartbeatWrites.delete(pending); }
 }
 
 async function log(message) {
@@ -350,10 +359,10 @@ async function cloneSeedProfileToRuntime(job) {
 }
 
 async function cleanupRuntime(job) {
-  if (!job || cleaningUpRuntime) return [];
-  cleaningUpRuntime = true;
-  const warnings = [];
-  try {
+  if (!job) return [];
+  if (runtimeCleanupPromise) return runtimeCleanupPromise;
+  runtimeCleanupPromise = (async () => {
+    const warnings = [];
     let browserClosed = true;
     await closeBrowser(job).catch(async (error) => {
       browserClosed = false;
@@ -394,8 +403,11 @@ async function cleanupRuntime(job) {
       await log(`Cleanup summary: runtime ${job.runtimeId} released after ${warnings.length} warning(s)`).catch(() => undefined);
     }
     return warnings;
+  })();
+  try {
+    return await runtimeCleanupPromise;
   } finally {
-    cleaningUpRuntime = false;
+    runtimeCleanupPromise = undefined;
   }
 }
 
@@ -2428,8 +2440,11 @@ async function withHeartbeatWhile(task) {
     if (active && !pending) pending = heartbeat().catch(() => undefined).finally(() => { pending = undefined; });
   }, ARTIFACT_DOWNLOAD_HEARTBEAT_MS);
   timer.unref?.();
+  const stop = () => { active = false; clearInterval(timer); return pending; };
+  if (heartbeatStops) heartbeatStops.add(stop);
+  else stop();
   try { return await task(); }
-  finally { active = false; clearInterval(timer); await pending; }
+  finally { await stop(); heartbeatStops?.delete(stop); }
 }
 
 // The conversation is checked inside the capture's own evaluation (captureScopedResponse), so the
@@ -3009,6 +3024,7 @@ async function runRecollection() {
       // not timeout recovery's stage ceilings. Only its pre-read entry window is newly bounded.
       clearTimeout(deadlineTimer);
       clearTimeout(deadlineRecordTimer);
+      stageDeadline = undefined;
     }
     const explicit = process.argv[4] ? JSON.parse(process.argv[4]) : undefined;
     // A job that timed out waiting for its reply is recollected through its archive anchor and,
@@ -3078,27 +3094,38 @@ async function runRecollection() {
           cleanupWarnings: prior.cleanupWarnings?.length ? [...new Set(prior.cleanupWarnings)] : undefined, lastCleanupAt };
       });
     };
-    let foreground;
+    let cleanupPromise;
+    const cleanupRecollection = () => cleanupPromise ??= (async () => {
+      // Teardown, its last heartbeat and provenance handoff have one owner, even on a signal.
+      const warnings = await withHeartbeatWhile(() => cleanupRuntime(currentJob))
+        .catch((error) => [`Runtime cleanup failed during recollection: ${error instanceof Error ? error.message : String(error)}`]);
+      await finalizeRecollection(warnings);
+    })();
     const onSignal = (signal) => {
       if (shuttingDown) return;
       shuttingDown = true;
+      // Complete jobs have no stage timer after their first read. Both paths get one shutdown
+      // reserve; an earlier armed deadline wins. Keep this timer referenced until process exit.
+      stageDeadline = Math.min(stageDeadline ?? Infinity, Date.now() + RECOLLECTION_FINALIZE_RESERVE_MS);
+      clearTimeout(deadlineTimer);
+      deadlineTimer = setTimeout(() => process.exit(1), Math.max(0, stageDeadline - Date.now()));
+      clearTimeout(deadlineRecordTimer);
+      const stops = heartbeatStops;
+      heartbeatStops = undefined;
+      const pendingHeartbeats = [...(stops || [])].map((stop) => stop());
       void (async () => {
-        // Do not exit gracefully while the foreground heartbeat wrapper still owns a mutation.
-        // A hung foreground/recorder remains under the currently armed hard deadline.
-        await foreground?.catch(() => undefined);
+        // Drain only writes already owned, never the foreground task (which may be hung).
+        await Promise.all([...pendingHeartbeats, ...heartbeatWrites, ...deadlineWrites].map((pending) => pending?.catch(() => undefined)));
         await log(`Received ${signal} during recollection, cleaning up oracle runtime`).catch(() => undefined);
         if (timedOut) await mutateJob((job) => job.status === "complete" ? job : { ...job, recollectionError: `Recollection interrupted by ${signal}; nothing was resent.` }).catch(() => undefined);
-        const warnings = await cleanupRuntime(currentJob).catch((error) => [`Runtime cleanup failed on ${signal}: ${error instanceof Error ? error.message : String(error)}`]);
-        await finalizeRecollection(warnings).catch(() => undefined);
-        clearTimeout(deadlineRecordTimer);
-        await Promise.all(deadlineWrites);
+        await cleanupRecollection().catch(() => undefined);
         process.exit(0);
       })();
     };
     process.on("SIGTERM", () => onSignal("SIGTERM"));
     process.on("SIGINT", () => onSignal("SIGINT"));
     try {
-      foreground = withHeartbeatWhile(async () => {
+      const foreground = withHeartbeatWhile(async () => {
       await ensurePrivateDir(join(jobDir, "logs"));
       if (!usesSharedBrowser(currentJob.config)) await withHeartbeatWhile(() => cloneSeedProfileToRuntime(currentJob));
       // Arm before navigation; only the newly owned tab is touched.
@@ -3159,7 +3186,7 @@ async function runRecollection() {
         ...((error instanceof OracleWorkerError || error instanceof AgentBrowserTimeoutError) ? { errorCode: error.code } : {}),
         collectionRequiredMissing: [...new Set([...(job.collectionRequiredMissing || []), "bound_response_capture"])] }));
     } finally {
-      if (acquired && !shuttingDown) await withHeartbeatWhile(async () => finalizeRecollection(await cleanupRuntime(currentJob)));
+      if (acquired && !shuttingDown) await cleanupRecollection();
     }
   });
   } finally {
@@ -3169,6 +3196,7 @@ async function runRecollection() {
       clearTimeout(deadlineRecordTimer);
       await Promise.all(deadlineWrites);
       clearTimeout(deadlineTimer);
+      stageDeadline = undefined;
     }
   }
 }

@@ -38,12 +38,15 @@ function harness(job, observations) {
   process.argv = ['node', 'worker', job.id, '--recollect'];
   process.pid = 123;
   process.uptime = () => 0;
-  process.exit = () => {};
+  const timers = new Set();
+  process.exit = () => { for (const timer of timers) clearTimeout(timer); timers.clear(); };
   const history = [], collected = [], bindings = [], clicks = [];
   let observation;
   const deps = {
     ...lifecycle, ...flow, ...budgets, deriveAssistantCompletionSignature, parseDeepResearchWidgetText, detectCompletionFailure,
     Date: Clock, process, basename, join, jobId: job.id, ORACLE_STATE_DIR: 'state', jobDir: 'job', AGENT_BROWSER_BIN: 'unused',
+    setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timers.add(timer); return timer; },
+    clearTimeout: timer => { clearTimeout(timer); timers.delete(timer); },
     STALE_STOP_CONTROL_MS: 120000, MISSING_TURN_RELOAD_MS: 300000, MISSING_TURN_RELOAD_MAX: 1,
     DEEP_RESEARCH_FRAME_WAIT_MS: 60000, DEEP_RESEARCH_REPORT_EXPRESSION: 'report-frame-text',
     initialJob: structuredClone(job), history, collected, bindings, clicks,
@@ -94,7 +97,8 @@ function harness(job, observations) {
     },
   };
   const factory = new Function(...Object.keys(deps), `
-    let currentJob = initialJob, shuttingDown = false, managedBrowserChangedError;
+    let currentJob = initialJob, shuttingDown = false, managedBrowserChangedError, heartbeatStops = new Set();
+    const heartbeatWrites = new Set();
     async function readJob() { return currentJob; }
     async function mutateJob(fn) { currentJob = fn(currentJob); history.push(structuredClone(currentJob)); return currentJob; }
     const captureBoundTurn = capture, acquireBoundTurn = capture;

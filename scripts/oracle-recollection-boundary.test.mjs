@@ -36,8 +36,11 @@ function fixture(t, options = {}) {
   process.pid = 123;
   process.uptime = () => (options.preEntryMs ?? 0) / 1000;
   process.argv = ['node', 'worker', 'boundary', '--recollect'];
-  const exits = [];
-  process.exit = code => { exits.push({ code, at: now }); if (code !== 0) throw new Error('worker deadline exit'); };
+  const exits = [], exitStates = [], finalizations = [];
+  process.exit = code => {
+    exits.push({ code, at: now }); exitStates.push(structuredClone(api.current()));
+    if (code !== 0) throw new Error('worker deadline exit');
+  };
   const advance = async ms => {
     const end = now + ms;
     for (const [timer, item] of timers) {
@@ -46,6 +49,8 @@ function fixture(t, options = {}) {
         if (item.interval) item.at += item.interval;
         else timers.delete(timer);
         await item.fn();
+        // Real intervals allow pending writes and their promise tails to settle between ticks.
+        await new Promise(resolve => setImmediate(resolve));
       }
     }
     now = end;
@@ -87,7 +92,7 @@ function fixture(t, options = {}) {
     ...lifecycle, ...flow, ...capture, ...budgets, deriveAssistantCompletionSignature, parseDeepResearchWidgetText, detectCompletionFailure,
     recollectionOperationTimeoutMs: (deadline, requested) => budgets.recollectionOperationTimeoutMs(deadline, requested, now),
     createHash, randomUUID, existsSync, readFile, writeFile, rename, chmod, mkdir, basename, dirname, join,
-    process, Date: Clock, initialJob: job, history, jobDir, jobId: job.id, ORACLE_STATE_DIR: 'state', AGENT_BROWSER_BIN: 'unused',
+    process, Date: Clock, initialJob: job, history, finalizations, jobDir, jobId: job.id, ORACLE_STATE_DIR: 'state', AGENT_BROWSER_BIN: 'unused',
     RELOAD_RECONCILE_TIMEOUT_MS: 50, RELOAD_RECONCILE_POLL_MS: 10, STALE_STOP_CONTROL_MS: 120000,
     MISSING_TURN_RELOAD_MS: 300000, MISSING_TURN_RELOAD_MAX: 1, DEEP_RESEARCH_FRAME_WAIT_MS: 60000,
     DEEP_RESEARCH_REPORT_EXPRESSION: 'report-text', ARTIFACT_DOWNLOAD_HEARTBEAT_MS: 10000, ARTIFACT_DOWNLOAD_TIMEOUT_MS: 90000,
@@ -169,12 +174,13 @@ function fixture(t, options = {}) {
   };
   const factory = new Function(...Object.keys(deps), `
     let currentJob=initialJob, shuttingDown=false, managedBrowserChangedError;
-    let cleaningUpRuntime=false, runtimeCleanupPromise, managedBrowserLeaseKey, heartbeatStops=new Set();
+    let runtimeCleanupPromise, managedBrowserLeaseKey, heartbeatStops=new Set();
     const heartbeatWrites=new Set();
     async function readJob() { return currentJob; }
     async function mutateJob(fn) {
       const priorError = currentJob.recollectionError;
       currentJob=fn(currentJob); history.push(structuredClone(currentJob)); onMutation?.(currentJob);
+      if (currentJob.lastCleanupAt && fn.toString().includes('lastCleanupAt')) finalizations.push(currentJob);
       if (currentJob.recollectionError !== priorError && currentJob.recollectionError?.includes('reached its')) await deadlineWriteGate;
       return currentJob;
     }
@@ -191,13 +197,15 @@ function fixture(t, options = {}) {
     return { run: async () => { await runRecollection(); return currentJob; }, current: () => currentJob,
       reconcile: () => reconcileStreamedTurn(currentJob, 0, 'ORDINARY LOWER BOUND'),
       persistIdentity: binding => persistRecollectionIdentity(binding),
+      directHeartbeat: () => heartbeat(),
       cleanup: () => cleanupRuntime(currentJob), installOrdinarySignals: () => installSignalHandlers(currentJob),
       whileHeartbeating: task => withHeartbeatWhile(task),
       ordinary: () => waitForChatCompletion(currentJob, 0), collect: async (fallbackText) => {
       await collectBoundResult(currentJob, currentJob.collectionBinding, fallbackText); return currentJob;
     } };
   `);
-  return { ...factory(...Object.values(deps)), job, history, commands, exits, scheduled, advance, signal: (signal = 'SIGTERM') => process.emit(signal), now: () => now,
+  const api = factory(...Object.values(deps));
+  return { ...api, job, history, commands, exits, exitStates, finalizations, scheduled, advance, signal: (signal = 'SIGTERM') => process.emit(signal), now: () => now,
     heartbeats: () => heartbeatCalls, text: () => existsSync(job.responsePath) ? readFileSync(job.responsePath, 'utf8') : undefined };
 }
 
@@ -310,8 +318,11 @@ test('worker watchdog bounds hung startup and cleanup, not only artifact command
   assert.equal(failed.recollectionCompletionVerifiedAt, undefined);
   const cleanup = fixture(t, { cleanupMs: budgets.RECOLLECTION_POST_WAIT_BUDGET_MS * 2 });
   const admitted = cleanup.now();
-  await assert.rejects(cleanup.run(), /worker deadline exit/);
+  await cleanup.run();
   assert.equal(cleanup.exits.length, 1);
+  assert.equal(cleanup.exits[0].code, 1);
+  assert.equal(cleanup.exitStates[0].cleanupPending, true, 'hard exit leaves reconciliation eligible');
+  assert.notEqual(cleanup.exitStates[0].runtimeSessionName, 'old');
   assert(cleanup.exits[0].at <= admitted + cleanup.job.config.worker.completionTimeoutMs + budgets.RECOLLECTION_POST_WAIT_BUDGET_MS);
   assert.equal(cleanup.current().status, 'complete');
   assert(cleanup.current().recollectionCompletionVerifiedAt, 'the verified response survives a stuck teardown');
@@ -597,7 +608,7 @@ for (const stage of ['browser close', 'lease release', 'cleanup heartbeat']) {
     assert.deepEqual(run.commands.filter(command => command.startsWith('release-')), ['release-conversation', 'release-runtime']);
     assert.equal(run.current().runtimeSessionName, 'old');
     assert.equal(run.current().cleanupPending, false);
-    assert.equal(run.history.filter(state => state.lastCleanupAt).length, 1, 'finalization must have one owner');
+    assert.equal(run.finalizations.length, 1, 'finalization must have one owner');
   });
 }
 
@@ -677,6 +688,21 @@ test('a timeout-recovery signal never extends an earlier armed deadline', async 
   } finally { foreground.resolve(); cleanup.resolve(); await pending; await tick(); }
 });
 
+test('a signal stops a future deadline recorder before the earlier hard deadline', async t => {
+  const launched = deferred(), foreground = deferred(), cleanup = deferred();
+  const run = fixture(t, { startupMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS - 2000,
+    launchGate: foreground.promise, onLaunch: launched.resolve, closeGate: cleanup.promise });
+  const pending = run.run();
+  try {
+    await launched.promise;
+    run.signal();
+    await tick();
+    await run.advance(1000);
+    assert.match(run.current().recollectionError, /interrupted by SIGTERM/);
+    await assert.rejects(run.advance(1000), /worker deadline exit/);
+  } finally { foreground.resolve(); cleanup.resolve(); await pending; await tick(); }
+});
+
 test('direct heartbeat writes are tracked until settled and cannot restart after shutdown', async () => {
   const node = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'heartbeat');
   const gate = deferred();
@@ -685,7 +711,7 @@ test('direct heartbeat writes are tracked until settled and cannot restart after
     let lastHeartbeatMs=0, heartbeatStops=new Set(); const heartbeatWrites=new Set();
     ${node.getText(tree)}
     return { heartbeat, writes:heartbeatWrites, stop:()=>{heartbeatStops=undefined;} };
-  `)(() => { writes++; return gate.promise; });
+  `)(async () => { writes++; await gate.promise; });
   const first = control.heartbeat(undefined, { force: true });
   const second = control.heartbeat(undefined, { force: true });
   try {
@@ -696,3 +722,26 @@ test('direct heartbeat writes are tracked until settled and cannot restart after
   } finally { gate.resolve(); await Promise.all([first, second]); }
   assert.equal(control.writes.size, 0);
 });
+
+for (const kind of ['direct heartbeat', 'deadline record']) {
+  test(`a signal drains an in-flight ${kind}, not the hung foreground`, async t => {
+    const launched = deferred(), foreground = deferred(), write = deferred();
+    const run = fixture(t, { launchGate: foreground.promise, onLaunch: launched.resolve,
+      ...(kind === 'direct heartbeat' ? { heartbeatGate: write.promise }
+        : { startupMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS - 500, deadlineWriteGate: write.promise }) });
+    const pending = run.run();
+    let writing;
+    try {
+      await launched.promise;
+      if (kind === 'direct heartbeat') writing = run.directHeartbeat();
+      run.signal();
+      await tick();
+      assert(!run.commands.includes('close'), 'already-started writes settle before cleanup');
+      write.resolve();
+      await writing;
+      await tick();
+      assert(run.commands.includes('close'), 'the foreground itself must not delay cleanup');
+      assert.deepEqual(run.exits.map(exit => exit.code), [0]);
+    } finally { write.resolve(); foreground.resolve(); await pending; await tick(); }
+  });
+}
