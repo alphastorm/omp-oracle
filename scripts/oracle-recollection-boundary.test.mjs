@@ -170,6 +170,7 @@ function fixture(t, options = {}) {
   const factory = new Function(...Object.keys(deps), `
     let currentJob=initialJob, shuttingDown=false, managedBrowserChangedError;
     let cleaningUpRuntime=false, runtimeCleanupPromise, managedBrowserLeaseKey, heartbeatStops=new Set();
+    const heartbeatWrites=new Set();
     async function readJob() { return currentJob; }
     async function mutateJob(fn) {
       const priorError = currentJob.recollectionError;
@@ -177,7 +178,15 @@ function fixture(t, options = {}) {
       if (currentJob.recollectionError !== priorError && currentJob.recollectionError?.includes('reached its')) await deadlineWriteGate;
       return currentJob;
     }
-    async function heartbeat() { currentJob={...currentJob, heartbeatAt:new Date().toISOString()}; recordHeartbeat(currentJob); await heartbeatGate; }
+    async function heartbeat() {
+      if (!heartbeatStops) return;
+      const pending=(async()=>{
+        currentJob={...currentJob, heartbeatAt:new Date().toISOString()}; recordHeartbeat(currentJob);
+        await (typeof heartbeatGate === 'function' ? heartbeatGate() : heartbeatGate);
+      })();
+      heartbeatWrites.add(pending);
+      try { await pending; } finally { heartbeatWrites.delete(pending); }
+    }
     ${nodes.map(node => node.getText(tree)).join('\n')}
     return { run: async () => { await runRecollection(); return currentJob; }, current: () => currentJob,
       reconcile: () => reconcileStreamedTurn(currentJob, 0, 'ORDINARY LOWER BOUND'),
@@ -571,7 +580,8 @@ for (const stage of ['browser close', 'lease release', 'cleanup heartbeat']) {
     const run = fixture(t, { observations: [page('partial', true)],
       ...(stage === 'browser close' ? { closeGate: gate.promise, onClose: entered.resolve }
         : stage === 'lease release' ? { leaseGate: gate.promise, onLease: entered.resolve }
-          : { cleanupMs: 10000, heartbeatGate: gate.promise, onHeartbeat: entered.resolve }) });
+          : { cleanupMs: 10000, heartbeatGate: () => run.commands.includes('close') ? gate.promise : undefined,
+            onHeartbeat: () => { if (run.commands.includes('close')) entered.resolve(); } }) });
     const pending = run.run();
     try {
       await entered.promise;
@@ -665,4 +675,24 @@ test('a timeout-recovery signal never extends an earlier armed deadline', async 
     assert.equal(run.current().cleanupPending, true);
     assert.equal(run.current().error, originalError);
   } finally { foreground.resolve(); cleanup.resolve(); await pending; await tick(); }
+});
+
+test('direct heartbeat writes are tracked until settled and cannot restart after shutdown', async () => {
+  const node = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'heartbeat');
+  const gate = deferred();
+  let writes = 0;
+  const control = new Function('mutateJob', `
+    let lastHeartbeatMs=0, heartbeatStops=new Set(); const heartbeatWrites=new Set();
+    ${node.getText(tree)}
+    return { heartbeat, writes:heartbeatWrites, stop:()=>{heartbeatStops=undefined;} };
+  `)(() => { writes++; return gate.promise; });
+  const first = control.heartbeat(undefined, { force: true });
+  const second = control.heartbeat(undefined, { force: true });
+  try {
+    assert.equal(control.writes.size, 2);
+    control.stop();
+    await control.heartbeat(undefined, { force: true });
+    assert.equal(writes, 2);
+  } finally { gate.resolve(); await Promise.all([first, second]); }
+  assert.equal(control.writes.size, 0);
 });
