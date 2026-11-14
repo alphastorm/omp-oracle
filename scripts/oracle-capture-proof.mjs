@@ -884,7 +884,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
     }
   });
   add('recollection-never-sends-or-retries', async change => {
-    for (const failure of ['', 'Something went wrong']) {
+    for (const failure of ['', 'There was an error generating a response']) {
       const f = await fixture({ page: { retry: true, failure } }, candidateRoot, change);
       const result = await f.run();
       assert(!result.events.calls.some(call => ['retry', 'send', 'composer', 'upload', 'configure'].includes(call)));
