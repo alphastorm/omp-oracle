@@ -2430,6 +2430,9 @@ async function captureBoundTurn(job, binding, options = {}) {
   const captured = options.observeGeneration ? result?.captured : result;
   if (!captured || typeof captured.rawHtml !== "string") throw new Error("Bound response capture failed.");
   const turnSha256 = turnContentSha256(captured.rawText);
+  if (job.recollectionCompletionVerifiedAt && (!binding.turnSha256 || turnSha256 !== binding.turnSha256)) {
+    throw new OracleWorkerError("verified_reply_changed", "The verified reply's text changed or its saved hash is missing; the verified response was kept and nothing was replaced.");
+  }
   if (!binding.messageId && binding.turnSha256 && binding.turnSha256 !== turnSha256) throw new Error("Bound response content changed; refusing index-only recollection.");
   const { anchorFileName: _anchor, ...durable } = binding;
   return { captured, ...(options.observeGeneration ? { observation: result.observation } : {}),
@@ -2448,6 +2451,7 @@ async function acquireBoundTurn(job, binding, attempts = 20) {
       await noteOwnConversation();
       return turn;
     } catch (error) {
+      if (error instanceof OracleWorkerError && error.code === "verified_reply_changed") throw error;
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
       const foreign = message.match(/Bound conversation mismatch: the page shows (.+?), not /)?.[1];
@@ -2668,7 +2672,7 @@ async function collectBoundResult(job, binding, fallbackText = "", verifiedRecol
     }
     if (capture.sources.some((item) => item.kind !== "artifact" && item.unresolved)) requiredMissing.push("unresolved_source_links");
   } catch (error) {
-    if (verifiedRecollection) throw error;
+    if (verifiedRecollection || (error instanceof OracleWorkerError && error.code === "verified_reply_changed")) throw error;
     inspection = "failed";
     // Keep whatever binding is durably persisted right now: a message ID learned by this pass and
     // saved before the failure survives, and a wrong explicit binding never replaces a saved one.
@@ -3037,7 +3041,7 @@ async function runRecollection() {
       const error = managedBrowserChangedError ?? thrown;
       const message = redactTransportSecrets(error.message || String(error));
       await log("Recollection failed: " + message);
-      if (timedOutChat) await mutateJob((job) => ({ ...job, recollectionError: message }));
+      if (timedOutChat || (error instanceof OracleWorkerError && error.code === "verified_reply_changed")) await mutateJob((job) => ({ ...job, recollectionError: message }));
       else await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,
         ...((error instanceof OracleWorkerError || error instanceof AgentBrowserTimeoutError) ? { errorCode: error.code } : {}),
         collectionRequiredMissing: [...new Set([...(job.collectionRequiredMissing || []), "bound_response_capture"])] }));
