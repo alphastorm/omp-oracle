@@ -201,8 +201,8 @@ The components, the job lifecycle, and the state on disk are in [Architecture](d
 
 - **One upload per job.** A job sends your prompt and one compressed archive of project files to ChatGPT or Grok, through the provider's web app, under your account.
 - **The agent chooses the files.** For a broad request it archives the whole project. Name the paths in your request to narrow the archive.
-- **Default exclusions.** Archive inputs must resolve inside the project without symlink escapes. When a directory is expanded, `.git`, `.pi`, `node_modules`, `secrets/`, `.env` files, private keys, and databases are skipped. `.omp` is not skipped, and a path you name explicitly is archived as named.
-- **Run it inside a Git repository.** Outside one, the project root is the nearest directory, from the working directory upward, that holds the host's config directory (`.omp` or `.pi`) or an `AGENTS.md`. That can be your home directory. With no such directory, it is the working directory.
+- **Default exclusions.** Archive inputs must resolve inside the project without symlink escapes. When a directory is expanded, `.git`, `.omp`, `.pi`, `node_modules`, `secrets/`, `.env` files, private keys, and databases are skipped. A path you name explicitly is archived as named.
+- **The project root.** Paths resolve against the project root: the nearest directory, from the working directory upward, that is a Git repository or holds the host's config directory (`.omp` or `.pi`) or an `AGENTS.md`. The search stops below your home directory, so the home directory never becomes the project of a directory under it. In the home directory itself, a whole-project archive (`.`) is refused.
 - **Your browser.** By default `/oracle-auth` reads your browser cookies read-only into an isolated auth seed profile, and each job runs in a copy that is deleted when the job exits. The relay and the managed browser copy no cookies, own one tab per job, and never quit a Chrome that OMP Oracle did not start.
 - **Local files.** Job files are private to your user. The extension has no telemetry and no hosted control plane.
 

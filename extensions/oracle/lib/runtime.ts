@@ -6,7 +6,8 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
 import { access, cp as copyDirectory, mkdir, readFile, rm, stat } from "node:fs/promises";
-import { delimiter, dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
@@ -89,14 +90,43 @@ function hasWorkspaceRootMarker(path: string): boolean {
   return WORKSPACE_ROOT_MARKERS.some((marker) => existsSync(join(path, marker)));
 }
 
+export function isPathInsideDirectory(rootPath: string, candidatePath: string): boolean {
+  const boundary = relative(rootPath, candidatePath);
+  return boundary === "" || (!boundary.startsWith(`..${sep}`) && boundary !== ".." && !isAbsolute(boundary));
+}
+
+function realHomeDir(): string | undefined {
+  const home = homedir();
+  if (!home) return undefined;
+  try {
+    return realpathSync(home);
+  } catch {
+    return home;
+  }
+}
+
+/**
+ * True for the home directory, any directory that contains it, and the filesystem root. None of
+ * them is a project: the home directory holds the host's own config (`~/.omp`, `~/.pi`) and
+ * everything else the user owns.
+ */
+export function isHomeDirectoryOrAbove(dir: string, home = realHomeDir()): boolean {
+  if (dirname(dir) === dir) return true;
+  return home !== undefined && isPathInsideDirectory(dir, home);
+}
+
 function resolveWorkspaceRoot(realCwd: string): string {
+  const home = realHomeDir();
   let current = realCwd;
   let nearestMarkerRoot: string | undefined;
   while (true) {
     if (!nearestMarkerRoot && hasWorkspaceRootMarker(current)) nearestMarkerRoot = current;
     if (existsSync(join(current, ".git"))) return nearestMarkerRoot ?? current;
     const parent = dirname(current);
-    if (parent === current) return nearestMarkerRoot ?? realCwd;
+    // Never climb into the home directory or above it. The host's own ~/.omp or ~/.pi (or a
+    // dotfiles repository) marks it, so every unmarked directory below would become one project
+    // covering everything the user owns.
+    if (parent === current || isHomeDirectoryOrAbove(parent, home)) return nearestMarkerRoot ?? realCwd;
     current = parent;
   }
 }

@@ -32,7 +32,11 @@ history is kept below the divider.
 
 ### Security
 
-- the security model now states limits it left out or had wrong: a whole-repo archive includes `.omp`; outside a Git repository the project root can resolve to a parent directory that holds `.omp`, `.pi`, or `AGENTS.md`, including the home directory; and tool results include the session file path as `sessionId`
+- the project root of a directory below the home directory is never the home directory itself. Oh My Pi and `pi` keep their own `~/.omp` or `~/.pi` there, so outside a Git repository a directory with no project marker between it and the home directory took the whole home directory as its project: relative archive inputs resolved against the home directory, every such directory shared one project and its completion wake-ups, and `.` archived the home directory. Such a directory is now its own project root. Jobs submitted from one before this change belong to the home-directory project; read them with `--projectId`
+- `oracle_submit` refuses a whole-repo `.` archive when the project root is the home directory, a directory above it, or the filesystem root (`archive_input_too_broad`)
+- directory expansion skips `.omp` the way it skips `.pi`, so Oh My Pi project state (skills, MCP and LSP configuration, `config.yml`) stays out of whole-repo archives unless named explicitly
+- directory expansion also skips the `-wal`, `-shm`, and `-journal` sidecars of the `.db`, `.sqlite`, and `.sqlite3` files it already skips: SQLite keeps recent database pages in them, so an excluded database's data still left through its write-ahead log
+- the security model now states that tool results include the session file path as `sessionId`
 
 ## 0.4.14 - 2026-11-09
 

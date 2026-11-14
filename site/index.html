@@ -124,7 +124,7 @@
         <h3>Stays</h3>
         <ul class="quiet-list">
           <li><strong>Your real Chrome profile</strong><p>Cookie import reads it once, read-only. It is never automated by default; the <a href="https://github.com/alphastorm/omp-oracle/blob/main/docs/OPERATIONS.md#existing-chrome-relay-chatgpt-only">opt-in relay</a> owns one pinned tab in your signed-in Chrome.</p></li>
-          <li><strong>Excluded files, by default</strong><p><code>.git</code>, <code>.pi</code>, <code>node_modules</code>, <code>secrets/</code>, <code>.env</code> files, keys, and databases are excluded during directory expansion. Explicitly named paths are included as named.</p></li>
+          <li><strong>Excluded files, by default</strong><p><code>.git</code>, <code>.omp</code>, <code>.pi</code>, <code>node_modules</code>, <code>secrets/</code>, <code>.env</code> files, keys, and databases are excluded during directory expansion. Explicitly named paths are included as named.</p></li>
           <li><strong>The answer and artifacts on disk</strong><p>The local job directory retains the result even if the wake-up is missed; cleanup and retention can remove it.</p></li>
         </ul>
       </div>

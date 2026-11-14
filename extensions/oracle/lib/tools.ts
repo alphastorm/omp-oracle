@@ -617,6 +617,15 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
+  if (toolName === "oracle_submit" && message.startsWith("Archive input '.' would archive ")) {
+    return {
+      code: "archive_input_too_broad",
+      message,
+      rejectedValue: ".",
+      suggestedNextStep: "Do not retry with '.' or with a list of everything in the home directory. Name the files or directories of the project the request is about (for example Development/app); if the request does not say which project, ask the user.",
+    };
+  }
+
   const missingArchiveInput = message.match(/^Archive input does not exist: (.*) \(resolved against project root (.*)\)$/s);
   if (toolName === "oracle_submit" && missingArchiveInput) {
     return {

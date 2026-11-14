@@ -621,6 +621,7 @@ Failed tool calls return `details.error.code`, and failed worker runs (marked `W
 | `archive_input_required` | `oracle_submit` `files` array is empty | Pass at least one project-relative path in `files` |
 | `archive_input_blank` | An entry in `files` is blank or whitespace | Pass non-empty project-relative paths (or `"."` for whole repo) |
 | `archive_input_whole_repo_sentinel_invalid` | `files` entry resolves to project root without being `"."` | Pass `"."` for whole repo, or an exact relative path |
+| `archive_input_too_broad` | `files` is `["."]` and the project root is the home directory, above it, or the filesystem root | Name the files or directories of the project the request is about, or start the session in the project directory |
 | `archive_input_missing` | A path in `files` does not exist in the project | Retry with an existing path relative to the project root |
 | `archive_input_outside_project` | A path in `files` resolves outside the project root | Retry with a path inside the current project |
 | `archive_input_symlink_escape` | Real path of a `files` entry escapes the project via symlink | Retry with a path whose real target stays inside the repo |
