@@ -733,7 +733,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
         await options.onOpen?.({ page, opens });
         await render(); await navigate(url); return { stdout: '' };
       },
-      snapshotText: async () => (page.stop ? '- button "Stop" [ref=stop]\n' : '') + (page.retry ? '- button "Retry" [ref=retry]' : ''),
+      snapshotText: async () => (page.stop ? '- button "Stop" [ref=stop]\n' : '') + (page.retry ? '- button "Retry" [ref=retry]' : '') + (options.research ? '\n- Iframe "Deep research"' : ''),
       readPageSignals: async () => ({ text: page.failure || '' }),
       findEntry: (_snapshot, predicate) => [{ kind: 'button', label: 'Retry', ref: 'retry', disabled: false }].find(predicate),
       clickRef: async () => { events.calls.push('retry'); throw new Error('Retry activated'); },
@@ -1011,6 +1011,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       if (mode === 'ordinary' && !options.frameFailure) {
         assert.equal(baseline.events.returns.length, 1, JSON.stringify({ fixture: index, job: baseline.job, calls: baseline.events.calls }));
       }
+      if (options.frameFailure) assert.match(baseline.job.error || baseline.job.recollectionError || '', /report|frame/i);
       if (mode === 'complete' && options.research && !options.frameFailure) {
         assert(baseline.files['response.md'], 'The completed Research fixture must actually capture a report');
         assert.notEqual(baseline.job.collectionStatus, 'failed');
