@@ -18,7 +18,7 @@ const source = readFileSync(new URL('../extensions/oracle/worker/run-job.mjs', i
 const tree = ts.createSourceFile('worker.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const names = ['runRecollection', 'waitForChatCompletion', 'reconcileStreamedTurn', 'waitForDeepResearchReport',
   'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir',
-  'withHeartbeatWhile', 'persistRecollectionIdentity', 'OracleWorkerError'];
+  'withHeartbeatWhile', 'persistRecollectionIdentity', 'activateReportExport', 'OracleWorkerError'];
 const nodes = tree.statements.filter(node => (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && names.includes(node.name?.text));
 assert.equal(nodes.length, names.length);
 
@@ -33,9 +33,10 @@ function fixture(t, options = {}) {
   const timers = new Map(), scheduled = [];
   const process = new EventEmitter();
   process.pid = 123;
+  process.uptime = () => (options.preEntryMs ?? 0) / 1000;
   process.argv = ['node', 'worker', 'boundary', '--recollect'];
   const exits = [];
-  process.exit = code => { exits.push({ code, at: now }); throw new Error('worker deadline exit'); };
+  process.exit = code => { exits.push({ code, at: now }); if (code !== 0) throw new Error('worker deadline exit'); };
   const advance = async ms => {
     const end = now + ms;
     for (const [timer, item] of timers) {
@@ -67,6 +68,7 @@ function fixture(t, options = {}) {
     ...options.job,
   };
   const history = [], commands = [];
+  const downloadListeners = new Map();
   const observations = options.observations ?? [page('FROZEN PARTIAL')];
   const reloads = options.reloads ?? [page('FULL COMMITTED REPLY')];
   const readTurn = async (_job, binding) => {
@@ -124,12 +126,30 @@ function fixture(t, options = {}) {
     evalPage: async (_job, _script, limits) => { await advance(limits?.timeoutMs ?? 105000); throw new Error('Capture timed out'); },
     toAsyncJsonScript: text => text, rm: async () => {},
     armDeepResearchFrameCapture: async () => {}, boundResearchFrame: async () => ({ sessionId: 'report' }),
-    deepResearchCdp: { evaluate: async (_session, expression) => {
+    deepResearchPageSession: 'page',
+    deepResearchCdp: {
+      on: (event, fn) => { downloadListeners.set(event, fn); return () => downloadListeners.delete(event); },
+      send: async (method, params, _session, timeout) => {
+        const activating = params?.expression?.includes('activateDownloadControl');
+        const wanted = activating ? options.nativeActivationMs ?? 90000 : 1;
+        await advance(Math.min(wanted, timeout));
+        if (wanted >= timeout) throw new Error('Native export deadline reached');
+        if (activating) {
+          const body = Buffer.from(options.nativeMarkdown ?? '# Different native report');
+          downloadListeners.get('Page.downloadWillBegin')({ method: 'Page.downloadWillBegin', sessionId: 'page',
+            params: { guid: 'g', frameId: 'frame', url: 'data:text/plain;base64,' + body.toString('base64'), suggestedFilename: 'report.md' } });
+          downloadListeners.get('Page.downloadProgress')({ method: 'Page.downloadProgress', sessionId: 'page',
+            params: { guid: 'g', state: 'completed', totalBytes: body.length } });
+        }
+        return method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'frame' } } } : { result: { value: true } };
+      },
+      evaluate: async (_session, expression) => {
       if (expression === 'report-text') return ++reportReads === 1 ? options.reportText ?? 'Research completed in 1m\n# Full report'
         : options.collectionReportText ?? options.reportText ?? 'Research completed in 1m\n';
       const report = options.reportText ? parseDeepResearchWidgetText(options.reportText).report : '';
       if (expression.includes('widgetState')) return { markdown: options.widgetMarkdown ?? options.captureMarkdown ?? report, references: [] };
-      return { rawHtml: `<main>${report}</main>`, rawText: options.captureText ?? report, markdown: options.captureMarkdown ?? report, codeBlocks: [], sources: [], candidates: [] };
+      return { rawHtml: `<main>${report}</main>`, rawText: options.captureText ?? report, markdown: options.captureMarkdown ?? report,
+        codeBlocks: [], sources: [], candidates: options.researchCandidates ?? [] };
     } },
     heartbeatGate: options.heartbeatGate, deadlineWriteGate: options.deadlineWriteGate,
     AgentBrowserTimeoutError: class extends Error {},
@@ -153,7 +173,7 @@ function fixture(t, options = {}) {
       await collectBoundResult(currentJob, currentJob.collectionBinding, fallbackText); return currentJob;
     } };
   `);
-  return { ...factory(...Object.values(deps)), job, history, commands, exits, scheduled, advance, now: () => now,
+  return { ...factory(...Object.values(deps)), job, history, commands, exits, scheduled, advance, signal: () => process.emit('SIGTERM'), now: () => now,
     heartbeats: () => heartbeatCalls, text: () => existsSync(job.responsePath) ? readFileSync(job.responsePath, 'utf8') : undefined };
 }
 
@@ -319,6 +339,11 @@ test('reload generation observed with the capture resets stability and cannot ea
   assert.equal(run.text(), undefined);
 });
 
+test('an intervening active reload observation breaks consecutive stability', async t => {
+  const run = fixture(t, { reloads: [page('A'), page('A', true), page('A'), page('B'), page('C')] });
+  assert.equal((await run.run()).status, 'failed');
+});
+
 test('reload keeps the existing snapshot Stop fallback', async t => {
   const run = fixture(t, { snapshotStop: true });
   assert.equal((await run.run()).status, 'failed');
@@ -392,6 +417,13 @@ test('the entry deadline bounds the first lock before the job is known', async t
   assert.deepEqual(run.history, [], 'a pre-admission deadline must not mutate the unknown job');
 });
 
+test('time already spent starting the worker cannot shift its lifetime envelope', async t => {
+  const run = fixture(t, { preEntryMs: 90000, lockMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS });
+  const processStarted = run.now() - 90000;
+  await assert.rejects(run.run(), /worker deadline exit/);
+  assert.equal(run.exits[0].at, processStarted + budgets.RECOLLECTION_STARTUP_BUDGET_MS);
+});
+
 test('complete-job recollection clears the entry deadline and keeps its old allowance', async t => {
   const run = fixture(t, { startupMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS + 1000,
     job: { status: 'complete', phase: 'complete', error: undefined,
@@ -431,4 +463,75 @@ test('foreground completion drains an already-started deadline-record mutation',
 
 test('research report waiting and watchdog arithmetic share one constant', () => {
   assert(/const DEEP_RESEARCH_FRAME_WAIT_MS = RECOLLECTION_RESEARCH_WAIT_MS;/.test(source), 'worker must use the shared research wait constant');
+});
+
+test('native export exhaustion keeps the verified research response and does not reach hard exit', async t => {
+  const run = fixture(t, { job: { selection: { provider: 'chatgpt', tool: 'deep_research' } },
+    reportText: 'Research completed in 1m\nFull report\nAll findings.',
+    researchCandidates: Array.from({ length: 7 }, (_, index) => ({
+      candidateId: `export-${index}`, label: 'report.md', selector: '#export', nativeMarkdown: true,
+    })) });
+  t.mock.method(Date, 'now', run.now);
+  const started = run.now();
+  const result = await run.run();
+  assert.equal(result.phase, 'complete_with_artifact_errors', result.recollectionError);
+  assert(result.recollectionCompletionVerifiedAt);
+  assert.equal(run.text(), 'Full report\nAll findings.');
+  assert.deepEqual(run.exits, []);
+  assert(run.now() - started <= budgets.RECOLLECTION_POST_WAIT_BUDGET_MS - budgets.RECOLLECTION_FINALIZE_RESERVE_MS);
+});
+
+test('unbound native research Markdown remains an optional unconfirmed artifact, never the response', async t => {
+  const run = fixture(t, { job: { selection: { provider: 'chatgpt', tool: 'deep_research' } },
+    reportText: 'Research completed in 1m\nFull report\nAll findings.', nativeActivationMs: 1,
+    researchCandidates: [{ candidateId: 'native', label: 'report.md', selector: '#export', nativeMarkdown: true }] });
+  t.mock.method(Date, 'now', run.now);
+  const result = await run.run();
+  assert.equal(run.text(), 'Full report\nAll findings.');
+  const manifest = JSON.parse(readFileSync(join(dirname(run.job.responsePath), 'artifacts.json'), 'utf8'));
+  const native = manifest.find(item => item.nativeMarkdown);
+  assert(native, JSON.stringify(manifest));
+  assert.equal(native.state, 'failed');
+  assert.equal(native.unconfirmed, true);
+  assert(result.collectionOptionalMissing.includes('artifact:frame:native'));
+});
+
+test('signal cleanup cannot exit before an in-flight foreground heartbeat settles', async t => {
+  let release, heartbeatStarted;
+  const heartbeatGate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { heartbeatStarted = resolve; });
+  const run = fixture(t, { startupMs: 10000, heartbeatGate, onHeartbeat: heartbeatStarted });
+  const pending = run.run();
+  try {
+    await started;
+    run.signal();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(run.exits, [], 'a graceful signal exit must not abandon a pending mutation');
+  } finally { release(); await pending; await new Promise(resolve => setImmediate(resolve)); }
+  assert.equal(run.current().status, 'failed');
+  assert.equal(run.current().recollectionCompletionVerifiedAt, undefined);
+});
+
+test('stage arming cannot extend the lifetime ceiling or restart expired/interrupted work', () => {
+  let declaration;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === 'armDeadline') declaration = node;
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  assert(declaration);
+  const makeArm = (stageDeadline, shuttingDown = false) => {
+    const deadlines = [];
+    const arm = new Function('Date', 'setTimeout', 'clearTimeout', 'stageDeadline', 'shuttingDown', `
+      let deadlineTimer, deadlineRecordTimer, lifetimeDeadline=100, admitted=false;
+      const deadlineWrites=new Set();
+      const armDeadline=${declaration.initializer.getText(tree)};
+      return armDeadline;`)({ now: () => 10 }, (_fn, ms) => { deadlines.push(10 + ms); return { unref() {} }; }, () => {}, stageDeadline, shuttingDown);
+    return { arm, deadlines };
+  };
+  const live = makeArm();
+  assert.equal(live.arm(1000, 'test'), 100);
+  assert(Math.max(...live.deadlines) <= 100);
+  assert.throws(() => makeArm(9).arm(1000, 'test'), /deadline|interrupted/);
+  assert.throws(() => makeArm(undefined, true).arm(1000, 'test'), /deadline|interrupted/);
 });

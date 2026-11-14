@@ -47,3 +47,26 @@ for (const slowStage of ['setup', 'activation', 'bytes', 'teardown']) {
     assert(observed.every(value => value.timeout !== undefined), 'every awaited CDP operation must carry its remaining budget');
   });
 }
+
+test('an exhausted activation budget cannot click the export control', async t => {
+  let clicks = 0;
+  const priorDocument = globalThis.document;
+  globalThis.document = { querySelector: () => ({ click() { clicks++; } }) };
+  t.after(() => { if (priorDocument === undefined) delete globalThis.document; else globalThis.document = priorDocument; });
+  await assert.rejects(activateDownloadControl('#export', true, 0), /deadline/);
+  assert.equal(clicks, 0);
+});
+
+test('an export menu arriving at the activation deadline is not clicked', async t => {
+  let now = 0, menuClicks = 0;
+  t.mock.method(Date, 'now', () => now);
+  const priorDocument = globalThis.document, priorTimer = globalThis.setTimeout;
+  const element = { click() {} };
+  globalThis.document = { querySelector: () => element,
+    querySelectorAll: () => [{ textContent: 'Export to Markdown', getClientRects: () => [1], click() { menuClicks++; } }] };
+  globalThis.setTimeout = (fn, ms) => { now += ms; queueMicrotask(fn); };
+  t.after(() => { globalThis.setTimeout = priorTimer; if (priorDocument === undefined) delete globalThis.document; else globalThis.document = priorDocument; });
+  await assert.rejects(activateDownloadControl('#export', true, 5), /deadline/);
+  assert.equal(menuClicks, 0);
+  assert.equal(now, 5);
+});

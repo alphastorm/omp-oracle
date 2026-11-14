@@ -2259,6 +2259,12 @@ writeFileSync(path, JSON.stringify({ ...job, status: "complete", phase: "complet
     assert(reported?.status === persisted.status, "read should report the current persisted status");
     assert(reported?.recollectionCompletionVerifiedAt === persisted.recollectionCompletionVerifiedAt, "read should project the exact saved completion receipt");
     assert(reported?.responsePreview === "Full recollected reply", "read should expose the post-recollection response");
+    await writeFile(fakeWorkerPath, `console.error("Fixture cleanup deadline"); process.exitCode = 1;\n`, { encoding: "utf8", mode: 0o600 });
+    const exited = await readTool.execute!("oracle-read-recollection-hard-exit", { jobId: receiptJobId, action: "recollect" }, undefined, () => { }, ctx) as { details?: unknown };
+    const exitedDetails = asRecord(exited.details);
+    assert(asRecord(exitedDetails?.job)?.status === "complete", "a subprocess failure must not hide the durable completed state");
+    assert(asRecord(exitedDetails?.job)?.recollectionCompletionVerifiedAt === persisted.recollectionCompletionVerifiedAt, "the unsuccessful subprocess result must retain the saved receipt");
+    assert(asRecord(exitedDetails?.error)?.message, "the durable outcome must include the separate subprocess error");
   } finally {
     for (const jobId of jobIds) await cleanupJob(jobId);
     await rm(fixtureDir, { recursive: true, force: true });
