@@ -659,6 +659,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
     await writeFile(job.promptPath, 'Fixture prompt');
     if (options.oldResponse !== undefined) await writeFile(job.responsePath, options.oldResponse);
     const initial = structuredClone(job);
+    const initialFiles = await fileMap(directory);
     class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
     const deps = {
       ...life, ...capture, ...flow, ...ui, ...signals,
@@ -748,7 +749,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
     api = new Function(...Object.keys(deps), `let currentJob, shuttingDown=false, conversationLeftEpisode=false, managedBrowserChangedError;
       ${declarations(names)}
       return { run, runRecollection, collectBoundResult, state:()=>currentJob };`)(...Object.values(deps));
-    return { initial, page, events, source, render, signal,
+    return { initial, initialFiles, page, events, source, render, signal,
       read: async () => JSON.parse(await readFile(jobPath, 'utf8')),
       run: async () => {
         let error;
@@ -853,6 +854,32 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       const result = project(job);
       for (const key of ['status', 'responsePath', 'generationStatus', 'collectionStatus', 'collectionBinding', 'recollectionCompletionVerifiedAt']) assert.deepEqual(result[key], job[key], key);
     }
+  });
+  add('unsupported-timeouts-are-mutation-free', async change => {
+    const source = await readFile(join(candidateRoot, 'extensions/oracle/lib/tools.ts'), 'utf8');
+    const tree = ts.createSourceFile('tools.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    let object;
+    const visit = node => {
+      if (ts.isObjectLiteralExpression(node) && node.properties.some(property => ts.isPropertyAssignment(property)
+        && property.name.getText(tree) === 'name' && ts.isStringLiteral(property.initializer) && property.initializer.text === 'oracle_read')) object = node;
+      ts.forEachChild(node, visit);
+    };
+    visit(tree); assert(object);
+    for (const options of [{ grok: true }, { research: true }]) {
+      const f = await fixture(options, candidateRoot, change);
+      const result = await f.run();
+      assert.match(result.error, /unsupported.*nothing was changed or resent/);
+      assert.deepEqual(result.files, f.initialFiles);
+      assert.deepEqual(result.events.calls, []);
+      const deps = { ORACLE_READ_PARAMS: {}, readJobForProject: () => f.initial, getProjectId: () => 'fixture',
+        timedOutRecollectionBinding, basename,
+        buildOracleToolErrorResult: (_tool, error) => ({ error: error.message }),
+        execFileAsync: async () => { throw new Error('Worker must not be spawned'); } };
+      const reader = new Function(...Object.keys(deps), ts.transpile(`const tool = ${object.getText(tree)};`) + ';return tool;')(...Object.values(deps));
+      const refused = await reader.execute('fixture', { jobId: 'fixture', action: 'recollect' }, undefined, undefined, { cwd: 'fixture' });
+      assert.match(refused.error, /unsupported.*nothing was changed or resent/);
+    }
+    assert.throws(() => timedOutRecollectionBinding({ status: 'failed', error: 'Timed out waiting for Grok response completion' }, undefined, basename), /Grok.*unsupported/);
   });
   const results = [];
   for (const item of cases) {
