@@ -145,6 +145,7 @@ export declare function timedOutRecollectionBinding(
     promptSendState?: string;
     archivePath?: string;
     conversationId?: string;
+    selection?: { provider?: string; tool?: string };
     collectionBinding?: { responseIndex?: number; messageId?: string; turnSha256?: string } | undefined;
   },
   explicit: { responseIndex?: number } | undefined,

@@ -4,6 +4,15 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+
+- Timed-out ChatGPT chat recollection requires an archive-anchored message identity, observed completion and two consecutive reload captures with equal raw text, nonempty after trimming, while generation is inactive. Markdown, HTML and source addresses are not compared; the second capture is saved. Failure of identity, completion, bound reply capture or a propagated persistence error prevents completion. The final deciding-field/collection transition writes `recollectionCompletionVerifiedAt`, also exposed in structured read details, and normal cleanup bookkeeping follows. The proof records verified, saved reply text, not evidence about artifacts: optional download/validation errors can accompany completion with proof, and permission changes remain best effort. Jobs without the proof field keep their existing collection behavior.
+- Timed-out Deep Research and Grok recollection are refused without changing the job or resending. The tool starts no worker; a directly invoked worker takes and releases the recollect lock before refusing, without acquiring runtime/conversation leases or starting a browser. Their previous unverified timeout recovery is no longer available; completed-job artifact recollection remains unchanged.
+- Failed attempts may leave staging files but cannot borrow an older response as a fresh capture. Shutdown checks stop a transition before its callback, not a write already authorized by that callback. Hidden-text rendering, Retry beside a finished reply, artifact budgets, cleanup/heartbeat behavior and the ten-minute read backstop are unchanged.
+- Later recollection of a proof-bearing job compares each capture's exact raw text, whitespace included, byte for byte with the saved `response.raw.txt` in the writer's redacted form, while retaining the binding-hash check. Changed text, a missing saved hash, or absent/unreadable saved raw text refuses before collection writes, preserving the verified response, binding, proof, manifest and collection outcome without partial marking or `.previous` files; only `recollectionError` records the refusal. A later capture of the same reply differing only in whitespace is refused too, keeping the verified response; equal raw text still permits artifact recollection. Markdown, HTML and source addresses are not pinned. Proof-bearing jobs deliberately differ from `main` in two shapes: changed text, or a missing saved hash or absent/unreadable saved raw text; unchanged behavior is promised only for jobs without the proof field. Refused attempts preserve status, phase, error and `completedAt`, but the unchanged 64-entry lifecycle log can evict its oldest terminal event when a navigation or other event is appended; this limit is tracked in Architecture and Operations.
+
 ## 0.4.15 - 2026-11-13
 
 ### Changed

@@ -10,6 +10,10 @@ import { createServer } from 'node:http';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import ts from 'typescript';
+import { EventEmitter } from 'node:events';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as lifecycle from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
+import { withLock } from '../extensions/oracle/worker/state-locks.mjs';
 import { AgentBrowserTimeoutError, AGENT_BROWSER_TIMEOUTS, batchInvocation } from '../extensions/oracle/worker/agent-browser-helpers.mjs';
 import { composerTextDigest, composerTextDigestExpression } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 import { detectCompletionFailure, throwIfProviderTransientError } from '../extensions/oracle/worker/provider-page-signals.mjs';
@@ -21,6 +25,7 @@ import { CHATGPT_COMPOSER_EDITOR_SELECTOR, CHATGPT_STOP_CONTROL_SELECTOR, classi
 import { chatGptGenerationActive, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStaleStopState } from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'oracle-capture-proof-'));
+console.log(`Owned synthetic browser directory: ${root}`);
 const chrome = process.env.CHROME_BIN || ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium', '/usr/bin/google-chrome'].find(existsSync);
 assert(chrome, 'Supply CHROME_BIN; this proof never attaches to an existing browser');
 const processHandle = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', `--user-data-dir=${root}/chrome`, 'about:blank'], { stdio: 'ignore' });
@@ -30,7 +35,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // in-page conversation guard reads a real location. Tests replace a page by path.
 const pages = new Map();
 const fixture = createServer((request, response) => {
-  response.setHeader('content-type', 'text/html; charset=utf-8');
+  response.setHeader('content-type', request.url === '/payload.txt' ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8');
   response.end(pages.get(new URL(request.url, 'http://fixture').pathname) ?? '<!doctype html><body></body>');
 });
 await new Promise((resolve) => fixture.listen(0, '::', resolve));
@@ -567,6 +572,7 @@ ${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, 
     await assert.rejects(runSend({ ok: true }, false), /did not leave the composer/);
     assert.deepEqual(sendStates.splice(0), ['attempted'], 'An unconfirmed send may have reached the provider');
   }
+  await recollectionCases({ root, origin, pages, evaluate, navigate });
   console.log(JSON.stringify({ status: 'passed', syntheticOnly: true, exactCode: true, richDom: true, genericDownload: true, frameExport: true, hostDelegatedNativeExport: true,
     researchWidgetState: true, researchCitations: true, idempotentCollection: true, partialPreserved: true, conversationGuard: true, anchoredRecollection: true,
     composerHydration: true, restoredDraftReplacement: true, frameFreeControlWait: true, promptSendState: true, oldTurnClicks: 0, sends: 0 }));
@@ -576,4 +582,603 @@ ${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, 
   processHandle.kill('SIGTERM');
   await new Promise((resolve) => { if (processHandle.exitCode !== null) resolve(); else processHandle.once('exit', resolve); });
   await rm(root, { recursive: true, force: true });
+}
+
+// These cases execute the production declarations and their serialized page expressions. Only
+// transport, time and resource ownership are fixtures; capture, collection and disk writes are real.
+async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
+  const candidateRoot = fileURLToPath(new URL('../', import.meta.url));
+  const directory = join(root, 'recollection');
+  const timeoutText = 'Timed out waiting for ChatGPT response completion';
+  const at = '2026-01-01T00:00:00.000Z';
+  const cases = [];
+  // The lifecycle log is bounded at 64 entries; these tuple cases use short histories, not a full log.
+  const terminal = job => [job.status, job.phase, job.error, job.completedAt,
+    lifecycle.getLatestOracleTerminalLifecycleEvent(job), job.recollectionCompletionVerifiedAt];
+  const fileMap = async directory => {
+    const result = {};
+    const visit = async (path, prefix = '') => {
+      for (const entry of (await readdir(path, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        const name = prefix + entry.name;
+        if (entry.isDirectory()) await visit(join(path, entry.name), name + '/');
+        else result[name] = (await readFile(join(path, entry.name))).toString('base64');
+      }
+    };
+    await visit(directory);
+    return result;
+  };
+  async function fixture(options = {}, sourceRoot = candidateRoot, change = text => text) {
+    await rm(directory, { recursive: true, force: true });
+    await mkdir(directory);
+    const jobPath = join(directory, 'job.json');
+    const source = change(await readFile(join(sourceRoot, 'extensions/oracle/worker/run-job.mjs'), 'utf8'));
+    const syntax = ts.createSourceFile('worker.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const declarations = names => {
+      const found = syntax.statements.filter(node => (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && names.includes(node.name?.text));
+      assert.equal(found.length, names.length, names.join(', '));
+      return found.map(node => node.getText(syntax)).join('\n');
+    };
+    const load = path => import(pathToFileURL(join(sourceRoot, 'extensions/oracle', path)).href);
+    const life = { ...await load('shared/job-lifecycle-helpers.mjs') };
+    if (change.lifecycle) life.timedOutRecollectionBinding = new Function(`return ${change.lifecycle(life.timedOutRecollectionBinding.toString())};`)();
+    const capture = await load('worker/response-capture.mjs');
+    const flow = await load('worker/chatgpt-flow-helpers.mjs');
+    const ui = await load('worker/chatgpt-ui-helpers.mjs');
+    const signals = await load('worker/provider-page-signals.mjs');
+    const page = { id: 'bound', text: 'Complete reply', stop: false, ...options.page };
+    let now = Date.parse(at), evaluations = 0, opens = 0, sent = options.mode !== 'ordinary', failed = false;
+    const events = { writes: [], calls: [], logs: [], captures: 0, downloads: 0, afterShutdown: 0, readsAfterOutcome: 0, history: [], returns: [] };
+    const fakeProcess = new EventEmitter();
+    Object.assign(fakeProcess, { pid: process.pid, argv: ['node', 'worker', 'fixture', '--recollect'], exitCode: 0 });
+    let exited;
+    const exit = new Promise(resolve => { exited = resolve; });
+    let signalled = false, outcomeSaved = false, api;
+    const signal = () => { if (!signalled) { signalled = true; fakeProcess.emit('SIGTERM'); } };
+    fakeProcess.exit = () => exited();
+    const escape = text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+    const body = () => `<div data-message-author-role="user"><span>context-fixture.tar.zst</span></div>` + (sent
+      ? options.grok ? `<div class="message-bubble">${escape(page.text)}</div>`
+        : `<article data-message-author-role="assistant" ${page.id ? `data-message-id="${page.id}"` : ''} ${options.research ? 'data-report-id="report"' : ''}>${page.html ?? `<p>${escape(page.text)}</p>`}${options.artifact ? '<a download="result.txt" href="/payload.txt">Download result.txt</a>' : ''}</article>` : '')
+      + (page.stop ? '<button data-testid="stop-button">Stop</button>' : '')
+      + (page.retry ? '<button id="retry">Retry</button>' : '')
+      + '<div contenteditable="true">DO_NOT_SEND</div>';
+    const render = async () => {
+      pages.set('/c/recollection', '<!doctype html><body>' + body());
+      await evaluate(`document.body.innerHTML=${JSON.stringify(body())};`);
+    };
+    pages.set('/c/recollection', '<!doctype html><body>' + body());
+    pages.set('/payload.txt', options.invalidArtifact ? '<!doctype html><html>Sign in</html>' : 'artifact payload\n');
+    await navigate(`${origin}/c/recollection`);
+    const job = { id: 'fixture', status: options.mode === 'complete' ? 'complete' : 'failed', phase: options.mode === 'complete' ? 'complete' : 'failed',
+      createdAt: at, submittedAt: at, phaseAt: at, completedAt: at, error: options.mode === 'complete' ? undefined : options.timeoutError ?? (options.grok ? 'Timed out waiting for Grok response completion' : timeoutText),
+      promptSendState: 'accepted', archivePath: '/fixture/context-fixture.tar.zst', conversationId: 'recollection', chatUrl: `${origin}/c/recollection`,
+      collectionBinding: { conversationId: 'recollection', responseIndex: 0, ...options.binding }, recollectionNeeded: true,
+      runtimeId: 'fixture', runtimeSessionName: 'prior', cleanupPending: false, responsePath: join(directory, 'response.md'),
+      promptPath: join(directory, 'prompt.txt'), selection: { provider: options.grok ? 'grok' : 'chatgpt', ...(options.research ? { tool: 'deep_research' } : {}) },
+      config: { browser: { chatUrl: `${origin}/c/recollection`, chatGptRelayEndpoint: 'synthetic' }, worker: { completionTimeoutMs: 100, pollMs: 10 }, artifacts: { capture: Boolean(options.artifact) } },
+      ...(options.proof ? { recollectionCompletionVerifiedAt: options.proof } : {}) };
+    if (options.mode === 'ordinary') Object.assign(job, { status: 'submitted', phase: 'submitted', completedAt: undefined, error: undefined, collectionBinding: undefined });
+    await writeFile(jobPath, JSON.stringify(job, null, 2) + '\n');
+    await writeFile(job.promptPath, 'Fixture prompt');
+    if (options.oldResponse !== undefined) await writeFile(job.responsePath, options.oldResponse);
+    if (options.seedFiles) for (const [name, bytes] of Object.entries(options.seedFiles)) {
+      if (name === 'artifacts.json' || name.startsWith('artifacts/')) {
+        await mkdir(join(directory, 'artifacts'), { recursive: true });
+        await writeFile(join(directory, name), Buffer.from(bytes, 'base64'));
+      }
+    }
+    const initial = structuredClone(job);
+    const initialFiles = await fileMap(directory);
+    class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
+    const deps = {
+      ...life, ...capture, ...flow, ...ui, ...signals,
+      Date: Clock, process: fakeProcess, createHash, existsSync, chmod, mkdir, join, basename,
+      jobId: job.id, jobDir: directory, jobPath, ORACLE_STATE_DIR: join(root, 'locks'), AGENT_BROWSER_BIN: 'unused',
+      AgentBrowserTimeoutError, RELOAD_RECONCILE_TIMEOUT_MS: 100, RELOAD_RECONCILE_POLL_MS: 10,
+      STALE_STOP_CONTROL_MS: 120000, MISSING_TURN_RELOAD_MS: 300000, MISSING_TURN_RELOAD_MAX: 1,
+      DEEP_RESEARCH_FRAME_WAIT_MS: 100, DEEP_RESEARCH_REPORT_EXPRESSION: 'document.body.innerText', POST_SEND_SETTLE_MS: 0,
+      ARTIFACT_DOWNLOAD_TIMEOUT_MS: 1000, GROK_LABELS: { stop: 'Stop model response' },
+      readFile: async (path, ...args) => {
+        if (path === join(directory, 'response.raw.txt') && options.failRawRead?.()) throw Object.assign(new Error('Injected saved raw-text read failure'), { code: 'EACCES' });
+        const value = await readFile(path, ...args);
+        if (path === jobPath && outcomeSaved) {
+          events.readsAfterOutcome++;
+          if (options.signalAt === 'callback') signal();
+        }
+        return value;
+      },
+      writeFile: async (path, bytes, ...args) => {
+        const text = String(bytes);
+        if (path.startsWith(jobPath + '.') && text.includes('"recollectionCompletionVerifiedAt"') && options.signalAt === 'after-callback') signal();
+        const point = path.startsWith(jobPath + '.') ? (text.includes('"recollectionCompletionVerifiedAt"') ? 'commit'
+          : text.includes('"responseCapturePath"') ? 'outcome' : text.includes('"turnSha256"') ? 'binding' : 'job')
+          : path.includes('/artifacts/') ? 'artifact' : path.includes('artifacts.json') && text.includes('"downloaded"') ? 'downloaded-manifest'
+          : ['response.block-0.txt', 'response.raw.txt', 'response.raw.html', 'response.md', 'response.capture.json', 'artifacts.json'].find(name => path.includes('/' + name + '.'));
+        if (!failed && options.failAt === point) { failed = true; throw new Error('Injected persistence failure: ' + point); }
+        return writeFile(path, bytes, ...args);
+      },
+      rename: async (from, to) => {
+        await rename(from, to); events.writes.push(to.slice(directory.length + 1));
+        if (to === jobPath) {
+          const state = JSON.parse(await readFile(to, 'utf8')); events.history.push(state);
+          if (state.responseCapturePath && !state.recollectionCompletionVerifiedAt) {
+            outcomeSaved = true;
+            if (options.signalAt === 'before-commit') signal();
+          }
+        }
+      },
+      withLock, readProcessStartedAt: () => 'fixture-start', randomUUID: () => 'fixture-session',
+      jobBlocksAdmission: () => false, usesSharedBrowser: () => true,
+      assertAgentBrowserVersionSupported: async () => {}, assertManagedBrowserUnchanged: async () => {},
+      tryAcquireRuntimeLeaseForJob: async () => { events.calls.push('runtime-lease'); return true; },
+      tryAcquireConversationLeaseForJob: async () => { events.calls.push('conversation-lease'); return true; }, releaseLease: async () => {},
+      launchBrowser: async () => { events.calls.push('launch'); }, closeBrowser: async () => {}, cleanupRuntime: async () => [],
+      withHeartbeatWhile: async task => task(), heartbeat: async () => {}, log: async message => { events.logs.push(message); }, sleep: async ms => { now += ms; },
+      evalPage: async (_job, expression) => {
+        evaluations++;
+        if (signalled) events.afterShutdown++;
+        if (expression.includes('function captureScopedResponse')) events.captures++;
+        if (expression.includes('function captureDownload')) events.downloads++;
+        await options.beforeRead?.({ page, evaluations, opens, expression, render });
+        let result = await evaluate(expression);
+        while (typeof result === 'string') { try { result = JSON.parse(result); } catch { break; } }
+        if (options.signalAt === 'wait' && events.captures === 1) signal();
+        if (options.lateId && events.captures === 1) { page.id = 'bound'; await render(); }
+        return result;
+      },
+      agentBrowser: async (_job, command, url) => {
+        events.calls.push(command);
+        assert.equal(command, 'open', 'Only conversation navigation is permitted');
+        if (!url.startsWith(origin)) return { stdout: '' };
+        opens++;
+        if (opens > 1 && options.reloadFailure) throw new Error('Fixture reload failed');
+        await options.onOpen?.({ page, opens });
+        await render(); await navigate(url); return { stdout: '' };
+      },
+      snapshotText: async () => (page.stop ? '- button "Stop" [ref=stop]\n' : '') + (page.retry ? '- button "Retry" [ref=retry]' : '') + (options.research ? '\n- Iframe "Deep research"' : ''),
+      readPageSignals: async () => ({ text: page.failure || '' }),
+      findEntry: (_snapshot, predicate) => [{ kind: 'button', label: 'Retry', ref: 'retry', disabled: false }].find(predicate),
+      clickRef: async () => { events.calls.push('retry'); throw new Error('Retry activated'); },
+      installSignalHandlers: () => {}, waitForOracleReady: async () => {}, configureModel: async () => { events.calls.push('configure'); },
+      uploadArchive: async () => { events.calls.push('upload'); }, setComposerText: async () => { events.calls.push('composer'); },
+      clickSend: async () => { events.calls.push('send'); sent = true; await render(); },
+      observeSelection: async () => undefined, enableDeepResearch: async () => true,
+      waitForStableChatUrl: async () => job.chatUrl, currentUrl: async () => job.chatUrl,
+      stripChatGptResponseChrome: text => text, captureDiagnostics: async () => {}, promoteQueuedJobsAfterCleanup: async () => {},
+      armDeepResearchFrameCapture: async () => {}, boundResearchFrame: async () => {
+        if (options.frameFailure) throw new Error('Fixture frame missing');
+        return { sessionId: 'fixture-frame', targetId: 'fixture-frame' };
+      },
+      deepResearchCdp: { evaluate: async (_session, expression) => evaluate(expression) },
+      parseEvalResult: value => value,
+    };
+    const names = ['run', 'runRecollection', 'waitForChatCompletion', 'reconcileStreamedTurn', 'waitForDeepResearchReport',
+      'captureBoundTurn', 'acquireBoundTurn', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile',
+      'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'observeTurns', 'assistantMessages', 'grokAssistantMessages',
+      'collectArtifactCandidates', 'returnToOwnConversation', 'noteOwnConversation', 'readJobUnlocked', 'readJob',
+      'writeJobUnlocked', 'mutateJob', 'OracleWorkerError', 'isGrokJob', 'providerForJob'];
+    deps.events = events;
+    api = new Function(...Object.keys(deps), `let currentJob, shuttingDown=false, conversationLeftEpisode=false, managedBrowserChangedError;
+      ${declarations(names)}
+      const collect = collectBoundResult;
+      collectBoundResult = async (...args) => { const result = await collect(...args); events.returns.push(structuredClone(result)); return result; };
+      return { run, runRecollection, collectBoundResult, state:()=>currentJob };`)(...Object.values(deps));
+    return { initial, initialFiles, page, events, source, render, signal, admission: life.timedOutRecollectionBinding,
+      read: async () => JSON.parse(await readFile(jobPath, 'utf8')),
+      run: async () => {
+        let error;
+        try { await (options.mode === 'ordinary' ? api.run() : api.runRecollection()); } catch (caught) { error = caught; }
+        if (signalled) await exit;
+        return { job: JSON.parse(await readFile(jobPath, 'utf8')), files: await fileMap(directory), events, error: error?.message };
+      } };
+  }
+  const add = (name, run) => cases.push({ name, run });
+  const unchanged = (f, result) => {
+    assert.deepEqual(terminal(result.job), terminal(f.initial));
+    for (const state of result.events.history) assert.deepEqual(terminal(state), terminal(f.initial));
+  };
+  add('streaming-preserves-terminal-failure', async change => {
+    const f = await fixture({ page: { stop: true, text: 'partial' } }, candidateRoot, change);
+    const result = await f.run(); unchanged(f, result);
+    assert.match(result.job.recollectionError, /generat|completion|deadline/i);
+    assert(!result.events.writes.some(path => /response|artifacts/.test(path)));
+    const retry = await fixture({}, candidateRoot, change); assert.equal((await retry.run()).job.status, 'complete');
+  });
+  add('stable-identity-saves-verified-capture', async change => {
+    let reloadCaptures = 0;
+    const f = await fixture({ beforeRead: async ({ page, opens, expression, render }) => {
+      if (opens > 1 && expression.includes('function captureScopedResponse')) {
+        page.text = ++reloadCaptures <= 2 ? 'Verified final bytes' : 'Later substituted bytes'; await render();
+      }
+    } }, candidateRoot, change);
+    const result = await f.run(); assert.equal(result.job.status, 'complete');
+    assert.match(result.job.recollectionCompletionVerifiedAt, /^\d{4}-\d\d-\d\dT.*Z$/);
+    assert.equal(Buffer.from(result.files['response.md'], 'base64').toString(), 'Verified final bytes');
+    assert.equal(reloadCaptures, 2, 'Save the second stable capture without reading again');
+    assert.equal(result.job.collectionBinding.messageId, 'bound');
+    assert(result.events.history.filter(state => state.recollectionCompletionVerifiedAt).every(state => state.status === 'complete'));
+    assert(!result.events.calls.some(call => ['send', 'retry', 'composer', 'upload', 'configure'].includes(call)));
+  });
+  add('anchored-identity-required', async change => {
+    for (const lateId of [false, true]) {
+      const f = await fixture({ page: { id: undefined }, lateId }, candidateRoot, change);
+      const result = await f.run(); unchanged(f, result);
+      assert.equal(result.events.captures, 1, 'R1 refusal must precede a second read');
+      assert(!result.events.writes.some(path => /response|artifacts/.test(path)));
+      assert.deepEqual(result.job.collectionBinding, f.initial.collectionBinding);
+    }
+  });
+  add('saved-identity-must-match', async change => {
+    for (const id of ['bound', 'replacement', undefined]) {
+      const f = await fixture({ binding: { messageId: 'bound' }, page: { id } }, candidateRoot, change);
+      const result = await f.run();
+      if (id === 'bound') assert.equal(result.job.status, 'complete'); else unchanged(f, result);
+    }
+  });
+  add('empty-current-rendering-borrows-nothing', async change => {
+    for (const html of ['<button>Copy</button>', '<p>   </p>', '<pre><code class="language-markdown">   </code></pre>']) {
+      const f = await fixture({ page: { html }, oldResponse: 'Earlier response' }, candidateRoot, change);
+      const result = await f.run(); unchanged(f, result);
+      assert.equal(Buffer.from(result.files['response.md'], 'base64').toString(), 'Earlier response');
+    }
+  });
+  // The pre-write nonempty guard makes the old-response fallback unreachable with a valid
+  // strict capture. Keep its explicit exclusion as a structural defense, not a fabricated DOM case.
+  add('strict-old-response-fallback-is-excluded', async change => {
+    const source = change(await readFile(join(candidateRoot, 'extensions/oracle/worker/run-job.mjs'), 'utf8'));
+    assert.match(source, /else if \(!verifiedRecollection && job\.responsePath && existsSync\(job\.responsePath\)\)/);
+  });
+  add('bound-identity-survives-later-neighbors', async change => {
+    const f = await fixture({ beforeRead: async ({ evaluations }) => {
+      if (evaluations === 2) await evaluate(`document.querySelector('article').insertAdjacentHTML('beforebegin', '<article data-message-author-role="assistant" data-message-id="neighbor">OTHER REPLY</article>')`);
+    } }, candidateRoot, change);
+    const result = await f.run(); assert.equal(result.job.status, 'complete');
+    assert.equal(Buffer.from(result.files['response.md'], 'base64').toString(), 'Complete reply');
+    assert.equal(result.job.collectionBinding.messageId, 'bound');
+  });
+  add('collector-error-never-commits', async change => {
+    for (const failAt of ['binding', 'response.block-0.txt', 'response.raw.txt', 'response.raw.html', 'response.md',
+      'response.capture.json', 'artifacts.json', 'downloaded-manifest', 'artifact', 'outcome', 'commit']) {
+      const f = await fixture({ failAt, artifact: true, page: { html: '<pre><code class="language-markdown">Current response</code></pre>' } }, candidateRoot, change);
+      const result = await f.run(); unchanged(f, result);
+      assert.match(result.job.recollectionError, /Injected persistence failure/, failAt);
+    }
+  });
+  add('reload-failure-never-commits', async change => {
+    const f = await fixture({ reloadFailure: true }, candidateRoot, change);
+    unchanged(f, await f.run());
+  });
+  add('reload-failure-retains-original-error', async change => {
+    const f = await fixture({ reloadFailure: true }, candidateRoot, change);
+    const result = await f.run(); unchanged(f, result);
+    assert.equal(result.job.recollectionError, 'Fixture reload failed');
+  });
+  add('reload-instability-and-generation-reset-stability', async change => {
+    for (const mode of ['growing', 'generating', 'foreign']) {
+      let reloadCaptures = 0;
+      const f = await fixture({ beforeRead: async ({ page, opens, expression, render }) => {
+        if (opens > 1 && expression.includes('function captureScopedResponse')) {
+          reloadCaptures++;
+          if (mode === 'foreign') {
+            pages.set('/c/foreign-recollection', '<article data-message-author-role="assistant" data-message-id="bound">Foreign reply</article>');
+            await navigate(`${origin}/c/foreign-recollection`);
+          } else {
+            if (mode === 'growing') page.text = `Growing ${reloadCaptures}`;
+            else page.stop = reloadCaptures % 2 === 0;
+            await render();
+          }
+        }
+      } }, candidateRoot, change);
+      unchanged(f, await f.run());
+    }
+  });
+  add('shutdown-before-callback-prevents-proof', async change => {
+    for (const signalAt of ['wait', 'before-commit', 'callback']) {
+      const f = await fixture({ signalAt }, candidateRoot, change);
+      const result = await f.run(); unchanged(f, result);
+      assert(!result.events.logs.some(message => message.includes('; job fixture is complete')), signalAt);
+      if (signalAt === 'wait') assert.equal(result.events.afterShutdown, 0);
+      if (signalAt === 'before-commit') assert.equal(result.events.readsAfterOutcome, 1, 'Only signal finalization may acquire the job after the pre-commit fence');
+    }
+  });
+  add('shutdown-after-callback-is-publication-limit', async change => {
+    const f = await fixture({ signalAt: 'after-callback' }, candidateRoot, change);
+    const result = await f.run(); assert.equal(result.job.status, 'complete'); assert(result.job.recollectionCompletionVerifiedAt);
+  });
+  add('completed-recollection-never-initializes-proof', async change => {
+    for (const proof of [undefined, at]) {
+      const f = await fixture({ mode: 'complete', binding: { messageId: 'bound' }, proof }, candidateRoot, change);
+      assert.equal((await f.run()).job.recollectionCompletionVerifiedAt, proof);
+    }
+  });
+  const verifiedHtml = '<h1>Verified heading</h1><p>Original body</p>';
+  const assertVerifiedReplyKept = (before, after) => {
+    for (const key of ['status', 'phase', 'error', 'errorCode', 'completedAt', 'recollectionCompletionVerifiedAt',
+      'collectionBinding', 'responsePath', 'collectionStatus', 'collectionRequiredMissing', 'collectionOptionalMissing', 'artifactPaths']) {
+      assert.deepEqual(after.job[key], before.job[key], key);
+    }
+    assert.match(after.job.recollectionError, /verified reply.*saved hash.*verified response.*kept/);
+    assert.deepEqual(Object.keys(after.files), Object.keys(before.files));
+    for (const name of Object.keys(before.files)) if (name !== 'job.json') assert.equal(after.files[name], before.files[name], name);
+    assert(!Object.keys(after.files).some(name => name.endsWith('.previous')));
+  };
+  add('verified-reply-change-is-refused', async change => {
+    for (const afterAnchor of [false, true]) {
+      let armed = false, reads = 0;
+      const f = await fixture({ page: { html: verifiedHtml }, beforeRead: async ({ page, expression, render }) => {
+        if (armed && expression.includes('function captureScopedResponse') && ++reads === 2 && afterAnchor) {
+          page.html = '<h1>Verified heading</h1><p>Changed body</p>'; await render();
+        }
+      } }, candidateRoot, change);
+      const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+      if (!afterAnchor) { f.page.html = '<h1>Verified heading</h1><p>Changed body</p>'; await f.render(); }
+      armed = true;
+      const result = await f.run(); assertVerifiedReplyKept(verified, result);
+      assert.equal(reads, afterAnchor ? 2 : 1, 'A changed verified reply is not a retryable hydration failure');
+    }
+  });
+  const whitespaceHtml = spaces => `<pre><code class="language-python">print("a${spaces}b")</code></pre>`;
+  add('verified-reply-whitespace-change-is-refused', async change => {
+    for (const path of ['first', 'retry', 'collector']) {
+      let armed = false, reads = 0;
+      const f = await fixture({ artifact: true, page: { html: whitespaceHtml(' ') }, beforeRead: async ({ page, expression, render }) => {
+        if (!armed || !expression.includes('function captureScopedResponse')) return;
+        reads++;
+        if (path === 'retry' && reads === 1) {
+          pages.set('/c/whitespace-foreign', '<article data-message-author-role="assistant" data-message-id="bound">Foreign reply</article>');
+          await navigate(`${origin}/c/whitespace-foreign`);
+        } else if (path === 'collector' && reads === 2) {
+          page.html = whitespaceHtml('  '); await render();
+        }
+      } }, candidateRoot, change);
+      const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+      const savedText = Buffer.from(verified.files['response.raw.txt'], 'base64').toString();
+      assert(savedText.includes('print("a b")'));
+      assert.equal(turnContentSha256(savedText), turnContentSha256(savedText.replace('print("a b")', 'print("a  b")')),
+        'Whitespace changes are invisible to the legacy identity hash');
+      if (path !== 'collector') { f.page.html = whitespaceHtml('  '); await f.render(); }
+      armed = true;
+      const result = await f.run(); assertVerifiedReplyKept(verified, result);
+      assert.equal(reads, path === 'first' ? 1 : 2, path);
+    }
+  });
+  add('verified-reply-missing-raw-text-is-refused', async change => {
+    const f = await fixture({ artifact: true, page: { html: verifiedHtml } }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    await rm(join(directory, 'response.raw.txt'));
+    const files = { ...verified.files }; delete files['response.raw.txt'];
+    const captures = f.events.captures;
+    const result = await f.run(); assertVerifiedReplyKept({ job: verified.job, files }, result);
+    assert.equal(f.events.captures - captures, 1, 'An absent saved raw text is not retried or recreated');
+  });
+  add('verified-reply-unreadable-raw-text-is-refused', async change => {
+    let failRawRead = false;
+    const f = await fixture({ artifact: true, page: { html: verifiedHtml }, failRawRead: () => failRawRead }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    const captures = f.events.captures; failRawRead = true;
+    const result = await f.run(); assertVerifiedReplyKept(verified, result);
+    assert.equal(f.events.captures - captures, 1, 'An unreadable saved raw text is a permanent refusal');
+  });
+  add('verified-reply-redacted-text-recollects', async change => {
+    const text = 'Transport https://example.invalid/file?X-Amz-Signature=SYNTHETIC_SECRET';
+    const f = await fixture({ page: { text } }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    const savedText = Buffer.from(verified.files['response.raw.txt'], 'base64').toString();
+    assert.equal(savedText, redactTransportSecrets(text));
+    assert.notEqual(savedText, text, 'The capture and its saved redacted form are distinguishable');
+    assert.equal(verified.job.collectionBinding.turnSha256, turnContentSha256(text));
+    const result = await f.run(); assert.equal(result.job.recollectionError, undefined);
+    assert.equal(result.job.recollectionCompletionVerifiedAt, verified.job.recollectionCompletionVerifiedAt);
+    assert.deepEqual(result.job.collectionBinding, verified.job.collectionBinding);
+    assert.equal(result.files['response.raw.txt'], verified.files['response.raw.txt']);
+    assert.equal(result.files['response.md'], verified.files['response.md']);
+    assert.equal(f.events.returns.length, 2, 'The saved form, not unredacted capture text, authorizes recollection');
+  });
+  add('verified-reply-equal-text-recollects', async change => {
+    const f = await fixture({ artifact: true, page: { html: verifiedHtml } }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    assert.notEqual(turnContentSha256(Buffer.from(verified.files['response.md'], 'base64').toString()), verified.job.collectionBinding.turnSha256,
+      'Rendered Markdown differs from raw text, so hashing response.md is a discriminating mutation');
+    const result = await f.run(); assert.equal(result.job.recollectionError, undefined);
+    assert.equal(result.job.recollectionCompletionVerifiedAt, verified.job.recollectionCompletionVerifiedAt);
+    assert.deepEqual(result.job.collectionBinding, verified.job.collectionBinding);
+    assert.equal(result.job.collectionStatus, verified.job.collectionStatus);
+    assert.equal(result.files['response.md'], verified.files['response.md']);
+    assert.equal(f.events.returns.length, 2, 'Equal raw text still reaches artifact collection');
+    assert.equal(f.events.downloads, 1, 'The validated artifact is reused');
+  });
+  add('verified-reply-missing-hash-is-refused', async change => {
+    const f = await fixture({ page: { html: verifiedHtml } }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    const withoutHash = { ...verified.job, collectionBinding: { ...verified.job.collectionBinding } };
+    delete withoutHash.collectionBinding.turnSha256;
+    await writeFile(join(directory, 'job.json'), JSON.stringify(withoutHash, null, 2) + '\n');
+    assertVerifiedReplyKept({ job: withoutHash, files: verified.files }, await f.run());
+  });
+  add('recollection-never-sends-or-retries', async change => {
+    for (const failure of ['', 'There was an error generating a response']) {
+      const f = await fixture({ page: { retry: true, failure } }, candidateRoot, change);
+      const result = await f.run();
+      assert(!result.events.calls.some(call => ['retry', 'send', 'composer', 'upload', 'configure'].includes(call)));
+    }
+  });
+  add('optional-artifact-failure-and-validated-reuse', async change => {
+    const failed = await (await fixture({ artifact: true, invalidArtifact: true }, candidateRoot, change)).run();
+    assert.equal(failed.job.phase, 'complete_with_artifact_errors'); assert(failed.job.recollectionCompletionVerifiedAt);
+    const first = await (await fixture({ artifact: true }, candidateRoot, change)).run();
+    assert.equal(first.job.status, 'complete'); assert.equal(first.events.downloads, 1);
+    const second = await (await fixture({ artifact: true, seedFiles: first.files }, candidateRoot, change)).run();
+    assert.equal(second.job.status, 'complete'); assert.equal(second.events.downloads, 0);
+  });
+  add('read-projects-durable-proof-and-staging', async () => {
+    const source = await readFile(join(candidateRoot, 'extensions/oracle/lib/tools.ts'), 'utf8');
+    const tree = ts.createSourceFile('tools.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const declaration = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'redactJobDetails');
+    const deps = { ...lifecycle, buildOracleQueueSnapshot: () => ({}), getJobDir: () => directory };
+    const project = new Function(...Object.keys(deps), ts.transpile(declaration.getText(tree)) + '; return redactJobDetails;')(...Object.values(deps));
+    for (const status of ['failed', 'complete']) {
+      const job = { id: 'fixture', status, phase: status, responsePath: '/staging/response.md', generationStatus: 'completed',
+        collectionStatus: 'partial', collectionBinding: { messageId: 'bound' }, recollectionCompletionVerifiedAt: status === 'complete' ? at : undefined };
+      const result = project(job);
+      for (const key of ['status', 'responsePath', 'generationStatus', 'collectionStatus', 'collectionBinding', 'recollectionCompletionVerifiedAt']) assert.deepEqual(result[key], job[key], key);
+    }
+  });
+  const assertUnsupportedTimeout = async (options, change) => {
+    const source = await readFile(join(candidateRoot, 'extensions/oracle/lib/tools.ts'), 'utf8');
+    const tree = ts.createSourceFile('tools.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    let object;
+    const visit = node => {
+      if (ts.isObjectLiteralExpression(node) && node.properties.some(property => ts.isPropertyAssignment(property)
+        && property.name.getText(tree) === 'name' && ts.isStringLiteral(property.initializer) && property.initializer.text === 'oracle_read')) object = node;
+      ts.forEachChild(node, visit);
+    };
+    visit(tree); assert(object);
+    const f = await fixture(options, candidateRoot, change);
+    const result = await f.run();
+    assert.match(result.error, /unsupported.*the job was not changed and nothing was resent/);
+    assert.deepEqual(result.files, f.initialFiles);
+    assert.deepEqual(result.events.calls, []);
+    const deps = { ORACLE_READ_PARAMS: {}, readJobForProject: () => f.initial, getProjectId: () => 'fixture',
+      timedOutRecollectionBinding: f.admission, basename,
+      buildOracleToolErrorResult: (_tool, error) => ({ error: error.message }),
+      execFileAsync: async () => { throw new Error('Worker must not be spawned'); } };
+    const reader = new Function(...Object.keys(deps), ts.transpile(`const tool = ${object.getText(tree)};`) + ';return tool;')(...Object.values(deps));
+    const refused = await reader.execute('fixture', { jobId: 'fixture', action: 'recollect' }, undefined, undefined, { cwd: 'fixture' });
+    assert.match(refused.error, /unsupported.*the job was not changed and nothing was resent/);
+  };
+  add('grok-provider-with-chatgpt-timeout-is-refused', async change => {
+    await assertUnsupportedTimeout({ grok: true, timeoutError: timeoutText }, change);
+  });
+  add('chatgpt-provider-with-grok-timeout-is-refused', async change => {
+    await assertUnsupportedTimeout({ timeoutError: 'Timed out waiting for Grok response completion' }, change);
+  });
+  add('unsupported-timeouts-are-mutation-free', async change => {
+    for (const options of [{ grok: true }, { research: true }]) await assertUnsupportedTimeout(options, change);
+    assert.throws(() => timedOutRecollectionBinding({ status: 'failed', error: 'Timed out waiting for Grok response completion' }, undefined, basename), /Grok.*unsupported/);
+  });
+  const results = [];
+  for (const item of cases) {
+    if (process.env.PI_ORACLE_CAPTURE_CASE && !item.name.includes(process.env.PI_ORACLE_CAPTURE_CASE)) continue;
+    try { await item.run(text => text); results.push({ name: item.name, passed: true }); }
+    catch (error) { results.push({ name: item.name, passed: false, error: error.stack || String(error) }); }
+    console.log(JSON.stringify(results.at(-1)));
+  }
+  if (process.env.PI_ORACLE_RECOLLECTION_MUTATIONS === '1') {
+    const once = (before, after) => source => {
+      assert.equal(source.split(before).length, 2, `Mutation target must occur once: ${before}`);
+      return source.replace(before, after);
+    };
+    const removeLine = fragment => source => {
+      const lines = source.split('\n');
+      assert.equal(lines.filter(line => line.includes(fragment)).length, 1, fragment);
+      return lines.filter(line => !line.includes(fragment)).join('\n');
+    };
+    const mutations = [
+      ['identity requirement', 'anchored-identity-required', removeLine('if (!anchoredTurn.captured.messageId?.trim())')],
+      ['saved identity comparison', 'saved-identity-must-match', removeLine('if (savedId && savedId !== anchoredTurn.captured.messageId)')],
+      ['second read supplies identity', 'anchored-identity-required', once('const anchoredTurn = await acquireBoundTurn(currentJob, binding);', 'let anchoredTurn = await acquireBoundTurn(currentJob, binding); if (!anchoredTurn.captured.messageId) anchoredTurn = await acquireBoundTurn(currentJob, anchoredTurn.binding);')],
+      ['nonempty guard', 'empty-current-rendering-borrows-nothing', removeLine('if (!redactTransportSecrets(rendered).trim())')],
+      ['old response borrowing', 'strict-old-response-fallback-is-excluded', once('else if (!verifiedRecollection && job.responsePath', 'else if (job.responsePath')],
+      ['strict rethrow', 'collector-error-never-commits', once('if (verifiedRecollection || (error instanceof OracleWorkerError && error.code === "verified_reply_changed")) throw error;', 'if (error instanceof OracleWorkerError && error.code === "verified_reply_changed") throw error;')],
+      ['artifact persistence rethrow', 'collector-error-never-commits', removeLine('if (verifiedRecollection && persisting) throw error;')],
+      ['bound reload rethrow', 'reload-failure-retains-original-error', removeLine('if (binding) throw error;')],
+      ['later capture substitution', 'stable-identity-saves-verified-capture', once('verifiedRecollection ? verifiedRecollection.verifiedTurn : await acquireBoundTurn(job, binding)', 'await acquireBoundTurn(job, binding)')],
+      ['proof outside transition', 'stable-identity-saves-verified-capture', once('const verifiedAt = timedOutChat ? new Date().toISOString() : undefined;', 'const verifiedAt = timedOutChat ? new Date().toISOString() : undefined; if (timedOutChat) await mutateJob(job => ({ ...job, recollectionCompletionVerifiedAt: verifiedAt }));')],
+      ['proof on complete recollection', 'completed-recollection-never-initializes-proof', once('if (!timedOutChat) await mutateJob((job) => ({ ...job, recollectionError: undefined }));', 'if (!timedOutChat) await mutateJob((job) => ({ ...job, recollectionError: undefined, recollectionCompletionVerifiedAt: new Date().toISOString() }));')],
+      ['wait shutdown check', 'shutdown-before-callback-prevents-proof', removeLine('if (recollectionBinding && shuttingDown)')],
+      ['pre-commit shutdown check', 'shutdown-before-callback-prevents-proof', removeLine('if (timedOutChat && shuttingDown) return;')],
+      ['callback shutdown check', 'shutdown-before-callback-prevents-proof', once('timedOutChat && shuttingDown ? job : transitionOracleJobPhase', 'transitionOracleJobPhase')],
+      ['Retry activation', 'recollection-never-sends-or-retries', once('if (!recollectionBinding && !retriedAfterFailure)', 'if (!retriedAfterFailure)')],
+      ['Research refusal', 'unsupported-timeouts-are-mutation-free', Object.assign(text => text, { lifecycle: removeLine('if (job.selection?.tool === "deep_research")') })],
+      ['Grok refusal', 'unsupported-timeouts-are-mutation-free', Object.assign(text => text, { lifecycle: removeLine('if (job.error === "Timed out waiting for Grok response completion"') })],
+      ['Grok provider mismatch', 'grok-provider-with-chatgpt-timeout-is-refused', Object.assign(text => text, { lifecycle: once(' || job.selection?.provider === "grok"', '') })],
+      ['Grok timeout-text mismatch', 'chatgpt-provider-with-grok-timeout-is-refused', Object.assign(text => text, { lifecycle: once('job.error === "Timed out waiting for Grok response completion" || ', '') })],
+      ['verified reply refusal', 'verified-reply-change-is-refused', once('if (job.recollectionCompletionVerifiedAt) {', 'if (false) {')],
+      ['response-file hash substitution', 'verified-reply-equal-text-recollects', once('turnSha256 !== binding.turnSha256', 'turnContentSha256(await readFile(job.responsePath, "utf8")) !== binding.turnSha256')],
+      ['verified reply retry suppression', 'verified-reply-change-is-refused', removeLine('if (error instanceof OracleWorkerError && error.code === "verified_reply_changed") throw error;')],
+      ['verified reply collector rethrow', 'verified-reply-change-is-refused', once('if (verifiedRecollection || (error instanceof OracleWorkerError && error.code === "verified_reply_changed"))', 'if (verifiedRecollection)')],
+      ['verified reply partial-marking exclusion', 'verified-reply-change-is-refused', once('if (timedOutChat || (error instanceof OracleWorkerError && error.code === "verified_reply_changed"))', 'if (timedOutChat)')],
+      ['normalized saved-text comparison', 'verified-reply-whitespace-change-is-refused', once('!savedRawText?.equals(Buffer.from(redactTransportSecrets(captured.rawText)))', '(savedRawText ? turnContentSha256(savedRawText.toString("utf8")) !== turnContentSha256(redactTransportSecrets(captured.rawText)) : true)')],
+      ['absent saved-text refusal', 'verified-reply-missing-raw-text-is-refused', once('!savedRawText?.equals(Buffer.from(redactTransportSecrets(captured.rawText)))', '(savedRawText && !savedRawText.equals(Buffer.from(redactTransportSecrets(captured.rawText))))')],
+      ['comparison before redaction', 'verified-reply-redacted-text-recollects', once('!savedRawText?.equals(Buffer.from(redactTransportSecrets(captured.rawText)))', '!savedRawText?.equals(Buffer.from(captured.rawText))')],
+    ];
+    for (const [name, caseName, change] of mutations) {
+      const mutated = change(await readFile(join(candidateRoot, 'extensions/oracle/worker/run-job.mjs'), 'utf8'));
+      assert.equal(ts.createSourceFile('mutation.mjs', mutated, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS).parseDiagnostics.length, 0);
+      if (change.lifecycle) {
+        const helper = change.lifecycle(timedOutRecollectionBinding.toString());
+        assert.equal(ts.createSourceFile('mutation.mjs', helper, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS).parseDiagnostics.length, 0);
+      }
+      const item = cases.find(item => item.name === caseName);
+      let killed = false;
+      try { await item.run(change); } catch (error) {
+        if (error.code !== 'ERR_ASSERTION') throw error;
+        killed = true;
+      }
+      console.log(JSON.stringify({ mutation: name, killed, case: caseName }));
+      assert(killed, `Mutation survived: ${name}`);
+    }
+  }
+  if (process.env.PI_ORACLE_CAPTURE_BASELINE_ROOT) {
+    const fixtures = [
+      { page: { html: '<h1>Rich reply</h1><p>Body</p>' } },
+      { page: { html: '<pre><code class="language-markdown"># Exact\n\nBody</code></pre>' } },
+      { page: { id: undefined } },
+      { page: { id: undefined, html: '<p class="rerendered">Complete reply</p>' }, binding: { turnSha256: turnContentSha256('Complete reply') } },
+      { page: { id: undefined }, binding: { turnSha256: turnContentSha256('Changed reply') }, oldResponse: 'Earlier response' },
+      { binding: { messageId: 'missing' }, oldResponse: 'Earlier response' },
+      { page: { html: '<div data-message-id="other">Ambiguous</div>' } },
+      { page: { html: '<button>Copy</button>' }, oldResponse: 'Earlier response' },
+      { artifact: true }, { artifact: true, invalidArtifact: true }, { grok: true }, { research: true, frameFailure: true },
+      { research: true, page: { html: '<p>Research completed in 1m · 2 sources</p><h1>Report</h1><p>Report body</p>' } },
+    ];
+    for (const mode of ['ordinary', 'complete']) for (const [index, options] of fixtures.entries()) {
+      const baseline = await (await fixture({ ...options, mode }, process.env.PI_ORACLE_CAPTURE_BASELINE_ROOT)).run();
+      const candidate = await (await fixture({ ...options, mode })).run();
+      assert.deepEqual(candidate.files, baseline.files, `differential ${mode}/${index} file bytes`);
+      assert.deepEqual(candidate.events.returns, baseline.events.returns, `differential ${mode}/${index} collector returns`);
+      assert.equal(candidate.error, baseline.error, `differential ${mode}/${index} return error`);
+      if (mode === 'ordinary' && !options.frameFailure) {
+        assert.equal(baseline.events.returns.length, 1, JSON.stringify({ fixture: index, job: baseline.job, calls: baseline.events.calls }));
+      }
+      if (options.frameFailure) assert.match(baseline.job.error || baseline.job.recollectionError || '', /report|frame/i);
+      if (mode === 'complete' && options.research && !options.frameFailure) {
+        assert(baseline.files['response.md'], 'The completed Research fixture must actually capture a report');
+        assert.notEqual(baseline.job.collectionStatus, 'failed');
+      }
+      if (mode === 'ordinary' && options.grok) {
+        const metadata = JSON.parse(Buffer.from(baseline.files['response.capture.json'], 'base64').toString());
+        assert.equal(metadata.method, 'text_fallback', 'The Grok fixture must exercise its streamed-text fallback');
+      }
+      console.log(`Differential matched: ${mode}/${index}`);
+    }
+    for (const mode of ['ordinary', 'complete']) {
+      const seed = await (await fixture({ artifact: true, mode })).run();
+      const baseline = await (await fixture({ artifact: true, mode, seedFiles: seed.files }, process.env.PI_ORACLE_CAPTURE_BASELINE_ROOT)).run();
+      const candidate = await (await fixture({ artifact: true, mode, seedFiles: seed.files })).run();
+      assert.deepEqual(candidate.files, baseline.files, `differential ${mode}/validated-reuse file bytes`);
+      assert.deepEqual(candidate.events.returns, baseline.events.returns, `differential ${mode}/validated-reuse returns`);
+      assert.equal(candidate.events.downloads, 0);
+      console.log(`Differential matched: ${mode}/validated-reuse`);
+    }
+    const whitespacePair = async sourceRoot => {
+      const f = await fixture({ mode: 'complete', binding: { messageId: 'bound' }, page: { html: whitespaceHtml(' ') } }, sourceRoot);
+      const before = await f.run(); assert.equal(before.job.recollectionCompletionVerifiedAt, undefined);
+      f.page.html = whitespaceHtml('  '); await f.render();
+      const after = await f.run(); assert.equal(after.job.recollectionError, undefined);
+      assert.equal(after.job.recollectionCompletionVerifiedAt, undefined);
+      assert.equal(after.job.collectionBinding.turnSha256, before.job.collectionBinding.turnSha256);
+      assert.notEqual(after.files['response.raw.txt'], before.files['response.raw.txt']);
+      assert(Buffer.from(after.files['response.raw.txt'], 'base64').toString().includes('print("a  b")'));
+      return after;
+    };
+    const baseline = await whitespacePair(process.env.PI_ORACLE_CAPTURE_BASELINE_ROOT);
+    const candidate = await whitespacePair(candidateRoot);
+    assert.deepEqual(candidate.files, baseline.files, 'differential complete/whitespace-only-change file bytes');
+    assert.deepEqual(candidate.events.returns, baseline.events.returns, 'differential complete/whitespace-only-change returns');
+    assert.equal(candidate.error, baseline.error, 'differential complete/whitespace-only-change return error');
+    console.log('Differential matched: complete/whitespace-only-change');
+  } else console.log('SKIP differential: set PI_ORACLE_CAPTURE_BASELINE_ROOT to a second source root (no fetch or vendored baseline).');
+  console.log(`Recollection cases: ${results.filter(result => result.passed).length} passed, ${results.filter(result => !result.passed).length} failed`);
+  assert(results.every(result => result.passed), 'Recollection acceptance failed');
 }

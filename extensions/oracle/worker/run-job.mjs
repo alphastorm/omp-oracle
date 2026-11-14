@@ -2061,21 +2061,46 @@ const STALE_STOP_CONTROL_MS = 120_000;
 const MISSING_TURN_RELOAD_MS = 300_000;
 const MISSING_TURN_RELOAD_MAX = 1;
 
-async function reconcileStreamedTurn(job, responseIndex, streamedText) {
+/** @overload
+ * @param {any} job
+ * @param {number} responseIndex
+ * @param {string} streamedText
+ * @returns {Promise<string>}
+ */
+/** @overload
+ * @param {any} job
+ * @param {number} responseIndex
+ * @param {string} streamedText
+ * @param {any} binding
+ * @param {number} timeoutAt
+ * @returns {Promise<Awaited<ReturnType<typeof captureBoundTurn>>>}
+ */
+async function reconcileStreamedTurn(job, responseIndex, streamedText, binding = undefined, timeoutAt = undefined) {
   const conversationUrl = job.chatUrl;
+  if (binding && (!conversationUrl || !isConversationPathUrl(conversationUrl))) throw new Error("Recollection needs its saved conversation URL for reload verification.");
   if (!conversationUrl || !isConversationPathUrl(conversationUrl)) return streamedText;
   const conversationId = isGrokJob(job) ? undefined : job.conversationId;
   let best = streamedText;
   try {
     await agentBrowser(job, "open", conversationUrl);
-    const deadline = Date.now() + RELOAD_RECONCILE_TIMEOUT_MS;
+    const deadline = binding ? Math.min(Date.now() + RELOAD_RECONCILE_TIMEOUT_MS, timeoutAt) : Date.now() + RELOAD_RECONCILE_TIMEOUT_MS;
     let previous = "";
     let stableReads = 0;
     while (Date.now() < deadline) {
       await heartbeat();
       await sleep(RELOAD_RECONCILE_POLL_MS);
       let reloaded = "";
-      if (conversationId) {
+      let turn;
+      if (binding) {
+        turn = await captureBoundTurn(job, binding, { observeGeneration: true });
+        const snapshot = await snapshotText(job);
+        if (turn.observation?.onConversation !== true || chatGptGenerationActive({ snapshot, domStopButton: turn.observation.stopPresent })) {
+          previous = "";
+          stableReads = 0;
+          continue;
+        }
+        reloaded = turn.captured.rawText;
+      } else if (conversationId) {
         const observation = await observeTurns(job, { conversationId }).catch(() => undefined);
         if (observation && !observation.onConversation) {
           await returnToOwnConversation(job, observedPagePath(observation.href));
@@ -2089,12 +2114,17 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText) {
       }
       if (reloaded.length > best.length) best = reloaded;
       // A reload renders the committed turn in one pass, but hydration takes a moment; require
-      // two identical non-empty reads so a half-hydrated page is never mistaken for the turn.
-      stableReads = reloaded && reloaded === previous ? stableReads + 1 : 0;
+      // two equal non-empty raw-text reads so a half-hydrated page is never mistaken for the turn.
+      stableReads = (binding ? reloaded.trim() : reloaded) && reloaded === previous ? stableReads + 1 : 0;
       previous = reloaded;
-      if (stableReads >= 1) break;
+      if (stableReads >= 1) {
+        if (binding && Date.now() < deadline) return turn;
+        if (!binding) break;
+      }
     }
+    if (binding) throw new Error("Recollection reload did not produce two consecutive bound captures with equal nonempty raw text before its deadline.");
   } catch (error) {
+    if (binding) throw error;
     await log(`Reload reconciliation failed, keeping the streamed read: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (best.length > streamedText.length) {
@@ -2108,7 +2138,7 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText) {
 // button labeled Stop in the current one) is the authoritative generation signal; observeTurns reads
 // rendered controls (not retained hidden workspaces) in the same evaluation as the turns, and the
 // accessibility labels remain a fallback.
-async function waitForChatCompletion(job, baselineAssistantCount) {
+async function waitForChatCompletion(job, baselineAssistantCount, recollectionBinding = undefined) {
   const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
   const conversationId = isGrokJob(job) ? undefined : job.conversationId;
   let lastCompletionSignature = "";
@@ -2123,18 +2153,25 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let missingTurnReload;
 
   while (Date.now() < timeoutAt) {
+    if (recollectionBinding && shuttingDown) throw new Error("Recollection interrupted; nothing was resent.");
     await heartbeat();
     // A page showing another conversation never contributes text, generation state, or Retry: the
     // job reopens its own conversation and starts the stability count over, within its deadline.
     let observation;
+    let boundTurn;
     if (!isGrokJob(job)) {
       try {
-        observation = await observeTurns(job, { conversationId });
+        if (recollectionBinding) {
+          boundTurn = await captureBoundTurn(job, recollectionBinding, { observeGeneration: true });
+          observation = boundTurn.observation;
+        } else observation = await observeTurns(job, { conversationId });
         failedObservations = 0;
       } catch (error) {
         // A navigation in flight (another client's, or the reopen below) can destroy the page's
         // context mid-read; only repeated failures are the job's error.
-        failedObservations += 1;
+        const foreign = recollectionBinding && String(error.message || error).match(/Bound conversation mismatch: the page shows (.+?), not /)?.[1];
+        if (foreign) await returnToOwnConversation(job, foreign);
+        failedObservations = foreign ? 0 : failedObservations + 1;
         if (failedObservations >= 3) throw error;
         lastCompletionSignature = "";
         stableCount = 0;
@@ -2158,7 +2195,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const hasRetryButton = snapshot.includes('button "Retry"');
     throwIfProviderTransientError(job, snapshot, "waiting for response completion");
     const messages = observation ? observation.messages : await assistantMessages(job);
-    const targetMessage = messages[baselineAssistantCount];
+    const targetMessage = recollectionBinding ? (boundTurn ? { text: boundTurn.captured.rawText } : undefined) : messages[baselineAssistantCount];
     const targetText = targetMessage?.text || "";
     const responseFailureText = await detectCompletionFailure({ hasStopStreaming, hasRetryButton, turnText: targetText, readSignals: () => readPageSignals(job) });
     // The bound turn must exist before it can be finished. Generation state is the authority for
@@ -2169,7 +2206,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       // The snapshot is a separate read: act on a failure only while the page still shows this
       // job's conversation, and never click Retry on another conversation's turn.
       if (conversationId && (await observeTurns(job, { conversationId }).catch(() => undefined))?.onConversation !== true) continue;
-      if (!retriedAfterFailure) {
+      if (!recollectionBinding && !retriedAfterFailure) {
         const retryEntry = findEntry(
           snapshot,
           (candidate) => candidate.kind === "button" && candidate.label === "Retry" && !candidate.disabled,
@@ -2211,7 +2248,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
         responseText: targetText,
       });
     } else if (!hasStopStreaming && hasTargetCopyResponse && !targetText) {
-      const artifactCandidates = await collectArtifactCandidates(job, baselineAssistantCount).catch(() => []);
+      const artifactCandidates = recollectionBinding ? boundTurn?.captured.candidates || [] : await collectArtifactCandidates(job, baselineAssistantCount).catch(() => []);
       completionSignature = deriveAssistantCompletionSignature({
         hasStopStreaming,
         hasTargetCopyResponse,
@@ -2245,6 +2282,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       else stableCount = 1;
       lastCompletionSignature = completionSignature;
       if (stableCount >= 2) {
+        if (recollectionBinding && Date.now() >= timeoutAt) break;
         if (job.selection.tool === "deep_research") {
           // The turn is stable, but for Deep Research the assistant text is never the report: it
           // renders inside a cross-origin App iframe. Read it from the frame session captured
@@ -2259,6 +2297,10 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
           const report = await waitForDeepResearchReport(job, timeoutAt, { responseIndex: baselineAssistantCount });
           return { responseIndex: baselineAssistantCount, responseText: report };
         }
+        if (recollectionBinding) {
+          const verifiedTurn = await reconcileStreamedTurn(job, baselineAssistantCount, targetText, recollectionBinding, timeoutAt);
+          return { responseIndex: baselineAssistantCount, responseText: verifiedTurn.captured.rawText, binding: verifiedTurn.binding, verifiedTurn };
+        }
         return { responseIndex: baselineAssistantCount, responseText: await reconcileStreamedTurn(job, baselineAssistantCount, targetText) };
       }
     } else {
@@ -2271,6 +2313,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
 
   // The reply may still finish in the conversation: keep its position so recollection can
   // bind it through the user turn that carries this job's archive, never by resubmitting.
+  if (recollectionBinding) throw new Error("Recollection deadline reached: the reply is still generating or its bound completion could not be verified; nothing was resent.");
   if (!isGrokJob(job) && job.conversationId) {
     await mutateJob((latest) => ({ ...latest, collectionBinding: latest.collectionBinding ?? { conversationId: job.conversationId, responseIndex: baselineAssistantCount }, recollectionNeeded: true })).catch(() => undefined);
   }
@@ -2377,14 +2420,27 @@ async function withHeartbeatWhile(task) {
 
 // The conversation is checked inside the capture's own evaluation (captureScopedResponse), so the
 // location that authorizes a capture is always the page the capture read.
-async function captureBoundTurn(job, binding) {
+/** @param {any} job @param {any} binding @param {{ observeGeneration?: boolean }} [options] */
+async function captureBoundTurn(job, binding, options = {}) {
   if (!binding.conversationId) throw new Error("Collection needs the job's conversation binding.");
-  const captured = await evalPage(job, toJsonScript(`return ${captureExpression(binding)};`));
+  const result = await evalPage(job, toJsonScript(options.observeGeneration
+    ? `const observation = ${observeConversationExpression({ conversationId: binding.conversationId, stopSelector: CHATGPT_STOP_CONTROL_SELECTOR })};
+       return { observation, captured: ${captureExpression(binding)} };`
+    : `return ${captureExpression(binding)};`));
+  const captured = options.observeGeneration ? result?.captured : result;
   if (!captured || typeof captured.rawHtml !== "string") throw new Error("Bound response capture failed.");
   const turnSha256 = turnContentSha256(captured.rawText);
+  if (job.recollectionCompletionVerifiedAt) {
+    let savedRawText;
+    try { savedRawText = await readFile(join(jobDir, "response.raw.txt")); } catch {}
+    if (turnSha256 !== binding.turnSha256 || !savedRawText?.equals(Buffer.from(redactTransportSecrets(captured.rawText)))) {
+      throw new OracleWorkerError("verified_reply_changed", "The verified reply's text changed or its saved hash or raw text is missing or unreadable; the verified response was kept and nothing was replaced.");
+    }
+  }
   if (!binding.messageId && binding.turnSha256 && binding.turnSha256 !== turnSha256) throw new Error("Bound response content changed; refusing index-only recollection.");
   const { anchorFileName: _anchor, ...durable } = binding;
-  return { captured, binding: { ...durable, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
+  return { captured, ...(options.observeGeneration ? { observation: result.observation } : {}),
+    binding: { ...durable, ...(captured.messageId ? { messageId: captured.messageId } : {}), turnSha256 } };
 }
 
 // Capture the bound turn of the job's own conversation. A page showing another conversation is
@@ -2399,6 +2455,7 @@ async function acquireBoundTurn(job, binding, attempts = 20) {
       await noteOwnConversation();
       return turn;
     } catch (error) {
+      if (error instanceof OracleWorkerError && error.code === "verified_reply_changed") throw error;
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
       const foreign = message.match(/Bound conversation mismatch: the page shows (.+?), not /)?.[1];
@@ -2474,7 +2531,7 @@ async function preserveCaptureFile(path, content) {
 // ChatGPT collection saves only what a bound capture read: a failed capture writes no response, and
 // the job records that recollection (never resubmission) recovers it. Grok has no bound capture, so
 // its streamed text remains its response.
-async function collectBoundResult(job, binding, fallbackText = "") {
+async function collectBoundResult(job, binding, fallbackText = "", verifiedRecollection = undefined) {
   const requiredMissing = [];
   const optionalMissing = [];
   let capture;
@@ -2494,9 +2551,15 @@ async function collectBoundResult(job, binding, fallbackText = "") {
   const artifactsDir = join(jobDir, "artifacts");
   await ensurePrivateDir(artifactsDir);
   try {
-    const turn = await acquireBoundTurn(job, binding);
+    const turn = verifiedRecollection ? verifiedRecollection.verifiedTurn : await acquireBoundTurn(job, binding);
     binding = turn.binding;
     capture = turn.captured;
+    if (verifiedRecollection) {
+      if (!capture.messageId?.trim() || capture.messageId !== binding.messageId) throw new Error("Verified recollection lost its bound message identity.");
+      const markdownBlocks = capture.codeBlocks.filter((block) => /^(?:markdown|md)$/i.test(block.language));
+      const rendered = markdownBlocks.length === 1 ? markdownBlocks[0].text : capture.markdown;
+      if (!redactTransportSecrets(rendered).trim()) throw new Error("The verified reply rendered no nonempty response; earlier response files are not this attempt's capture.");
+    }
     turnDurationLabel = capture.durationLabel;
     // Bind before collection: a later download failure can be retried without sending.
     await mutateJob((latest) => ({ ...latest, collectionBinding: binding }));
@@ -2551,6 +2614,7 @@ async function collectBoundResult(job, binding, fallbackText = "") {
         const at = artifacts.findIndex((item) => item.candidateId === candidateId);
         if (at >= 0) artifacts[at] = record; else artifacts.push(record);
         await flushArtifactsState(artifacts);
+        let persisting = false;
         try {
           let downloaded;
           let nativeDownloadPath;
@@ -2576,7 +2640,9 @@ async function collectBoundResult(job, binding, fallbackText = "") {
           }
           if (!downloaded?.bytesBase64) throw new Error("Download did not expose bytes.");
           record.state = "downloaded";
+          persisting = true;
           await flushArtifactsState(artifacts);
+          persisting = false;
           const bytes = Buffer.from(downloaded.bytesBase64, "base64");
           const suggested = downloaded.fileName || candidate.fileName || candidate.label.match(/[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,12}\b/)?.[0] || (frame ? "report.md" : "artifact");
           const fileName = basename(redactTransportSecrets(suggested)).replace(/[^A-Za-z0-9._-]/g, "_") || "artifact";
@@ -2584,9 +2650,14 @@ async function collectBoundResult(job, binding, fallbackText = "") {
           if (frame && (validation.detectedType !== "text/plain" || !/^#{1,6}\s+/m.test(bytes.toString("utf8")) || (capture.title && !bytes.toString("utf8").includes(capture.title)))) throw new Error("Native research export does not match the bound Markdown report.");
           const sameBytes = artifacts.find((item) => item !== record && item.sha256 === validation.sha256 && item.copiedPath && existsSync(item.copiedPath));
           const destination = sameBytes?.copiedPath || join(artifactsDir, validation.sha256 + "-" + fileName);
-          if (!sameBytes) await preserveCaptureFile(destination, bytes);
+          if (!sameBytes) {
+            persisting = true;
+            await preserveCaptureFile(destination, bytes);
+            persisting = false;
+          }
           Object.assign(record, validation, { state: "validated", fileName, copiedPath: destination, nativeMarkdown: Boolean(frame), ...(downloaded.native ? { nativeDownload: downloaded.native } : {}) });
         } catch (error) {
+          if (verifiedRecollection && persisting) throw error;
           Object.assign(record, { state: "failed", unconfirmed: true, error: redactTransportSecrets(error.message || String(error)) });
         }
         await flushArtifactsState(artifacts);
@@ -2605,6 +2676,7 @@ async function collectBoundResult(job, binding, fallbackText = "") {
     }
     if (capture.sources.some((item) => item.kind !== "artifact" && item.unresolved)) requiredMissing.push("unresolved_source_links");
   } catch (error) {
+    if (verifiedRecollection || (error instanceof OracleWorkerError && error.code === "verified_reply_changed")) throw error;
     inspection = "failed";
     // Keep whatever binding is durably persisted right now: a message ID learned by this pass and
     // saved before the failure survives, and a wrong explicit binding never replaces a saved one.
@@ -2617,7 +2689,7 @@ async function collectBoundResult(job, binding, fallbackText = "") {
   // Never erase usable earlier output when a recollection attempt fails.
   let responseFile;
   if (safeResponse) responseFile = await preserveCaptureFile(job.responsePath || join(jobDir, "response.md"), safeResponse);
-  else if (job.responsePath && existsSync(job.responsePath)) {
+  else if (!verifiedRecollection && job.responsePath && existsSync(job.responsePath)) {
     const bytes = await readFile(job.responsePath);
     responseFile = { path: job.responsePath, sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
   }
@@ -2855,6 +2927,7 @@ async function runRecollection() {
     // A job that timed out waiting for its reply is recollected through its archive anchor and,
     // on success, becomes complete; nothing is ever resent.
     const timedOut = timedOutRecollectionBinding(currentJob, explicit, basename);
+    const timedOutChat = Boolean(timedOut && !isGrokJob(currentJob) && currentJob.selection.tool !== "deep_research");
     if (currentJob.status !== "complete" && !timedOut) throw new Error("Recollection requires a completed job, or one that timed out waiting for its reply after the prompt was accepted.");
     let binding = timedOut ?? currentJob.collectionBinding;
     if (timedOut) {
@@ -2937,19 +3010,34 @@ async function runRecollection() {
       await agentBrowser(currentJob, "open", currentJob.chatUrl);
       // Reacquire before collecting: an anchored binding becomes an exact one (message ID and turn
       // hash) here, and a page that shows another conversation is reopened on the job's own.
-      binding = (await acquireBoundTurn(currentJob, binding)).binding;
+      const anchoredTurn = await acquireBoundTurn(currentJob, binding);
+      if (timedOutChat) {
+        if (!anchoredTurn.captured.messageId?.trim()) throw new Error("The archive-anchored reply has no message identity; nothing was collected or resent.");
+        const savedId = currentJob.collectionBinding?.messageId;
+        if (savedId && savedId !== anchoredTurn.captured.messageId) throw new Error("The archive-anchored reply differs from the saved message identity; nothing was collected or resent.");
+      }
+      binding = anchoredTurn.binding;
+      let verifiedTurn;
+      if (timedOutChat) {
+        const completion = await waitForChatCompletion(currentJob, binding.responseIndex, binding);
+        binding = completion.binding;
+        verifiedTurn = completion.verifiedTurn;
+      }
       if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
-      await collectBoundResult(currentJob, binding);
-      await mutateJob((job) => ({ ...job, recollectionError: undefined }));
+      await collectBoundResult(currentJob, binding, "", timedOutChat ? { verifiedTurn } : undefined);
+      if (timedOutChat && shuttingDown) return;
+      if (!timedOutChat) await mutateJob((job) => ({ ...job, recollectionError: undefined }));
       if (timedOut) {
         const artifactFailureCount = currentJob.artifactFailureCount || 0;
-        currentJob = await mutateJob((job) => transitionOracleJobPhase(job, artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete", {
-          at: new Date().toISOString(),
+        const verifiedAt = timedOutChat ? new Date().toISOString() : undefined;
+        currentJob = await mutateJob((job) => timedOutChat && shuttingDown ? job : transitionOracleJobPhase(job, artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete", {
+          at: verifiedAt ?? new Date().toISOString(),
           source: "oracle:recollect",
           message: "The reply had finished in the conversation; recollected after the completion timeout, nothing was resent.",
-          patch: { error: undefined, generationStatus: "completed", recollectionNeeded: undefined, responsePath: currentJob.responsePath, responseFormat: "text/plain", artifactFailureCount, completedAt: new Date().toISOString() },
+          patch: { error: undefined, generationStatus: "completed", recollectionNeeded: undefined, responsePath: currentJob.responsePath, responseFormat: "text/plain", artifactFailureCount, completedAt: verifiedAt ?? new Date().toISOString(),
+            ...(timedOutChat ? { recollectionError: undefined, recollectionCompletionVerifiedAt: verifiedAt } : {}) },
         }));
-        await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
+        if (currentJob.status === "complete") await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
       }
     } catch (thrown) {
       if (shuttingDown) return;
@@ -2957,7 +3045,8 @@ async function runRecollection() {
       const error = managedBrowserChangedError ?? thrown;
       const message = redactTransportSecrets(error.message || String(error));
       await log("Recollection failed: " + message);
-      await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,
+      if (timedOutChat || (error instanceof OracleWorkerError && error.code === "verified_reply_changed")) await mutateJob((job) => ({ ...job, recollectionError: message }));
+      else await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,
         ...((error instanceof OracleWorkerError || error instanceof AgentBrowserTimeoutError) ? { errorCode: error.code } : {}),
         collectionRequiredMissing: [...new Set([...(job.collectionRequiredMissing || []), "bound_response_capture"])] }));
     } finally {

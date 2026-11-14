@@ -413,6 +413,7 @@ export function markOracleJobWakeupSettled(job, options) {
  * `responseIndex` for a job recorded before that was saved. The explicit index must not move a
  * saved one. Returns `undefined` for any other failed job.
  * @param {{ status?: string; error?: string; promptSendState?: string; archivePath?: string; conversationId?: string;
+ *   selection?: { provider?: string; tool?: string };
  *   collectionBinding?: { responseIndex?: number; messageId?: string; turnSha256?: string } | undefined }} job
  * @param {{ responseIndex?: number } | undefined} explicit
  * @param {(path: string) => string} basenameOf
@@ -420,6 +421,8 @@ export function markOracleJobWakeupSettled(job, options) {
  */
 export function timedOutRecollectionBinding(job, explicit, basenameOf) {
   if (job.status !== "failed" || !/^Timed out waiting for (?:ChatGPT|Grok) response completion$/.test(job.error || "")) return undefined;
+  if (job.error === "Timed out waiting for Grok response completion" || job.selection?.provider === "grok") throw new Error("Timed-out Grok recollection is unsupported in this version; the job was not changed and nothing was resent.");
+  if (job.selection?.tool === "deep_research") throw new Error("Timed-out Deep Research recollection is unsupported in this version; the job was not changed and nothing was resent.");
   if (job.promptSendState !== "accepted" || !job.archivePath) return undefined;
   const saved = Number.isInteger(job.collectionBinding?.responseIndex) ? job.collectionBinding.responseIndex : undefined;
   const requested = Number.isInteger(explicit?.responseIndex) && explicit.responseIndex >= 0 ? explicit.responseIndex : undefined;

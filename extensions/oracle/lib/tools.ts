@@ -130,7 +130,7 @@ const ORACLE_AUTH_PARAMS = Type.Object({
 const ORACLE_READ_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
   projectId: Type.Optional(Type.String({ minLength: 1, description: "Owning project root recorded at submission. Defaults to the current project; another project's job requires this explicit acknowledgment." })),
-  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect the reply of a completed job, or of a job that timed out waiting for its reply after the prompt was accepted, without sending a prompt: by its message ID, its content hash, or the user turn that carries the job's archive. Default: read saved files only." })),
+  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect a completed job's reply, or verify a timed-out ChatGPT chat reply after its prompt was accepted, without sending a prompt. Timed-out Deep Research and Grok recollection are unsupported. Completed replies retain message-ID/hash binding; timeout recovery requires an identity from the job's archive-anchored turn. Default: read saved files only." })),
   responseIndex: Type.Optional(Type.Integer({ minimum: 0, description: "Only for a job without a saved turn binding: explicit zero-based assistant turn index, paired with messageId for a legacy completed job, alone for a timed-out job." })),
   messageId: Type.Optional(Type.String({ minLength: 1, description: "Only for a legacy completed job without a saved turn binding: exact observed data-message-id of the assistant turn, paired with responseIndex." })),
 }, { additionalProperties: false });
@@ -428,6 +428,7 @@ function redactJobDetails(
     collectionOptionalMissing: job.collectionOptionalMissing,
     recollectionError: job.recollectionError,
     recollectionNeeded: job.recollectionNeeded,
+    recollectionCompletionVerifiedAt: job.recollectionCompletionVerifiedAt,
     promptSendState: job.promptSendState,
     observedSelection: job.observedSelection,
     observedTurn: job.observedTurn,
@@ -1267,9 +1268,10 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
   pi.registerTool({
     name: "oracle_read",
     label: "Oracle Read",
-    description: "Read saved status and outputs, optionally naming the owning projectId for an external-project job, or recollect the reply of a completed or timed-out job without sending a prompt.",
+    description: "Read saved status and outputs, optionally naming the owning projectId for an external-project job, or recollect a completed job or timed-out ChatGPT chat reply without sending a prompt.",
     promptSnippet: "Read oracle job status, queue position, artifacts, and response preview by job id.",
-    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of a completed job's reply, or of a job that timed out waiting for its reply after the prompt was accepted; it never submits or regenerates a response."],
+    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only for a completed job's reply or a timed-out ChatGPT chat reply whose prompt was accepted; it never submits or regenerates a response. Timed-out Deep Research and Grok recollection are unsupported.",
+      "Only complete together with recollectionCompletionVerifiedAt means a verified recollection; a failed job can name a response file from an attempt that did not commit."],
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
