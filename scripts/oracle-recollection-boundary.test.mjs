@@ -117,7 +117,9 @@ function fixture(t, options = {}) {
     releaseLease: async (_state, kind) => {
       options.onLease?.(kind); await options.leaseGate; commands.push(`release-${kind}`);
     },
-    assertManagedBrowserUnchanged: async () => {}, log: async () => {},
+    assertManagedBrowserUnchanged: async () => {}, log: async message => {
+      if (message.startsWith('Received ')) { options.onSignalLog?.(); await options.signalLogGate; }
+    },
     isGrokJob: value => value.selection.provider === 'grok', noteOwnConversation: async () => {},
     observeTurns: async () => {
       snapshot = observations.shift() ?? snapshot;
@@ -745,3 +747,23 @@ for (const kind of ['direct heartbeat', 'deadline record']) {
     } finally { write.resolve(); foreground.resolve(); await pending; await tick(); }
   });
 }
+
+test('the outer recorder drain preserves the signal shutdown timer', async t => {
+  const recorder = deferred(), finalized = deferred(), logStarted = deferred(), log = deferred();
+  const run = fixture(t, { startupMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS - 500,
+    deadlineWriteGate: recorder.promise,
+    onMutation: job => { if (job.lastCleanupAt && job.cleanupPending === false) finalized.resolve(); },
+    onSignalLog: logStarted.resolve, signalLogGate: log.promise });
+  const pending = run.run();
+  try {
+    await finalized.promise;
+    await tick();
+    const signalledAt = run.now();
+    run.signal();
+    recorder.resolve();
+    await pending; // Includes the normal path's outer finally, not just the signal handler.
+    await logStarted.promise;
+    await assert.rejects(run.advance(budgets.RECOLLECTION_FINALIZE_RESERVE_MS + 1), /worker deadline exit/);
+    assert.deepEqual(run.exits, [{ code: 1, at: signalledAt + budgets.RECOLLECTION_FINALIZE_RESERVE_MS }]);
+  } finally { recorder.resolve(); log.resolve(); await pending; await tick(); }
+});
