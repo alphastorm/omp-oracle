@@ -2522,7 +2522,7 @@ async function preserveCaptureFile(path, content) {
 // ChatGPT collection saves only what a bound capture read: a failed capture writes no response, and
 // the job records that recollection (never resubmission) recovers it. Grok has no bound capture, so
 // its streamed text remains its response.
-async function collectBoundResult(job, binding, fallbackText = "") {
+async function collectBoundResult(job, binding, fallbackText = "", verifiedRecollection = undefined) {
   const requiredMissing = [];
   const optionalMissing = [];
   let capture;
@@ -2542,9 +2542,15 @@ async function collectBoundResult(job, binding, fallbackText = "") {
   const artifactsDir = join(jobDir, "artifacts");
   await ensurePrivateDir(artifactsDir);
   try {
-    const turn = await acquireBoundTurn(job, binding);
+    const turn = verifiedRecollection?.verifiedTurn ?? await acquireBoundTurn(job, binding);
     binding = turn.binding;
     capture = turn.captured;
+    if (verifiedRecollection) {
+      if (!capture.messageId?.trim() || capture.messageId !== binding.messageId) throw new Error("Verified recollection lost its bound message identity.");
+      const markdownBlocks = capture.codeBlocks.filter((block) => /^(?:markdown|md)$/i.test(block.language));
+      const rendered = markdownBlocks.length === 1 ? markdownBlocks[0].text : capture.markdown;
+      if (!redactTransportSecrets(rendered).trim()) throw new Error("The verified reply rendered no nonempty response; earlier response files are not this attempt's capture.");
+    }
     turnDurationLabel = capture.durationLabel;
     // Bind before collection: a later download failure can be retried without sending.
     await mutateJob((latest) => ({ ...latest, collectionBinding: binding }));
@@ -2665,7 +2671,7 @@ async function collectBoundResult(job, binding, fallbackText = "") {
   // Never erase usable earlier output when a recollection attempt fails.
   let responseFile;
   if (safeResponse) responseFile = await preserveCaptureFile(job.responsePath || join(jobDir, "response.md"), safeResponse);
-  else if (job.responsePath && existsSync(job.responsePath)) {
+  else if (!verifiedRecollection && job.responsePath && existsSync(job.responsePath)) {
     const bytes = await readFile(job.responsePath);
     responseFile = { path: job.responsePath, sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
   }
@@ -3000,7 +3006,7 @@ async function runRecollection() {
         verifiedTurn = completion.verifiedTurn;
       }
       if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
-      await collectBoundResult(currentJob, binding);
+      await collectBoundResult(currentJob, binding, "", timedOutChat ? { verifiedTurn } : undefined);
       await mutateJob((job) => ({ ...job, recollectionError: undefined }));
       if (timedOut) {
         const artifactFailureCount = currentJob.artifactFailureCount || 0;
