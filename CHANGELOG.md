@@ -4,6 +4,36 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Changed
+
+- the README and every guide under `docs/` are rewritten for a reader who arrives without context: each document names its reader first, each fact has one owning document that the others link to, and dated observations sit in labelled record sections (`docs/OPERATIONS.md` "Upgrade notes", `docs/ARCHITECTURE.md` "Observations behind the rules", `docs/UPSTREAM.md` "Sync record"). No runtime behavior changes
+- `docs/OPERATIONS.md` now owns the command and tool reference, the session footer states, the error-code table, and the configuration and environment reference; `docs/ARCHITECTURE.md` gains a component map and the shared state directory layout; `docs/RELEASE.md` gains the release sequence; `docs/UPSTREAM.md` gains the sync procedure
+- the current release number is stated in one document, `docs/COMPATIBILITY.md`, so a release edits one documentation line
+- the sanity harness no longer pins documentation wording; it still requires `README.md` to list every preset id and label
+
+### Fixed
+
+- documentation that contradicted the code now follows it:
+  - a project `oracle.json` that sets `browser`, `auth`, or another disallowed key is rejected with an error, not ignored
+  - on a host without a project-trust check the project counts as trusted; an untrusted project's file is skipped whole
+  - a follow-up whose conversation another job holds is refused when a slot is free, and queues only when every slot is busy; the queue is capped by both job count and archive bytes
+  - teardown is attempted five times in total, not retried five times
+  - `/oracle-auth` diagnostics are written under the system temporary directory, which is not always `/tmp`
+  - driver session names use the runtime id, not the job id
+  - `/oracle-status` and `/oracle-read` settle a wake-up only after the first attempt; before it, only `oracle_read` from the asking session does
+  - a wake-up goes to the asking session while that session is live; once it is gone, another saved session in the same project can deliver it
+  - a second `/oracle-auth` on the managed browser checks the login in a new tab and leaves the sign-in tab for you to close
+  - `oracle_read` recollects only a `complete` job
+  - the `windows-native` smoke target is rejected by the runner as configured
+  - release preparation and evidence commits go to `main` directly, not through pull requests
+- the `/oracle-auth` timeout check in `docs/TEST_PLAN.md` runs again: its cookie path sits outside the agent directory and its fake driver answers the version check. The script predated both requirements and failed before reaching the timeout it tests
+
+### Security
+
+- the security model now states limits it left out or had wrong: a whole-repo archive includes `.omp`; outside a Git repository the project root can resolve to a parent directory that holds `.omp`, `.pi`, or `AGENTS.md`, including the home directory; and tool results include the session file path as `sessionId`
+
 ## 0.4.14 - 2026-11-09
 
 ### Changed

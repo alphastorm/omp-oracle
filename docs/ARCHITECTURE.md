@@ -1,660 +1,496 @@
 # OMP Oracle architecture
 
-How Oh My Pi ("OMP") and `pi` turn an `/oracle` request into a ChatGPT or Grok web job through `omp-oracle`: the host-side
-extension, the detached browser worker, the isolated auth seed profile and opt-in shared-Chrome transports, and the persisted
-job directory that outlives the agent turn.
+This document is for contributors and implementers who need to understand OMP Oracle's components, job lifecycle, on-disk state, and invariants before changing runtime behavior.
 
-Companion docs: [Documentation](README.md) · [Operations](OPERATIONS.md) · [Security model](SECURITY.md) ·
-[Compatibility](COMPATIBILITY.md) · [Test plan](TEST_PLAN.md) · [Platform smoke](PLATFORM_SMOKE.md) ·
-[Release](RELEASE.md) · [Upstream](UPSTREAM.md)
+OMP Oracle (`omp-oracle`) is an extension for the Oh My Pi (OMP, command `omp`) and `pi` coding-agent hosts: a host session packs a compressed archive of selected project files, hands it with a prompt to a web provider (ChatGPT or Grok) in a detached worker, writes the answer to a job directory (`${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`), and sends one best-effort wake-up message telling the asking session the job finished.
 
-Compatibility and verification targets:
+Three sign-in transports reach a signed-in provider session: the isolated seed profile (default, both providers), the existing-Chrome relay (ChatGPT only), and the managed browser (ChatGPT only). The isolated seed profile and the relay keep no browser parked between jobs; the managed browser's keeper holds its Chrome open until an idle grace expires.
 
-- Hosts: Oh My Pi and `pi`; `pi` 1.5.0 is the tested baseline for project-trust-aware package and runtime validation
-  ([Compatibility](COMPATIBILITY.md) records host observations).
-- Package metadata keeps the `pi` runtime packages as optional wildcard peers so npm does not block other host versions.
-- Session lifecycle uses `session_start` and `session_shutdown` only, with no shims for removed `session_switch` or
-  `session_fork` events.
-- Validation: [Test plan](TEST_PLAN.md#which-check-to-run) for local and isolated-session checks,
-  [`docs/PLATFORM_SMOKE.md`](PLATFORM_SMOKE.md) for the Crabbox macOS and Ubuntu lanes (`npm run smoke:platform:all`), and
-  [Release](RELEASE.md#release-gate) for the release gate and evidence ledger.
+Companion guides: [Documentation index](README.md) · [Operations guide](OPERATIONS.md) · [Security model](SECURITY.md) · [Compatibility matrix](COMPATIBILITY.md) · [Test plan](TEST_PLAN.md) · [Platform smoke gate](PLATFORM_SMOKE.md) · [Release process](RELEASE.md) · [Upstream lineage](UPSTREAM.md)
 
-## Goal
+<a id="goal"></a>
+## Goals
 
-Give the user and the coding agent a way to consult ChatGPT or Grok through the web app on the operator's existing
-subscription instead of an API key, with:
+OMP Oracle lets users and coding agents consult ChatGPT or Grok through an existing signed-in web subscription instead of an API key, while keeping every run asynchronous, bounded, and durable on disk:
 
-- manual invocation via `/oracle <request>` and `/oracle-followup <job-id> <request>`, plus direct tool invocation
-  (`oracle_submit`) for high-difficulty tasks
-- mandatory project-context archive upload (`.tar.zst` for ChatGPT up to 250 MiB, `.tar.gz` for Grok up to 200 MiB)
-- long-running execution in a detached background worker so the host turn returns right away
-- job state, response text, capture metadata, and validated artifacts persisted on disk under
-  `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`, plus one best-effort wake-up when a job reaches a terminal state
-- a required persisted host session identity (`--no-session` and in-memory sessions are refused so wake-ups cannot cross
-  sessions; legacy project-scoped jobs without a session identity remain inspectable by project as manual status-only records
-  and are never rebound to another session)
-- optional same-thread follow-ups by saved conversation URL without keeping a browser or tab open between jobs
+- Accept manual submissions via `/oracle <request>` and `/oracle-followup <job-id> <request>`, model-driven tool calls via `oracle_submit`, and model-free driver calls via `/oracle-run`.
+- Upload a mandatory project context archive on every job: `.tar.zst` up to the `250 MiB` upload ceiling for ChatGPT and `.tar.gz` up to `200 MiB` for Grok.
+- Execute browser automation in a detached Node worker process so the host session turn returns as soon as admission or queueing is persisted.
+- Store job metadata, saved response Markdown, turn-capture provenance, and validated downloads in `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`, and send at most one automatic wake-up when a job reaches a terminal state.
+- Require a persisted host session file (`--no-session` and in-memory sessions are refused) so every job has an owning session for its wake-up; legacy jobs recorded without `sessionId` remain readable by `projectId` as manual status-only records and are never rebound to another session.
+- Continue existing provider conversations from saved `chatUrl` metadata rather than keeping a browser or tab open between jobs when idle.
 
-## Architecture decision
+<a id="architecture-decision"></a>
+## Design decisions
 
-- **Default transport: isolated auth seed profile.** `/oracle-auth` maintains one authenticated seed profile
-  (`browser.authSeedProfileDir`). Each job clones that seed into a disposable runtime profile (`runtimeProfileDir`) and
-  launches its own `agent-browser` session (`runtimeSessionName`).
-- **Opt-in ChatGPT transports: existing-Chrome relay and managed browser.** When `browser.chatGptRelayEndpoint` or
-  `browser.chatGptManagedProfileDir` is set in agent-level config, the worker attaches over Chrome DevTools Protocol (CDP),
-  opens one job-owned tab, and pins every command to that tab's target id without activating tabs or stealing window focus.
-- **Rejected approach: unpinned automation of the user's real Chrome.** Tab-switching commands that call `Page.bringToFront`
-  or scrape global browser state are excluded; see [Design lineage](#design-lineage).
-- **Data-backed thread continuity.** Same-thread follow-ups reopen the saved `chatUrl` under a per-conversation lease instead
-  of parking browsers or tabs between runs.
-- **Bounded concurrency.** Up to `browser.maxConcurrentJobs` jobs run in parallel across distinct conversations; additional
-  submissions wait on disk as `queued` jobs without spawning a worker process until promoted.
+Five invariants govern browser isolation, shared-Chrome attachment, thread continuity, and concurrency across the extension and workers:
 
-## Current extension surface
+- **Default sign-in transport: isolated seed profile.** `/oracle-auth` builds a verified seed profile (`browser.authSeedProfileDir`, or `<authSeedProfileDir>-grok` for Grok). Each job clones that seed into a disposable runtime profile (`runtimeProfileDir`), starts Chrome paired with a unique `agent-browser` CLI/daemon session (`runtimeSessionName`, `<browser.sessionPrefix>-<runtimeId>`, default prefix `"oracle"`), and deletes the clone in teardown.
+- **Opt-in shared-Chrome transports: existing-Chrome relay and managed browser.** When `browser.chatGptRelayEndpoint` or `browser.chatGptManagedProfileDir` is set in agent-level config (the user's `oracle.json` under the host agent directory; see [Config files](#config-files)), the worker connects over the Chrome DevTools Protocol (CDP), opens one job-owned pinned tab (`relayTargetId`), and pins every command to that target without activating tabs or stealing window focus.
+- **No unpinned automation of a user's browser.** Tab-switching commands that invoke `Page.bringToFront`, global `chrome://downloads` scraping, and `~/Downloads` directory scans are excluded; see [Design lineage](#design-lineage).
+- **Metadata-backed thread continuity.** Same-thread follow-ups reopen the saved `chatUrl` under a per-`conversationId` lease instead of parking browsers or tabs between runs.
+- **Bounded active and queued capacity.** At most `browser.maxConcurrentJobs` jobs hold active runtime leases at once across distinct conversations; when every runtime slot is busy, additional submissions wait on disk as `queued` jobs without spawning a worker until promoted, bounded by both job count and retained archive bytes.
 
-The extension binds to the host session lifecycle in `extensions/oracle/index.ts`: `session_start` initializes the session
-poller, status footer, and command interceptors; `session_shutdown` stops the poller and releases session-held timers.
+## Components
 
-### Oracle dispatch commands
+All runtime code sits under `extensions/oracle/` and `prompts/`, split between TypeScript host modules (`lib/`), ESM worker scripts (`worker/`), and shared ESM helpers (`shared/`) imported by both layers.
 
-- `/oracle <request>` — In TUI mode, intercepted on `input` before prompt-template expansion, re-injected as the compact
-  visible user message (preserving prompt-history recall across reloads), and paired on `before_agent_start` with a hidden
-  custom message (`display: false`) containing the dispatch instructions. In `print`, `json`, and `rpc` modes,
-  prompt-template expansion runs the same workflow from `prompts/oracle.md`.
-- `/oracle-followup <job-id> <request>` — Uses the same TUI hidden-instruction path and non-TUI prompt-template fallback
-  (`prompts/oracle-followup.md`), routing the parsed job id to `oracle_submit` as `followUpJobId`.
+Entry point and dispatch templates:
 
-### Commands
+- `extensions/oracle/index.ts`: extension entry point; loads prompt templates and registers commands, tools, `/oracle-run`, the programmatic bridge, TUI input interceptors, and session poller hooks.
+- `prompts/oracle.md` and `prompts/oracle-followup.md`: dispatch instructions injected for `/oracle` and `/oracle-followup`.
 
-- `/oracle-auth [chatgpt|grok]` — imports ChatGPT or Grok cookies from the configured local browser profile into a staged
-  isolated seed profile (or opens the sign-in tab on the managed browser) and verifies provider readiness.
-- `/oracle-read [job-id]` — displays job status and the saved response preview.
-- `/oracle-status [job-id]` — displays job metadata and lists recent job ids when the caller omits an explicit id.
-- `/oracle-cancel <job-id>` — cancels a `queued` or active job by explicit id.
-- `/oracle-clean <job-id|all>` — runs runtime teardown if needed and removes job directories for terminal jobs outside the
-  post-wake-up retention grace window.
-- `/oracle-run <preflight|submit|read> <request.json> <result.json> [<marker.json>]` — executes the registered
-  `oracle_preflight`, `oracle_submit` or `oracle_read` tool host-side from a JSON request (the tool's `prepareArguments` plus an explicit
-  request-shape check: the schema's keys and required fields) and writes the exact tool result; no model turn runs. The optional marker is
-  created with `O_EXCL` immediately before the tool executes, so a driver can tell "never dispatched" (no marker) from
-  "may have been sent" (marker, no result). Existing result or marker files are never overwritten.
+Host-side modules under `extensions/oracle/lib/`:
 
-### Tools
+- `config.ts`: `ORACLE_SUBMIT_PRESETS`, `DEFAULT_CONFIG`, agent-level and project `oracle.json` loading, merge, project-key filtering, and validation.
+- `trust.ts`: host project-trust check (`isOracleProjectTrusted`).
+- `provider-capabilities.ts`: archive format, file extension, `zstd` requirement, and upload ceiling per provider.
+- `archive.ts`: archive entry expansion, default exclusions, `tar`/`zstd`/gzip streaming, and adaptive size-probe pruning for whole-repo `.` archives.
+- `runtime.ts`: workspace-root resolution, submit prerequisite checks, `agent-browser` version-floor caching, runtime allocation, runtime and conversation leases, and host-side runtime teardown.
+- `locks.ts`: typed host-side wrappers around shared state locks and leases.
+- `jobs.ts`: `OracleJob` persistence, archive input validation (`resolveArchiveInputs`), worker spawn and termination, stale-job reconciliation, terminal cleanup retries, notification claims, wake-up settlement, and retention pruning.
+- `queue.ts`: queued job ordering, queue position lookup, and admission-locked promotion passes.
+- `poller.ts`: per-session background poller, batched process-start-time priming, footer readiness updates, and idle-gated wake-up commits.
+- `auth.ts`: host-side `/oracle-auth` and `oracle_auth` coordinator for isolated-seed bootstrap and managed-browser sign-in tabs.
+- `commands.ts`: `/oracle-auth`, `/oracle-status`, `/oracle-read`, `/oracle-cancel`, and `/oracle-clean` slash-command handlers.
+- `run-command.ts`: model-free `/oracle-run` handler with request-shape validation, exclusive dispatch markers, and atomic result files.
+- `tools.ts`: `oracle_preflight`, `oracle_auth`, `oracle_submit`, `oracle_read`, and `oracle_cancel` schemas, error classification, queue-pressure gates, and execution.
 
-All registered tool schemas avoid `\S` in regular expressions (`^.*[^ \t\r\n].*$`) so hosts using `llama.cpp` GBNF grammar
-conversion accept them. The extension also exposes a host-internal programmatic bridge under
-`Symbol.for("omp.pi-oracle.programmatic.v1")`.
+Detached workers and browser helpers under `extensions/oracle/worker/`:
 
-- `oracle_preflight` — checks persisted-session readiness, transport/seed prerequisites, and global capacity
-  (`Capacity: 1/2 active, 0/2 queued (global).`) from live runtime leases and queued jobs without acquiring locks or sweeping
-  state. Accepts optional `provider`, `followUpJobId`, and `chatGptConversationId`.
-- `oracle_auth` — agent-facing auth refresh mirror of `/oracle-auth` for stale-auth recovery before a single retry.
-- `oracle_submit` — builds the context archive, acquires runtime and conversation leases (or queues the job), writes job
-  state, and spawns the detached worker. Accepts optional `followUpJobId` or `chatGptConversationId`.
-- `oracle_read` — reads job status, send state, collection fidelity, and response text; `action: "recollect"` re-runs bound
-  collection on a completed job without sending a prompt.
-- `oracle_cancel` — cancels a queued or active job by id.
+- `run-job.mjs`: detached job and `--recollect` worker covering transport setup, readiness, model or tool selection, upload, prompt insertion, send acceptance, completion polling, bound capture, artifact downloads, and teardown.
+- `auth-bootstrap.mjs`: detached `/oracle-auth` worker for isolated seed profiles covering read-only cookie import, staged verification, atomic swap, and `pi-oracle-auth-*` diagnostics.
+- `managed-browser.mjs`: detached keeper process that spawns Chrome on `browser.chatGptManagedProfileDir`, reports `{ endpoint, browserUrl }`, and quits its child Chrome after idle grace.
+- `agent-browser-helpers.mjs`: bounded `agent-browser` command runner, per-subcommand timeouts (raising `agent_browser_timeout`), `batch` stdin framing, and `eval` stdout decoding.
+- `chatgpt-ui-helpers.mjs`: ChatGPT selectors, model-picker and Power-slider state parsers, Deep Research widget text parser, and `observedSelection` merging.
+- `chatgpt-flow-helpers.mjs`: composer attachment counting, `providerSendAccepted`, URL stability tracking, `nextStaleStopState`, `nextMissingTurnState`, and timed-out recollection binding.
+- `provider-page-signals.mjs`: snapshot and DOM signal filtering, challenge/outage/upload/response-failure matching, and the ChatGPT and Grok job page-state classifiers.
+- `auth-flow-helpers.mjs`: `/backend-api/me` login-probe normalization, `classifyChatAuthPage`, and account-chooser candidate labels.
+- `auth-cookie-policy.mjs`: allowlist and drop rules for imported ChatGPT and Grok authentication cookies.
+- `chromium-cookie-source.mjs`: macOS SQLite `Cookies` snapshot and Keychain AES-CBC decryption (`auth.chromiumKeychain` paired with `auth.chromeCookiePath`).
+- `artifact-heuristics.mjs`: accessibility-snapshot entry parser (`ref`, kind, label, value, disabled).
+- `response-capture.mjs`: closure-free in-page turn and report capture, CodeMirror/code-block extraction, Deep Research citation resolution, in-page and native CDP download collectors, and artifact format validation.
+- `state-locks.mjs`: worker-side lock and lease wrappers over `shared/state-coordination-helpers.mjs`.
 
-Read/status lookup uses an explicit `projectId` if supplied, otherwise the current project.
-`oracle_read` accepts that optional field; `/oracle-status` and `/oracle-read` accept
-`[job-id] [--projectId <project-root>]` (double-quote roots containing spaces).
-Every project's jobs live under the same configured jobs root, so `readJobForProject` finds an
-external-cwd submission directly by id, with no index file. A different owning project produces an
-error naming that root and the explicit retry, never its saved response. No-id status listing
-stays scoped to the selected project, and cancel, cleanup, follow-up, and wake-up session
-ownership are unchanged.
+Shared host/worker helpers under `extensions/oracle/shared/`:
 
-## High-level flow
+- `state-path-helpers.mjs`: jobs (`/tmp`) and state (`/tmp/pi-oracle-state`) directory resolution, job-id validation, and POSIX ownership/symlink/mode checks.
+- `state-coordination-helpers.mjs`: atomic hashed lock and lease directory creation, metadata publication, incomplete-directory grace windows, and dead-pid lock reclamation.
+- `process-helpers.mjs`: process-start-time reads and `2 s` cache (`ps -o lstart=` or PowerShell `Get-Process`), process-tree termination, `AGENT_BROWSER_NO_*` defaults, socket resolution, and session close with sidecar cleanup.
+- `agent-browser-version.mjs`: `0.41.2` `agent-browser` version parser and floor assertion.
+- `browser-profile-helpers.mjs`: platform Chromium user-data root safety checks, default executable and profile discovery, clone strategy defaults, and `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` environment scrubbing.
+- `relay-browser-helpers.mjs`: CDP `/json/version` readiness checks, target creation and closure, and last-tab release to `about:blank`.
+- `relay-cdp-client.mjs`: flat-session WebSocket CDP client for `Target.setAutoAttach` child-frame evaluation, `Page.downloadWillBegin`, and `Page.downloadProgress` events.
+- `managed-browser-helpers.mjs`: managed-profile canonicalization, `DevToolsActivePort` and `SingletonLock` inspection, `managedBrowserReplaced`, user leases, and keeper launch.
+- `job-lifecycle-helpers.mjs`: phase-to-status mapping, bounded `64`-entry lifecycle event log, cleanup retry schedule, and notification/wake-up reducers.
+- `job-coordination-helpers.mjs`: queue ordering, admission-blocking predicates, and shared queued-job promotion pass.
+- `job-observability-helpers.mjs`: status/read text summaries, wake-up notification payloads, and session footer strings.
+- `oracle-run-helpers.mjs`: `/oracle-run` argument parser, request-shape validator, and one-line JSON result summarizer.
+- `time-helpers.mjs`: `sleep` and ISO timestamp parsing.
 
-### `/oracle ...`
+<a id="current-extension-surface"></a>
+## Extension surface
 
-`/oracle <request>` delegates context gathering and submission to the host agent rather than driving the browser directly. The
-dispatch prompt instructs the agent to:
+When the host loads `extensions/oracle/index.ts`, `oracleExtension(pi)` registers all commands, tools, and event hooks once at load time. Session lifecycle uses `session_start` and `session_shutdown` only, with no shims for the removed `session_switch` or `session_fork` events.
 
-1. call `oracle_preflight` immediately, passing `provider: "grok"` when the user explicitly asks for Grok
-2. stop and report the exact blocker if preflight reports the session, transport, or auth seed is not ready (never call
-   `oracle_auth` automatically during `/oracle` prep)
-3. classify whether the request is narrow or broad, and
-   bias toward context-rich archives when they fit within the provider ceiling: 250 MiB for ChatGPT and 200 MiB for Grok
-4. for narrow requests, include the target files plus nearby tests, docs, configs, and adjacent modules that improve answer
-   quality; for broad or repo-wide requests, pass `.` (when `.git` history matters, write a diff bundle file first because
-   `.git` is excluded by default)
-5. if `oracle_submit` fails before dispatch with `archive_too_large`, treat that as a retryable archive-selection miss: use
-   the reported size summary and any auto-pruned paths to narrow scope and retry automatically, up to two total submit
-   attempts
-6. craft the prompt, call `oracle_submit`, and end the turn with a terse dispatch summary so the session returns to idle for
-   the completion wake-up
+Load-time registration and session hooks:
 
-Dispatched and queued submit responses forbid polling and name `oracle_read` with the job's `jobId` for a later
-user-requested status check before the one-time completion wake-up in the submitting session.
+- **Load time (`oracleExtension`).** Reads `prompts/oracle.md` and `prompts/oracle-followup.md`, registers `/oracle-auth`, `/oracle-status`, `/oracle-read`, `/oracle-cancel`, `/oracle-clean`, and `/oracle-run`, registers the five agent tools plus a `tool_result` hook that sets `isError: true` on `details.error`, publishes the programmatic bridge, and attaches `resources_discover`, `before_agent_start`, and `input` handlers.
+- **`session_start` (`startPollerForContext`).** In `print` or `json` mode, stops any poller and returns; without a persisted session file, stops any poller and sets the UI footer to `oracle: unavailable`. On a persisted session, loads config, sets initial readiness to `loaded`, runs best-effort startup maintenance (`reconcileStaleOracleJobs` and `pruneTerminalOracleJobs` under a `250 ms` `reconcile` lock timeout, then `promoteQueuedJobs`), starts the poller, and refreshes the status footer.
+- **`session_shutdown`.** Stops the session poller and clears its interval timer.
+
+Dispatch interception and prompt templates:
+
+- **Interactive `tui` host mode.** The `input` handler intercepts `/oracle <request>` and `/oracle-followup <job-id> <request>` before prompt-template expansion, consumes the raw event with `{ action: "handled", handled: true }` so neither `pi` nor Oh My Pi submits the typed text twice, re-injects the compact user message for prompt-history recall, and pairs that turn on `before_agent_start` with a hidden custom message (`display: false`) holding the expanded template.
+- **Non-interactive host modes (`print`, `json`, `rpc`).** `resources_discover` exposes `prompts/`, and host prompt-template expansion runs the same workflow from `prompts/oracle.md` or `prompts/oracle-followup.md` (with `before_agent_start` ignoring custom wake-up turns that carry no `prompt`).
+
+Tools, programmatic bridge, and host-side boundaries:
+
+- **Command and tool reference.** For full command syntax, tool parameters, error codes, and session footer strings, see [Commands and tools](OPERATIONS.md#commands-and-tools). `oracle_preflight` reports readiness and global capacity (`Capacity: 1/2 active, 0/2 queued (global).`) from live `runtime` leases and `queued` jobs without acquiring locks or sweeping state.
+- **GBNF-compatible schemas.** Every registered tool schema avoids `\S` in regular expressions (using `^.*[^ \t\r\n].*$` instead) so hosts that convert JSON schemas into `llama.cpp` GBNF grammars accept them.
+- **Programmatic bridge.** `globalThis[Symbol.for("omp.pi-oracle.programmatic.v1")]` freezes `{ version: 1, preflight, submit, read }` bound to the captured tool definitions' `execute` functions.
+- **Model-free `/oracle-run` validation (`lib/run-command.ts`).** `/oracle-run <preflight|submit|read> <request.json> <result.json> [<marker.json>]` runs `oracle_preflight`, `oracle_submit`, or `oracle_read` host-side with absolute paths and no model turn. `preflight` rejects `<marker.json>` (`A preflight dispatches nothing and takes no marker.`), `requestShapeError` (`shared/oracle-run-helpers.mjs`) checks JSON keys, and `prepareArguments` normalizes aliases before `execute`.
+- **Model-free `/oracle-run` marker and result files.** On `submit` or `read`, an optional `<marker.json>` is created exclusively (`O_EXCL`, mode `0600`) with `{ operation, dispatch_state: "may_have_been_sent", at }` and directory-fsynced right before `execute`. `<result.json>` is written atomically (mode `0600`), a one-line JSON summary is emitted (`stdout` in `print` mode, `oracle-command-output` otherwise), and existing `<result.json>` or `<marker.json>` files are never overwritten.
+- **Cross-project job isolation (`readJobForProject`).** Every project's jobs share one jobs root, so `readJobForProject` finds any job directly by id with no index file and throws `OracleJobProjectMismatchError` (`job_wrong_project` in `oracle_read`) unless the caller supplies that owning `projectId`.
+- **Scoped project and session operations.** Project-less no-id status listing, `/oracle-cancel`, `/oracle-clean`, follow-ups, and session wake-ups stay scoped to their owning project and session; see [Read a job from another project](OPERATIONS.md#read-a-job-from-another-project).
+
+<a id="high-level-flow"></a>
+## Request lifecycle
+
+Every request passes through host-side readiness and archive packing before a detached worker touches a browser.
+
+### `/oracle` dispatch
+
+`/oracle <request>` delegates context selection and submission to the host agent rather than driving a browser from the slash command. `prompts/oracle.md` gives the agent a ten-step required workflow. In summary:
+
+1. Call `oracle_preflight` first, passing `provider: "grok"` when the user asks for Grok (or `followUpJobId` on `/oracle-followup`, or `chatGptConversationId` when continuing a browser-created ChatGPT thread).
+2. Stop and report the blocker if `oracle_preflight` returns `ready: false`; never call `oracle_auth` automatically during `/oracle` preparation.
+3. Classify whether the request is narrow or repo-wide, favoring context-rich archives when they fit within the upload ceiling (`250 MiB` for ChatGPT, `200 MiB` for Grok).
+4. Include target files plus adjacent tests, docs, configs, and modules for narrow requests, or pass `.` for broad requests (writing a tracked diff file under `.pi/` first when git history matters, because `.git` is excluded by default).
+5. Treat a pre-dispatch `oracle_submit` failure with `archive_too_large` as a retryable selection miss: use the size breakdown and `autoPrunedPrefixes` to narrow `files` and retry once, up to two total `oracle_submit` attempts.
+6. Call `oracle_submit` and end the turn with a terse dispatch summary so the session returns to idle for the completion wake-up, never polling `oracle_read` in a loop.
 
 ### `/oracle-auth`
 
-On the default isolated-seed transport, `/oracle-auth` runs under the global auth-maintenance lock:
+`/oracle-auth` and `oracle_auth` branch by transport. In relay mode (`browser.chatGptRelayEndpoint`), `oracle_auth` refuses cookie import because sign-in happens directly in the user's Chrome.
 
-1. load config and validate that `browser.authSeedProfileDir` is an absolute path outside the user's real Chrome user-data
-   tree
-2. read ChatGPT or Grok cookies from the configured local browser cookie store in read-only mode without launching or mutating
-   the source browser
-3. sweep stale `.staging-*` directories when no auth browser session is active, then create a fresh staged seed profile next
-   to `browser.authSeedProfileDir`
-4. close an auth browser that an earlier run left open, only when the driver lists its session, and wait until the driver
-   stops listing it; then launch a headed isolated browser with a dedicated auth `--session` and the staged `--profile`,
-   clear its cookies, and import the provider cookies
-5. open the provider URL and poll the page-state classifier until `authenticated_and_ready`
-6. on success, close the browser so Chrome flushes state, atomically swap the staged directory into
-   `browser.authSeedProfileDir` (keeping `*.prev` for rollback), and write a non-empty `.oracle-seed-generation` marker
-7. on a human-verification challenge, leave the headed staged browser open so the operator can solve it and rerun
-   `/oracle-auth`
+On the managed browser (`browser.chatGptManagedProfileDir`), `openManagedBrowserSignIn` acquires a `sign-in` lease, opens `browser.authUrl` in a tab, verifies browser identity (`managedBrowserReplaced`), closes that tab if `/backend-api/me` within `10 s` confirms a signed-in account, or leaves Chrome open for manual sign-in.
 
-Each run writes a private diagnostics bundle — `/tmp/pi-oracle-auth-*/oracle-auth.log` plus URL, accessibility-snapshot, and
-body captures — and prints that path.
+On the default isolated seed profile, `worker/auth-bootstrap.mjs` runs under the global `auth` lock:
+
+1. Load config and verify that `browser.authSeedProfileDir` (or `<authSeedProfileDir>-grok` for Grok) is an absolute non-symlink path outside `/`, the home directory, and all known Chromium user-data or cookie-source trees.
+2. Read ChatGPT or Grok cookies in read-only mode from the configured local browser cookie store (`30 s` timeout, `PI_ORACLE_AUTH_COOKIE_READ_TIMEOUT_MS`) without launching or mutating the source browser, and filter them through `auth-cookie-policy.mjs`.
+3. Sweep stale `.staging-*` directories older than `24 hours` when no `<browser.sessionPrefix>-auth` browser session is listed, and create a fresh `.staging-*` directory next to `browser.authSeedProfileDir`.
+4. Close any listed `<browser.sessionPrefix>-auth` session (`10 s` close timeout) and wait until `session list` stops listing it, then launch a headed isolated browser with a dedicated auth `--session` and the staged `--profile`, clear its cookies, and import the filtered provider cookies (`30 s` command timeout).
+5. Open the provider URL and poll the auth page-state classifier (`auth.pollMs`, default `1000 ms`, up to `auth.bootstrapTimeoutMs`, default `600000 ms`) until `authenticated_and_ready`.
+6. On success, close the staged browser so Chrome flushes state, swap the staged directory into `browser.authSeedProfileDir` (retaining `*.prev` for rollback), and write a non-empty `.oracle-seed-generation` marker (mode `0600`).
+7. On `challenge_blocking`, leave the headed staged browser open so the operator can solve the challenge there and rerun `/oracle-auth`.
+
+Each `auth-bootstrap.mjs` run creates a `0700` `pi-oracle-auth-*` directory under the system temporary directory (`os.tmpdir()`) and prints that path; use the printed path to inspect `oracle-auth.log` plus `oracle-auth.url.txt`, `oracle-auth.snapshot.txt`, `oracle-auth.body.txt`, and `oracle-auth.png` when diagnostics were captured.
 
 ### `oracle_submit`
 
-Agent-facing submissions resolve a provider first. ChatGPT submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. Grok submissions use **`mode: "heavy"`** and reject ChatGPT-only
-presets. For ChatGPT, **`preset` is the only model-selection parameter** on `oracle_submit`; there are no `modelFamily`,
-`effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus
-matching human-readable labels/common hyphen-space variants, and the tool normalizes them to the canonical id before
-persisting job state. Prompt-template guidance biases toward omitting provider/model fields and using configured defaults
-unless the task or user explicitly asks for one. When local archive packing still exceeds the upload ceiling after default
-exclusions and whole-repo auto-pruning, prompt guidance treats `archive_too_large` as a retryable archive-selection miss
-rather than a terminal failure.
+ChatGPT submissions select a preset from `ORACLE_SUBMIT_PRESETS` (`extensions/oracle/lib/config.ts`), defaulting to `pro_extended`, where `deep_research` sets `selection.tool: "deep_research"` to enable a composer tool instead of a model-picker tier.
 
-Submission executes in strict archive-before-admission order:
+Human-readable preset labels and separator variants normalize to canonical preset ids (`invalid_preset` on mismatch), and `preset` is the sole ChatGPT model-selection parameter (`modelFamily`, `effort`, and `autoSwitchToThinking` are internal `selection` snapshot fields, not tool inputs). Grok submissions accept `mode: "heavy"` only and reject `preset`.
 
-1. validate session persistence, transport readiness, and (on the isolated-seed transport) that `browser.authSeedProfileDir`
-   exists and carries a non-empty `.oracle-seed-generation` marker
-2. resolve the provider and preset or mode into a `selection` snapshot
-3. resolve optional thread targeting: `followUpJobId` into a prior oracle job `chatUrl` and `conversationId`, or
-   `chatGptConversationId` into a user/browser-created ChatGPT `https://chatgpt.com/c/<id>` URL. Omit both for the default fresh-thread behavior.
-4. resolve project-relative `files` inside the project root (rejecting missing paths with `archive_input_missing` and
-   rejecting symlink escapes), apply default exclusions when expanding `.` or directories while archiving explicitly named
-   files or directories as named, auto-prune oversized generic generated-output directories outside source roots (`src/`,
-   `lib/`) on whole-repo `.` archives, and write the archive to a temporary file
-5. allocate a unique runtime (`runtimeId`, `runtimeSessionName`, `runtimeProfileDir`)
-6. under the global admission lock, promote any older `queued` jobs whose runtime and conversation leases are free
-7. if capacity remains and any target `conversationId` lease is free, acquire the runtime lease (and conversation lease if
-   applicable), create `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` as `submitted`, move the archive in, and spawn a
-   detached worker
-8. otherwise create the job directory as `queued`, move the archive in, and return without spawning a worker
+`oracle_submit` runs in archive-before-admission order (`extensions/oracle/lib/tools.ts`):
+
+1. Load agent-level and trusted project config (`loadOracleConfig`), require a persisted session file (`persisted_session_required`), and derive `projectId` and `sessionId`.
+2. Resolve optional thread targeting (`resolveConversationTarget`): `followUpJobId` into a completed same-project job's `chatUrl` and `conversationId`, or `chatGptConversationId` into `https://chatgpt.com/c/<id>` (combining both raises `oracle_thread_target_conflict`).
+3. Resolve the provider, normalize `preset` or `mode` into the `selection` snapshot, and build the provider-specific config (`resolveOracleConfigForProvider`).
+4. Validate `files` inside the project root (`resolveArchiveInputs`) before checking local runtime prerequisites: reject missing paths (`archive_input_missing`), paths resolving outside the project (`archive_input_outside_project`), and symlinks whose real path escapes the project (`archive_input_symlink_escape`).
+5. Verify submit prerequisites (`assertOracleSubmitPrerequisites`): relay `/json/version` reachability, managed-profile availability and browser executable, or isolated seed readiness (`.oracle-seed-generation`), plus required binaries (`agent-browser` `0.41.2` or newer, `tar`, `zstd` for ChatGPT, `cp` on macOS `apfs-clone`) and writable directories.
+6. Under the global `reconcile` lock (skipping on lock timeout), reconcile stale jobs and prune expired terminal jobs.
+7. Allocate a unique runtime (`runtimeId`, `runtimeSessionName`, `runtimeProfileDir`).
+8. Build the archive (`createArchive`, `120 s` timeout) in `os.tmpdir()`, applying default exclusions (paths skipped when expanding `.` or a directory) while keeping explicitly named paths as named (`.pi` is excluded and `.omp` is included; see [What leaves the machine](SECURITY.md#what-leaves-the-machine)). Whole-repo `.` archives prune the largest `build`, `dist`, `out`, `coverage`, `htmlcov`, `tmp`, `temp`, and `.tmp` directories outside `src`, `source`, `sources`, and `lib`.
+9. Acquire the global `admission` lock and promote any older `queued` jobs whose runtime and conversation leases are free (`promoteQueuedJobsWithinAdmissionLock`).
+10. Attempt to acquire a `runtime` lease (`tryAcquireRuntimeLease`, up to `browser.maxConcurrentJobs` active leases):
+    - **Free runtime slot, busy target conversation:** when `target.conversationId` is set, call `tryAcquireConversationLease`; if another active job holds that thread, release the `runtime` lease and refuse immediately (`Oracle conversation <id> is already in use by job <id>. Concurrent jobs targeting the same ChatGPT thread are not allowed.`), never queueing.
+    - **Free runtime slot, acquired or fresh conversation:** create `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` as `submitted`, move the archive in, and spawn `worker/run-job.mjs` (fresh threads acquire no `conversation` lease during URL binding; `conversation` leases are acquired only at admission, queue promotion, or `--recollect`).
+    - **No free runtime slot:** enforce both global queue caps (`browser.maxConcurrentJobs` queued jobs and `browser.maxConcurrentJobs` × `250 MiB` of retained pre-submit archives) without checking `conversation` leases yet, create the job directory as `queued`, move the archive in, and return without spawning a worker.
 
 ### Archive size probes
 
-An archive that fits is built once at the normal level (zstd `-19`, gzip level 9). If a whole-repo
-archive is oversized, entry sizes are measured once and generated-output prune candidates retain
-their largest-first ordering. Fast probes (zstd `-3`, gzip level 1) write beside the temporary
-file list, never over the final archive. The initial exact/probe size ratio estimates subsequent
-sizes; an estimate within 10% above the ceiling triggers an exact normal-level build. Every exact
-build recalibrates the ratio, and the final accepted archive must actually fit. A ratio shift of
-more than that 10% slack in one pruning step can still over-prune. Oversize errors report exact
-bytes, and `initialArchiveBytes` and the ordered `autoPrunedPrefixes` retain their meaning.
+`lib/archive.ts` builds an archive once at the normal compression level (`zstd -19` for ChatGPT, gzip level `9` for Grok, `120 s` command timeout) when it fits under the provider ceiling. When a whole-repo `.` archive exceeds the ceiling, entry sizes are measured once and candidate generated-output directories keep their largest-first order; any non-`.` oversize selection fails immediately without pruning.
+
+During whole-repo pruning, fast probes (`zstd -3`, gzip level `1`) write beside the temporary file list, never over the final archive. The initial exact-to-probe byte ratio estimates pruned sizes; an estimate within `10%` above the ceiling (`BOUNDARY_SLACK = 0.10`) triggers an exact normal-level build that recalibrates the ratio.
+
+The accepted archive must fit at normal compression, and a ratio shift exceeding `10%` in one step can over-prune. Oversize errors report exact bytes alongside `initialArchiveBytes` and the ordered `autoPrunedPrefixes`.
 
 ### Worker run flow
 
-For each `submitted` job (`extensions/oracle/worker/run-job.mjs`):
+For each `submitted` job, `extensions/oracle/worker/run-job.mjs` advances through nine stages:
 
-1. **Prepare transport.** On the isolated transport, clone `browser.authSeedProfileDir` into `runtimeProfileDir` under the
-   auth lock and launch an isolated browser (`runtimeSessionName`, headless by default). On the relay or managed browser,
-   attach over CDP, verify the endpoint's browser identity if managed, create one new tab, record `relayTargetId`, and pin
-   every command to that tab.
-2. **Open target URL.** Navigate to the saved `chatUrl` (follow-up), the normalized `chatGptConversationId` URL, or the
-   provider base URL.
-3. **Classify page state.** Fail fast on `login_required`, `challenge_blocking`, or `transient_outage_error` (after one reload
-   retry).
-4. **Configure model or tool.** Dismiss any modal product announcement over the composer through its `Close dialog` control.
-   For ChatGPT model presets, select the model family and step the thinking-effort slider, reopening the picker if ChatGPT
-   closes it mid-step; for Grok, select Heavy. For a composer-tool preset
-   (Deep Research), skip the model picker, fill the prompt while still in `configuring_model`, open `Add files and more`
-   (polling on timers until the control is stationary and uncovered because hidden tabs receive no animation frames), enable
-   the tool, and verify its composer pill. Record what the composer shows in `observedSelection`.
-5. **Upload and send.** Upload the archive, wait for composer-scoped upload confirmation, fill the prompt if not already
-   filled, and click send. `promptSendState` advances from `not_sent` to `attempted` right before the click and to `accepted`
-   once the composer clears, recording whether a retry could duplicate a sent prompt.
-6. **Bind conversation URL.** Wait for a stable conversation URL and adopt `chatUrl` and `conversationId` only when the same
-   page evaluation shows this job's archive (`context-<id>.tar.zst` or `.tar.gz`) in a user turn (falling back to an
-   unverified stable URL with a log warning only after 60 s).
-7. **Await completion.** Each poll reads the page's conversation URL, assistant turns, and stop control in a single
-   evaluation. If another client navigated the tab to a different conversation, the poll contributes nothing, logs one
-   `navigation` lifecycle event, reopens the job's own conversation, and restarts the stability count within the deadline. For
-   Deep Research, CDP frame capture (`Target.setAutoAttach`) is armed on the pinned tab before send; once the research widget
-   frame attaches, the worker polls `frames[0].document.body.innerText` until `Research completed in` appears. If the
-   assistant replies instead of starting research, the tool is missing, or the widget never yields a report, the job fails
-   with a machine-readable `errorCode`.
-8. **Bind and collect.** Record `generationStatus: "completed"`, bind the exact assistant turn (`collectionBinding`), and run
-   [Collection](#collection) to write `response.md`, `response.capture.json`, raw evidence files, `observedTurn`, and
-   validated `artifacts/`.
-9. **Teardown.** In `finally`, close the isolated browser and delete `runtimeProfileDir` (or close the pinned tab on shared
-   Chrome), release runtime and conversation leases, and promote the next eligible `queued` job.
-
-Both workers (`run-job.mjs` and `auth-bootstrap.mjs`) run every `agent-browser` command with `AGENT_BROWSER_NO_WEBMCP=1`
-and `AGENT_BROWSER_NO_VERSION_CHECK=1`; host-callable session helpers supply both without mutating the host environment.
-The latter suppresses the driver's background Chrome release/CVE fetch and version warning.
-From 0.36 the driver otherwise enables WebMCP in the Chrome it launches and appends page-provided tool announcements to the
-text output of `eval`, `get url`, `snapshot`, and `get text`, which the workers parse; Oracle uses no page tools.
+1. **Prepare transport (`cloning_runtime`, `launching_browser`).** Verify `agent-browser` `0.41.2` or newer (`agent_browser_unsupported` on failure, with `promptSendState: "not_sent"`):
+   - **Isolated seed profile:** clone `browser.authSeedProfileDir` into `runtimeProfileDir` under the `auth` lock (`10 minutes` lock wait, `120 s` copy timeout, `10 s` heartbeats), launch Chrome (`headless` by default, `15 s` wait for `DevToolsActivePort`), and connect `agent-browser` (`runtimeSessionName`, `30 s` `connect` timeout).
+   - **Shared Chrome:** attach over CDP (`60 s` lock wait and `20 s` launch timeout when managed), verify browser identity (`browserUrl`) if managed, open one new tab, persist `relayTargetId`, and pin every command to that tab.
+2. **Open target URL.** Navigate to the saved `chatUrl` (follow-up or normalized `chatGptConversationId` URL) or `browser.chatUrl` (`90 s` `open` timeout).
+3. **Verify page readiness (`verifying_auth`).** Poll `waitForOracleReady` (up to `120 s` on ChatGPT, capped by `auth.bootstrapTimeoutMs`, and `30 s` on Grok):
+   - Fail immediately on `login_required`, and on `auth_transitioning` or `challenge_blocking` when attached to the existing-Chrome relay.
+   - On the isolated seed profile and managed browser, `auth_transitioning` and `challenge_blocking` each wait up to `15 s` (reloading once after `5 s`) before capturing worker readiness diagnostics (`preflight-auth-transition` or `preflight-challenge` under `logs/`) and failing; `transient_outage_error` reloads once on every transport.
+4. **Configure model or tool (`configuring_model`).** Dismiss any modal announcement (`Close dialog`) or `Pro feedback` dialog, then record UI provenance in `observedSelection`:
+   - **Model presets:** ChatGPT opens the picker (`45 s` timeout), selects the family and steps the Power slider (reopening up to twice if closed mid-step), and waits up to `20 s` to close and settle; Grok selects `Heavy`.
+   - **Deep Research (`preset: "deep_research"`, `selection.tool: "deep_research"`):** skip the picker, insert the prompt in `configuring_model`, poll on Node timers up to `10 s` until `Add files and more` is stationary and uncovered, enable Deep Research, and verify its composer pill (`deep_research_toggle_not_found` on failure).
+5. **Upload and send (`uploading_archive`).** Upload the archive and confirm delivery before advancing `promptSendState`:
+   - Upload `context-<id>.tar.zst` or `.tar.gz`, confirm two `1 s` polls showing the attached file (`10 minutes` on ChatGPT via `waitForUploadConfirmed`, `5 minutes` on Grok), delete the local archive (`archiveDeletedAfterUpload: true`), fill the prompt if not filled in step 4, and arm `Target.setAutoAttach` on `relayTargetId` for `deep_research` (`deep_research_report_unreadable` without shared Chrome).
+   - Wait up to `5 minutes` (`waitForSendReady`) for send to enable, set `promptSendState: "attempted"`, and activate send (reverting to `"not_sent"` if DOM click fails); poll `providerSendAccepted` up to `20 s` (`waitForSendAccepted`) to set `"accepted"` once `conversationId` changes, `assistantCount` grows, or `stopStreaming` turns `true`, then sleep `15 s` (`POST_SEND_SETTLE_MS`).
+6. **Bind conversation URL (`awaiting_response`).** On ChatGPT, poll up to `60 s` (`waitForStableChatUrl`) for two consecutive reads of a conversation URL whose simultaneous evaluation shows `archiveTurnCount === 1` (`context-<id>.tar.zst` in one user turn), adopting an unverified URL with a log warning after `60 s`. On Grok, adopt the normalized post-send URL without an archive-turn check, and when `conversationId` is absent from that URL, run the `60 s` stability wait after completion.
+7. **Await completion.** Poll every `worker.pollMs` (default `5000 ms`) up to `worker.completionTimeoutMs` (default `5400000 ms`, `90 minutes`):
+   - On ChatGPT, read the conversation URL, assistant turns, and stop control in one evaluation, requiring two consecutive polls with the same non-empty completion signature (`stableCount >= 2`) for the reply at `baselineAssistantCount`; if another client moved the tab to a different conversation, log one `navigation` event, reopen `job.chatUrl`, and reset `stableCount`.
+   - On `deep_research`, once the assistant turn stabilizes, verify that research started (`deep_research_clarification_requested` if the assistant replied instead), wait up to `60 s` (`DEEP_RESEARCH_FRAME_WAIT_MS`) for the widget frame to attach over CDP, and poll `frames[0].document.body.innerText` until `Research completed in` appears (`deep_research_report_unreadable` if frame capture was unarmed, the frame never attaches, or the report times out).
+8. **Bind and collect (`extracting_response`, `downloading_artifacts`).** Record `generationStatus: "completed"`, initialize `collectionBinding` (`{ conversationId, responseIndex }`, enriched during [Collection](#collection) with `messageId`, `turnSha256`, and `frameId`), and write `response.md`, `response.capture.json`, raw evidence files, `observedTurn`, and validated `artifacts/`, finishing in `complete` or `complete_with_artifact_errors`.
+9. **Teardown.** In `finally`, close the isolated browser (`10 s` close timeout) and delete `runtimeProfileDir`—or close the pinned tab on shared Chrome and release any `managed-browser-user` lease—release `runtime` and `conversation` leases, update `cleanupPending` / `cleanupWarnings`, and when teardown left zero warnings, promote eligible `queued` jobs under the `admission` lock.
 
 ### Driver execution and prompt insertion
 
-The worker runner bounds commands to 60 s by default (`PI_ORACLE_AGENT_BROWSER_TIMEOUT_MS`, clamped to 5–150 s),
-with 90 s for navigation, 30 s for connect, 120 s for prompt insertion, and 15 s for status and diagnostic reads.
-Download capture has explicit 90 s (driver download) and 105 s (in-page capture) bounds, with heartbeats during long work.
-A timed-out command becomes `agent_browser_timeout`; no command is automatically replayed. `promptSendState` is still
-recorded as `attempted` before send activation. The managed-browser identity check remains before every command,
-including failure diagnostics. `stream status` runs only after a failed command, and numeric UI waits use Node timers.
+`worker/agent-browser-helpers.mjs` and `shared/process-helpers.mjs` wrap every `agent-browser` call in deterministic timeouts, clean environments, verified prompt insertion, and sidecar cleanup:
 
-ChatGPT prompt insertion uses **one `agent-browser batch` command with JSON argv arrays on stdin**, not prompt argv.
-A loopback contenteditable tracer on macOS with driver 0.41.2 (2026-11-09) preserved embedded newlines, quotes, CJK,
-emoji and code fences; `fill` with an unknown ref exited 1. A batch with `--session`, `--cdp`, and `--pin-tab` navigated
-and filled only its newly pinned target while the other `about:blank` tab remained unchanged. Chrome rendered trailing
-spaces as non-breaking spaces, so the post-insertion proof compares NFC/whitespace-normalized length and SHA-256 in
-Node and the hydrated editor. A mismatch throws before send. There is no eval-insertion fallback. Deep Research still
-fills before enabling the tool. Grok keeps its existing stdin eval insertion.
+- **Command timeouts.** Commands default to `60 s` (`PI_ORACLE_AGENT_BROWSER_TIMEOUT_MS`, clamped to 5–150 s), with `90 s` for `open`, `30 s` for `connect`, `120 s` for `batch`, and `15 s` for `agent-browser --json stream status` and failure `diagnostics`. Artifact capture uses `90 s` (native CDP or `agent-browser download`) and `105 s` (in-page `captureDownload` eval) with `10 s` heartbeats.
+- **Timeout and check discipline.** A timed-out command raises `agent_browser_timeout` and is never replayed. `assertManagedBrowserUnchanged` runs before every command including failure diagnostics, `stream status` runs only after a failed command to detect a dropped browser WebSocket (`connected === false`), and numeric UI waits use Node `sleep()`.
+- **Driver environment.** Both workers (`run-job.mjs` and `auth-bootstrap.mjs`) and host session helpers set `AGENT_BROWSER_NO_WEBMCP=1` and `AGENT_BROWSER_NO_VERSION_CHECK=1`; host helpers pass a copied environment without mutating `process.env`. The second variable suppresses the driver's background Chrome release/CVE fetch and version warning.
+- **Why WebMCP is off.** From `0.36` the driver otherwise enables WebMCP in the Chrome it launches and appends page-provided tool announcements to the text output of `eval`, `get url`, `snapshot`, and `get text`, which the workers parse; Oracle uses no page tools.
+- **`eval` output decoding.** `parseEvalResult` decodes `eval` stdout identically in both workers, turning the bare `undefined` token emitted by `agent-browser` `0.41.2` into JavaScript `undefined` and `null` (or JSON strings) via `JSON.parse`.
+- **Prompt clearing and `batch` insertion.** On ChatGPT, `setComposerText` waits up to `15 s` for a visible hydrated `contenteditable` editor, clears any restored draft with `selectAll` and `delete`, verifies the editor is empty, snapshots a fresh textbox ref, and runs one `agent-browser batch` command with `[ ["fill", ref, text] ]` on stdin.
+- **Post-insertion digest proof.** Immediately after `batch`, `setComposerText` compares NFC- and whitespace-normalized character length and SHA-256 between Node and the hydrated editor, throwing before send on any mismatch with no `eval` fallback (`deep_research` fills before opening `Add files and more`; Grok inserts text via stdin `eval`).
+- **Session close verification.** `closeAgentBrowserSession` checks `agent-browser session list` (`5 s` timeout; an unreadable inventory throws rather than assuming absence), runs `close` (`10 s` timeout) only when listed, and polls `session list` every 50 ms until unlisted so later commands never hit a dying daemon.
+- **Sidecar removal.** Once confirmed unlisted (including an already-absent session), `removeAgentBrowserSessionSidecars` deletes `<sessionName>.config` and `<sessionName>.target`; failed inventories or closes never delete sidecars.
+- **Driver socket resolution.** Socket paths check `AGENT_BROWSER_SOCKET_DIR`, then `XDG_RUNTIME_DIR/agent-browser` on every platform, then `~/.agent-browser`, then the system temp directory's `agent-browser`, with sanitized `AGENT_BROWSER_NAMESPACE` appending `namespaces/<namespace>/run`.
 
-After the driver confirms a session is unlisted (including an already-absent session), teardown removes its `.config`
-and `.target` sidecars. The same tracer left only `.target` after close, both in `~/.agent-browser` and with an explicit
-socket directory. Socket resolution follows driver 0.41.2: `AGENT_BROWSER_SOCKET_DIR`, then `XDG_RUNTIME_DIR/agent-browser`
-(on every platform), then `~/.agent-browser`, then the system temp directory's `agent-browser`; a sanitized
-`AGENT_BROWSER_NAMESPACE` appends `namespaces/<namespace>/run`. Failed inventories or closes never authorize deletion.
+## Transports
 
-## Existing-Chrome relay transport
+Every job reaches its provider through one of three sign-in transports configured at the agent level; setup recipes belong to [Set up a transport](OPERATIONS.md#set-up-a-transport) and credential boundaries to [Provider credentials](SECURITY.md#provider-credentials).
 
-Setting `browser.chatGptRelayEndpoint` (for example `http://127.0.0.1:9224`) in agent-level config routes ChatGPT jobs through
-an already signed-in Chrome over a CDP relay — or directly over native Chrome CDP on a dedicated persistent user-data
-directory — without copying cookies. On native CDP, account isolation comes from Chrome's separate profile storage rather than
-an account switcher, and the worker neither owns that browser process nor checks a configured email identity. Grok remains on
-the isolated seed profile, and the submit/read/follow-up APIs and durable job files are identical across transports. Setup
-recipes live in [Operations → Existing-Chrome relay](OPERATIONS.md#existing-chrome-relay-chatgpt-only) and
-[Operations → Dedicated account in persistent Chrome](OPERATIONS.md#dedicated-account-in-persistent-chrome).
+<a id="persistence-model"></a>
+### Isolated seed profile
+
+The default sign-in transport separates long-lived provider authentication from per-job browser state:
+
+- **Auth seed profile (`browser.authSeedProfileDir`).** Passed via `--profile` during `/oracle-auth` to persist cookies, `localStorage`, `IndexedDB`, service workers, and session storage (Grok uses `<authSeedProfileDir>-grok`). Updates build in a sibling `.staging-*` directory, verify live readiness, swap in atomically with `*.prev` retained for rollback, and write `.oracle-seed-generation` (mode `0600`).
+- **Per-job runtime profile (`runtimeProfileDir`).** Cloned from the verified seed under the `auth` lock, stripped of `SingletonLock`, `SingletonSocket`, `SingletonCookie`, and `DevToolsActivePort`, launched with `--remote-debugging-port=0` and `--remote-allow-origins=*` (`--headless=new` unless `browser.runMode` is `"headed"`), connected via `--session <runtimeSessionName>`, and deleted in `finally`. `--session-name` and `state save/load` are omitted because they share storage across workers.
+- **Seed readiness invariant.** On the isolated seed profile, both `oracle_preflight` and `oracle_submit` reject a missing, unreadable, non-directory, unsafe, or marker-less seed directory before creating any archive or job directory.
+
+### Existing-Chrome relay transport
+
+Setting `browser.chatGptRelayEndpoint` (for example `http://127.0.0.1:9224`) in agent-level config routes ChatGPT jobs through an already signed-in Chrome over a CDP relay—or directly over native loopback CDP on a dedicated persistent user-data directory—without copying cookies.
+
+On native CDP, account isolation comes from Chrome's separate profile directory rather than an account switcher, and the worker neither owns that Chrome process nor checks an email identity; Grok stays on its isolated seed profile. Setup recipes are in [Existing-Chrome relay](OPERATIONS.md#existing-chrome-relay-chatgpt-only) and [Dedicated account in persistent Chrome](OPERATIONS.md#dedicated-account-in-persistent-chrome).
 
 Design invariants:
 
-- **Target discovery and pinned tabs.** The endpoint must support CDP `Target.getTargets`, target creation, attachment, and
-  closure (`agent-browser` 0.41.2 or newer). Each job creates a fresh tab, persists `relayTargetId` in `job.json`, and pins
-  every command to that target. Cleanup verifies ownership, closes the pinned tab, confirms removal, and disconnects. When
-  Chrome refuses to close a window's last tab (`Cannot close the last tab`), cleanup navigates that tab to `about:blank`
-  instead, which the managed-browser keeper counts as idle. Relay mode never deletes a profile directory.
-- **Hidden-tab stream reconciliation.** Because the worker never activates its tab, Chrome marks the tab `hidden` whenever it
-  sits behind another tab or in a minimized or occluded window: `requestAnimationFrame` stops and timers throttle to 1 Hz.
-  ChatGPT renders streamed tokens from the animation loop, so DOM text can freeze mid-stream while the network-driven stop
-  control clears. The worker treats streamed DOM text as a lower bound and reloads the persisted conversation before binding
-  and capturing. Chrome launch flags
-  (`--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling`) keep an
-  occluded window's active tab `visible`, but background tabs and minimized windows still throttle, so reload reconciliation
-  is always required.
-- **Stale stop-control recovery.** The stop control can outlive a finished generation stream. Once the bound turn's text is
-  non-empty and unchanged for two minutes under a persistent stop control, `nextStaleStopState` reloads the conversation and
-  re-reads generation state. Empty text never ages (preserving long thinking phases), and Deep Research is exempt because it
-  reads completion from the widget frame.
-- **Cross-client navigation guard.** Another CDP client attached to the same Chrome can navigate the job's tab. Every poll,
-  URL adoption, and capture reads the page's conversation identity in the same evaluation as the DOM state and reopens the
-  job's conversation if the tab moved elsewhere.
-- **Follow-ups and auth.** Follow-ups open a new pinned tab on the saved `chatUrl`; a missing or mismatched target fails
-  closed. Preflight checks relay reachability only; the worker checks login before upload, and `oracle_auth` refuses cookie
-  import in relay mode.
+- **Target discovery and pinned tabs.** The endpoint must serve `/json/version` with `webSocketDebuggerUrl` (`5 s` timeout; `relay_unavailable` otherwise) and support CDP `Target.getTargets`, target creation, attachment, and closure (`agent-browser` `0.41.2` or newer). Each job opens one tab, persists `relayTargetId` in `job.json`, and passes `--cdp <endpoint> --pin-tab`.
+- **Pinned-tab teardown.** Cleanup verifies ownership, closes `relayTargetId` (or navigates it to `about:blank` when Chrome refuses `Cannot close the last tab`, which the managed-browser keeper counts as idle), confirms removal, and disconnects; relay mode never deletes a profile directory.
+- **Hidden-tab stream reconciliation.** Because the worker never activates its tab, Chrome marks background or occluded tabs `hidden`, stopping `requestAnimationFrame` and throttling timers to `1 Hz` while ChatGPT's network-driven stop control clears independently. `reconcileStreamedTurn` treats streamed DOM text as a lower bound, reloads `job.chatUrl`, and polls up to `45 s` (`RELOAD_RECONCILE_TIMEOUT_MS`, every `1 s`) for two identical non-empty reads.
+- **Background throttling flags.** Launch flags (`--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling`) keep an occluded window's active tab `visible`, while background tabs and minimized windows continue to throttle, so reload reconciliation runs unconditionally.
+- **Stale stop-control recovery.** On non-Deep-Research ChatGPT conversations, when the stop control outlives a finished stream and non-empty text at the target reply index stays unchanged for `2 minutes` (`120000 ms`, `STALE_STOP_CONTROL_MS`), `nextStaleStopState` reloads `job.chatUrl` to re-read generation state (empty text never ages, preserving long thinking phases).
+- **Missing-turn reload.** On non-Deep-Research ChatGPT conversations, when neither a completion signature nor an active stop control appears for `5 minutes` (`300000 ms`, `MISSING_TURN_RELOAD_MS`), `nextMissingTurnState` and `nextMissingTurnReloadState` reload `job.chatUrl` at most once per job (`MISSING_TURN_RELOAD_MAX = 1`) to recover a finished turn that never rendered live; Deep Research is exempt from both reloads because it reads the widget frame.
+- **Cross-client navigation guard.** Another CDP client or user attached to the same Chrome can navigate the job's tab. Every poll, URL adoption, completion-failure `Retry` button check, and bound capture reads the page's conversation identity in the same browser evaluation as the DOM state and reopens `job.chatUrl` if the tab moved elsewhere.
+- **Follow-ups and auth.** Follow-ups open a new pinned tab on the saved `chatUrl`; a missing or mismatched target fails closed. `oracle_preflight` checks `/json/version` reachability only; the worker verifies login before upload, and `oracle_auth` refuses cookie import in relay mode.
 
-## Managed browser transport
+### Managed browser transport
 
-Setting `browser.chatGptManagedProfileDir` (agent-level, ChatGPT only, mutually exclusive with `browser.chatGptRelayEndpoint`)
-points Oracle at a dedicated Chrome user-data directory. Jobs use the relay transport's pinned-tab execution path above; the
-difference is that Oracle manages the Chrome process and verifies its identity. Setup lives in
-[Operations → Managed ChatGPT browser](OPERATIONS.md#managed-chatgpt-browser-dedicated-account).
+Setting `browser.chatGptManagedProfileDir` (agent-level, ChatGPT only, mutually exclusive with `browser.chatGptRelayEndpoint` and separate from seed and runtime directories) points Oracle at a dedicated Chrome user-data directory. Jobs use the [Existing-Chrome relay transport](#existing-chrome-relay-transport) pinned-tab path while Oracle manages Chrome and checks its browser identity; see [Managed ChatGPT browser](OPERATIONS.md#managed-chatgpt-browser-dedicated-account).
 
-- **Attach (`managedBrowser`).** Under the canonicalized profile lock (resolved through existing ancestors so symlinked paths
-  share locks and leases), the worker writes a usage lease and inspects the profile. A running Chrome with a verified endpoint
-  is reused; a free profile launches Chrome under the keeper; a profile held by a Chrome without a verifiable DevTools
-  endpoint fails fast with `managed_browser_in_use` (detected via POSIX `SingletonLock` `<host>-<pid>` cross-checked against
-  process start time). The job persists `managedBrowser` (`endpoint`, `browserId`, `profileDir`, `pid`) so worker teardown,
-  `/oracle-cancel`, and stale-job recovery act on the same browser, and a tab whose browser has exited counts as closed.
-- **Endpoint and browser-identity proof.** Chrome writes `DevToolsActivePort` only when started with
-  `--remote-debugging-port=0` and leaves the file behind on exit. The worker trusts an endpoint only while its live
-  `/json/version` matches the expected `browserId`, re-checking before creating the pinned tab, before navigating it, and
-  before every subsequent command. If a different browser answers on that port, the verdict is sticky and the job fails with
-  `managed_browser_changed` rather than letting a reconnecting `agent-browser` daemon open a tab in the replacement browser (a
-  command already in flight across a port reuse can at most leave one blank tab before the next check halts the worker).
-  `oracle_auth` checks the browser id before trusting its sign-in verdict.
-- **Keeper (`extensions/oracle/worker/managed-browser.mjs`).** Spawns Chrome as a child process, reports the endpoint via a
-  one-line handshake, and sends `SIGTERM` once no live lease holder and no non-blank page remain for the two-minute idle grace
-  (`PI_ORACLE_MANAGED_BROWSER_IDLE_MS`, re-checked under the profile lock). It never signals a Chrome it did not spawn.
-  `SIGTERM` or `SIGINT` to the keeper quits its child Chrome; if the keeper crashes or is killed with `SIGKILL`, Chrome stays
-  up and later jobs reuse it without auto-quitting.
-- **Sign-in and readiness.** `/oracle-auth` attaches like a job and opens `browser.authUrl` in a tab whose presence keeps an
-  Oracle-started Chrome open until the user closes it. `oracle_preflight` and the session poller check the profile path,
-  browser executable, and lock holder without launching Chrome, so a closed managed browser reports ready. On macOS, Chrome
-  activates itself once when creating its first window; the worker never activates tabs thereafter.
+- **Profile attach.** Under the `managed-browser` lock (`60 s` timeout) keyed on the canonicalized profile path, `acquireManagedBrowser` writes a `managed-browser-user` lease and inspects the profile: a running Chrome matching `DevToolsActivePort` is reused, a stopped profile launches Chrome under the keeper (`20 s` timeout), and a profile held without a matching endpoint (`SingletonLock` `<host>-<pid>` plus start time) fails with `managed_browser_in_use`.
+- **Persisted `managedBrowser` record.** Once attached, `job.json` persists `managedBrowser` as `{ endpoint, browserUrl }`, where `browserUrl` is Chrome's `/json/version` `webSocketDebuggerUrl` (there is no `browserId`, `profileDir`, or `pid` field). Worker teardown, `/oracle-cancel`, and stale-job cleanup act on that browser instance, and a tab whose browser has exited counts as closed.
+- **Endpoint and browser-identity proof.** Managed Chrome launches with `--remote-debugging-address=127.0.0.1` and `--remote-debugging-port=0`, writing `DevToolsActivePort` on startup and leaving it behind on exit. The worker checks that live `/json/version` `webSocketDebuggerUrl` equals `browserUrl` before opening the tab, during readiness polling, and before every command including diagnostics (`/oracle-auth` checks browser identity before trusting sign-in).
+- **Sticky replacement failure.** If a different browser answers on `endpoint`, the verdict is sticky and the job fails with `managed_browser_changed` rather than letting a reconnecting `agent-browser` daemon open a tab in the replacement browser (at most one command already in flight across a port reuse can leave a blank tab before the next check halts the worker).
+- **Keeper (`extensions/oracle/worker/managed-browser.mjs`).** Spawns Chrome as a child process, reports `{ endpoint, browserUrl }` in a one-line stdout handshake, logs to `managed-browser.log` (mode `0600`) in the state directory, and sends `SIGTERM` (then `SIGKILL` after `15 s`) once no live `managed-browser-user` lease and no non-blank page remain for `2 minutes` (`120000 ms`, `PI_ORACLE_MANAGED_BROWSER_IDLE_MS`, re-checked under the `managed-browser` lock).
+- **Keeper process ownership.** The keeper never signals a Chrome it did not spawn; `SIGTERM` or `SIGINT` to the keeper quits its child Chrome, whereas if the keeper crashes or receives `SIGKILL`, Chrome stays up and later jobs reuse it without auto-quitting.
+- **Sign-in and readiness.** `/oracle-auth` opens `browser.authUrl` under a `sign-in` lease, closing that tab if `/backend-api/me` within `10 s` confirms a signed-in account or leaving it open until the user closes it. `oracle_preflight` and the poller inspect the profile path, executable, and `SingletonLock` holder without launching Chrome, so a stopped managed browser reports `ready` (on macOS, Chrome activates once on first window creation only).
 
-## Persistence model
+## State on disk
 
-The default transport separates long-lived authentication state from per-job execution state:
+Oracle coordinates host sessions and detached workers entirely through private files on disk: two configuration files, a shared lock-and-lease directory, and one directory per job.
 
-- **Auth seed profile (`browser.authSeedProfileDir`).** Passed via `--profile` during `/oracle-auth` to persist cookies,
-  `localStorage`, `IndexedDB`, service workers, and session state. Updates are staged in a sibling directory, verified live,
-  and swapped in atomically with `*.prev` retained as rollback and `.oracle-seed-generation` written as the readiness marker.
-- **Per-job runtime profile (`runtimeProfileDir`).** Cloned from the verified seed under the auth lock for each job and paired
-  with a unique `--session <runtimeSessionName>`, then deleted in `finally`. `--session-name` and `state save/load` are not
-  used as the primary auth persistence path because they do not isolate full browser storage across concurrent workers.
-- **Seed readiness invariant.** On the isolated-seed transport, both `oracle_preflight` and `oracle_submit` reject a missing
-  seed directory or one without a non-empty `.oracle-seed-generation` marker before creating any archive or job directory.
+### Config files
 
-## Config files
+`loadOracleConfig` (`extensions/oracle/lib/config.ts`) deep-merges `DEFAULT_CONFIG` with two optional JSON files, where trusted project settings override agent-level settings on allowed keys:
 
-Oracle merges two JSON files (project overrides agent where allowed):
+1. Agent-level config: `~/.omp/agent/extensions/oracle.json` (Oh My Pi) or `~/.pi/agent/extensions/oracle.json` (`pi`).
+2. Project config: `.omp/extensions/oracle.json` (Oh My Pi) or `.pi/extensions/oracle.json` (`pi`).
 
-1. Agent-level: `~/.omp/agent/extensions/oracle.json` (Oh My Pi) or `~/.pi/agent/extensions/oracle.json` (`pi`)
-2. Project-level: `.omp/extensions/oracle.json` (Oh My Pi) or `.pi/extensions/oracle.json` (`pi`)
+Scope, trust, and import invariants:
 
-Scope and trust invariants:
+- **Project trust (`lib/trust.ts`, `lib/config.ts`).** Every runtime entry point with a session context queries `ctx.isProjectTrusted?.() ?? true`; a host without that method counts the project as trusted, and an untrusted project has its project config file skipped whole. Code that loads config without a session context honors CLI `--approve`/`-a` and `--no-approve`/`-na` first, then `pi`'s `ProjectTrustStore`, and loads no project file when the host has no trust store.
+- **Privileged keys are agent-level only.** A trusted project file may set only `defaults`, `worker`, `poller`, `artifacts`, and `cleanup`. Any other top-level key—including `browser` or `auth`—throws `Invalid oracle project config: <key> cannot be overridden at the project level` (`oracle_config_invalid` in tools) rather than being ignored, because `browser` and `auth` control local executables, profile paths, CDP endpoints, and credential sources.
+- **Presets and safe paths.** `defaults.preset` and submit-time `preset` validate against `ORACLE_SUBMIT_PRESETS`. Profile directories (`browser.authSeedProfileDir`, `browser.runtimeProfilesDir`, `browser.chatGptManagedProfileDir`) must be distinct absolute paths outside `/`, the home directory, and known Chromium user-data or cookie-source trees (`oracle_profile_path_unsafe`).
+- **Profile clone strategy.** `browser.cloneStrategy` defaults to `apfs-clone` on macOS (`cp -cR`, overridable via `PI_ORACLE_CP_PATH`) and `copy` on Linux and Windows (Node recursive copy).
+- **Cookie import path.** Default `/oracle-auth` extraction reads `@steipete/sweet-cookie`'s Chrome/Chromium backend, or—on macOS when `auth.chromiumKeychain` and `auth.chromeCookiePath` are paired (partial config is rejected, and `auth.chromiumKeychain` is macOS-only)—snapshots the SQLite `Cookies` store (`worker/chromium-cookie-source.mjs`), decrypts AES-CBC values via Keychain, and filters cookies via `worker/auth-cookie-policy.mjs`.
+- **Secret environment scrubbing.** Every `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` variable is scrubbed from child environments before browser, helper, or archive subprocesses spawn. For cookie backends, Linux keyring variables, macOS Keychain fields, and every config key, see [Cookie sources](OPERATIONS.md#cookie-sources) and [Configuration reference](OPERATIONS.md#configuration-reference).
 
-- **Privileged keys are agent-level only.** `browser` and `auth` are ignored or rejected in project config because they
-  control local browser executables, profile paths, CDP endpoints, and credential sources. Project config may set only
-  `defaults`, `worker`, `poller`, `artifacts`, and `cleanup`.
-- **Project trust.** Project config loads by default for compatibility, and is skipped whenever the host reports the project
-  is untrusted (including `--no-approve` or a saved untrusted decision in `ProjectTrustStore`).
-- **Preset validation.** `defaults.preset` and submit-time `preset` resolve against `ORACLE_SUBMIT_PRESETS`
-  (`extensions/oracle/lib/config.ts`).
-- **Profile clone strategy.** `browser.cloneStrategy` defaults to `apfs-clone` on macOS and `copy` on Linux and Windows. macOS
-  `apfs-clone` runs `cp -cR` (overridable via `PI_ORACLE_CP_PATH`); Linux and Windows use Node's recursive copy.
-- **Cookie import backends.** Default `/oracle-auth` cookie import uses `@steipete/sweet-cookie`'s Chrome/Chromium backend
-  (Edge and Firefox backends are not selected). On Linux, the importer auto-detects Google Chrome, Chromium, Chromium Browser,
-  and Brave roots under `${XDG_CONFIG_HOME:-~/.config}` and decrypts cookies via `secret-tool`, `kwallet-query`/`dbus-send`,
-  `SWEET_COOKIE_LINUX_KEYRING=gnome|kwallet|basic`, or the safe-storage password override for the profile's browser
-  (`SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD`, or
-  `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD`). Every `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` variable is scrubbed from the
-  environment before browser, helper, or archive subprocesses spawn.
-- **macOS alternate Keychain importer.** `auth.chromiumKeychain` (`account`, `services`, optional `label`) is a macOS-only
-  opt-in source for Chromium-family browsers outside the default importer and must be paired with `auth.chromeCookiePath`
-  (partial config is rejected so `/oracle-auth` never falls back silently to another profile; Linux configs leave
-  `auth.chromiumKeychain` unset). When both are set on macOS, bootstrap reads the Keychain password, snapshots `Cookies` plus
-  `Cookies-wal`/`Cookies-shm` sidecars, decrypts AES-CBC v24+ host-hash-prefixed values, deduplicates by newest expiry, and
-  imports provider auth cookies.
+### Shared state directory
 
-For the complete JSON schema, every key, default value, and operational bound, see
-[Operations → Configuration reference](OPERATIONS.md#configuration-reference).
+Cross-process locks, leases, and the managed-browser keeper log (`managed-browser.log`, mode `0600`) sit under `${PI_ORACLE_STATE_DIR:-/tmp/pi-oracle-state}` (`shared/state-path-helpers.mjs`, `shared/state-coordination-helpers.mjs`). Before touching the directory, `assertTrustedOracleStateRoot` verifies on POSIX that the root is neither a symlink nor owned by another uid.
 
-## Cleanup maintenance model
+Each lock or lease is an atomic `0700` directory at `<stateDir>/locks/<kind>-<sha256_24>/` or `<stateDir>/leases/<kind>-<sha256_24>/` holding `metadata.json` (file mode `0600`), where `<sha256_24>` is the first 24 hex characters of SHA-256 over `key`.
 
-Runtime and disk cleanup in `extensions/oracle/lib/jobs.ts` is bounded and non-destructive to job outcomes:
+Creation stages a `.tmp-*` directory with `metadata.json` and renames it into place; a published directory missing valid `metadata.json` becomes reclaimable after `1000 ms` (`ORACLE_METADATA_WRITE_GRACE_MS`), an abandoned `.tmp-*` directory after `60000 ms` (`ORACLE_TMP_STATE_DIR_GRACE_MS`), and any lock whose `processPid` is dead is reclaimed on contention or during `sweepStaleLocks`.
 
-- **Immediate runtime teardown.** Worker `finally` blocks, `/oracle-cancel`, and `/oracle-clean` release runtime and
-  conversation leases, close the isolated browser or pinned tab (under a timeout so a wedged `agent-browser close` cannot hang
-  teardown), and remove `runtimeProfileDir`. Stale lock directories are swept before reconcile maintenance.
-- **Bounded reconciliation retries.** If teardown leaves resources behind, `cleanupPending` is set. Each failed retry
-  increments `cleanupAttemptCount` and schedules `cleanupRetryAt` with backoff (`15 s`, `1 min`, `5 min`, `15 min`). After
-  five attempts, `cleanupPending` clears so background polls stop retrying and only an explicit `/oracle-clean` tries again.
-  Reconciliation runs only for a due pending job (and once for legacy jobs recorded before attempts were counted), and
-  terminates stale live cleanup workers before retrying so capacity cannot wedge.
-- **Capped diagnostics, preserved errors.** Cleanup warnings go to `logs/worker.log`, surface to command callers, and persist
-  in `job.json` (`cleanupWarnings`, deduplicated and capped at eight entries of 500 characters). Warnings never overwrite
-  `error` and never block retention pruning or queue promotion.
-- **Retention and post-wake-up grace.** Automatic pruning removes terminal job directories after
-  `cleanup.completeJobRetentionMs` (14 days for `complete` and `cancelled`) or `cleanup.failedJobRetentionMs` (30 days for
-  `failed`). `/oracle-clean` refuses terminal jobs whose worker is still live or whose wake-up was just delivered inside the
-  post-send retention grace window; when blocked by that grace it returns a retry-after timestamp so follow-up turns never
-  read deleted paths.
+| Lock kind | Key | Wait timeout | Protects |
+|---|---|---|---|
+| `admission` | `global` | `30 s` (`50 ms` on poller) | Runtime and conversation lease acquisition, queue caps, job creation, promotion, and cancellation |
+| `auth` | `global` | `10 minutes` | `/oracle-auth` seed staging/swap and per-job seed-to-runtime profile cloning |
+| `reconcile` | `global` | `30 s` (`50 ms` poller, `250 ms` startup) | Stale-job reconciliation and terminal-job retention pruning |
+| `job` | `<jobId>` | `10 s` | Atomic `job.json` read-modify-write mutations across host and worker processes |
+| `recollect` | `<jobId>` | `30 s` | Exclusive `--recollect` execution for one job |
+| `managed-browser` | `<canonicalProfileDir>` | `60 s` | Managed Chrome inspection, user-lease creation, keeper launch, and idle quit |
 
-## Job layout under the configured jobs dir
+| Lease kind | Key | Liveness check | Holds |
+|---|---|---|---|
+| `runtime` | `<runtimeId>` | `jobBlocksAdmission` on `jobId` (`browser.maxConcurrentJobs` max) | One concurrency slot for an admitted or recollecting worker |
+| `conversation` | `<conversationId>` | `jobBlocksAdmission` on `jobId` | Exclusive execution on one provider conversation |
+| `wakeup-target` | `<projectId>::<sessionId>::<pid>::<startedAt>` | Live matching pid, updated within `2 minutes` | Eligibility of a persisted host session poller to receive wake-ups |
+| `managed-browser-user` | `<owner>:<uuid>` | Live `processPid` (`job:<jobId>` or `sign-in`) | Active attachment that keeps an Oracle-launched Chrome from idle-quitting |
 
-Default location: `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`
+`tryAcquireRuntimeLease` and `tryAcquireConversationLease` (`lib/runtime.ts`) resolve each lease's `jobId` under `PI_ORACLE_JOBS_DIR` via `jobBlocksAdmission` (`shared/job-coordination-helpers.mjs`), keeping the lease while `status` is `preparing`, `submitted`, or `waiting`, `cleanupPending` is `true`, or `workerPid` matches a live process, and reclaiming stale leases automatically.
+
+### Job layout under the configured jobs dir
+
+Each job directory is created at `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` with directory mode `0700` and file mode `0600`; on POSIX, `isTrustedOracleJobDir` ignores symlinked, foreign-uid, or group/world-writable job directories and `job.json` files.
 
 ```text
 ${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/
   job.json
   prompt.md
-  context-<job-id>.tar.zst   # ChatGPT (deleted once the upload is confirmed)
-  context-<job-id>.tar.gz    # Grok (deleted once the upload is confirmed)
-  response.md                # saved response (native Markdown export, exact code block, or derived Markdown)
-  response.capture.json      # turn binding, capture method, fidelity, citations, code blocks, gaps, artifact summary
-  response.raw.txt           # bound-turn innerText evidence
-  response.raw.html          # bound-turn sanitized DOM (active content, transient attributes, signed URLs stripped)
-  response.block-<n>.txt     # exact text of each code block in the bound turn
-  artifacts.json             # discovered, downloaded, validated, and failed artifact records
+  context-<job-id>.tar.zst             # ChatGPT (deleted once the upload is confirmed)
+  context-<job-id>.tar.gz              # Grok (deleted once the upload is confirmed)
+  response.md                          # saved response (native Markdown export, exact code block, or derived Markdown)
+  response.capture.json                # turn binding, capture method, fidelity, citations, code blocks, gaps, artifact summary
+  response.raw.txt                     # bound-turn innerText evidence
+  response.raw.html                    # bound-turn sanitized DOM (active content, transient attributes, signed URLs stripped)
+  response.block-<n>.txt               # exact text of each code block in the bound turn
+  <capture-file>.<sha256>.previous     # prior bytes preserved when overwriting changed capture or artifact files
+  artifacts.json                       # discovered, downloaded, validated, and failed artifact records
   artifacts/
-    <sha256>-<file name>     # validated downloads only
+    <sha256>-<file name>               # validated downloads only
   logs/
     worker.log
-    ...diagnostic captures on failure...
+    <reason>.{url.txt,snapshot.txt,body.txt,signals.txt,png}
 ```
+
+During `agent-browser download` fallback, a transient `artifacts/.download-<candidateId>-<uuid>` file is removed in `finally`. On worker failures, `captureDiagnostics` writes `<reason>.{url.txt,snapshot.txt,body.txt,signals.txt,png}` under `logs/` for reasons `preflight-auth-transition`, `preflight-challenge`, `preflight`, `preflight-timeout`, `send-not-accepted`, and `failure`.
 
 ### `job.json` fields
 
 Fields in `OracleJob` (`extensions/oracle/lib/jobs.ts`), grouped by responsibility:
 
-- **Identity and lifecycle:** `id`, `status` (`queued | preparing | submitted | waiting | complete | failed | cancelled`),
-  `phase`
-  (`queued | submitted | cloning_runtime | launching_browser | verifying_auth | configuring_model | uploading_archive | awaiting_response | extracting_response | downloading_artifacts | complete | complete_with_artifact_errors | failed | cancelled`),
-  `phaseAt`, `createdAt`, `queuedAt`, `submittedAt`, `completedAt`, `heartbeatAt`, `cancelRequestedAt`, `cancelReason`,
-  `lifecycleEvents`
-- **Origin, selection, and config:** `cwd`, `projectId`, `sessionId`, `originSessionFile`, `requestSource` (`command | tool`),
-  `selection` (`{ provider, preset?, mode?, modelFamily, effort?, autoSwitchToThinking }`), `extensionProvenance`, `config`
-- **Thread and prompt state:** `followUpToJobId`, `chatUrl`, `conversationId`, `promptPath`, `reasoningPath`,
-  `promptSendState` (`not_sent | attempted | accepted`), `observedSelection`
-  (`{ at, product?, modelLabel?, effortLabel?, effortControls?, deepResearchVerified?, deepResearchIframeTitle? }`), `observedTurn`
-  (`{ at, durationLabel?, durationSeconds? }`, for example `Worked for 15m 7s` or `Research completed in 6m`)
-- **Generation and collection:** `responsePath`, `responseFormat` (`text/plain`), `generationStatus` (`completed`),
-  `collectionStatus` (`complete | partial | failed`), `collectionRequiredMissing`, `collectionOptionalMissing`,
-  `collectionBinding` (`{ conversationId, responseIndex, messageId?, turnSha256?, frameId? }`), `responseCapturePath`,
-  `recollectionNeeded`, `recollectionError`, `recollectionPriorWorker`
-- **Archive and artifacts:** `archivePath`, `archiveSha256`, `archiveDeletedAfterUpload`, `artifactPaths`,
-  `artifactsManifestPath`, `artifactFailureCount`
-- **Wake-up and notification provenance:** `notifiedAt`, `notificationEntryId`, `notificationSessionKey`,
-  `notificationSessionFile`, `wakeupAttemptCount`, `wakeupLastRequestedAt`, `wakeupSettledAt`, `wakeupSettledSource`,
-  `wakeupSettledSessionFile`, `wakeupSettledSessionKey`, `wakeupSettledBeforeFirstAttempt`, `wakeupObservedAt`,
-  `wakeupObservedSource`, `wakeupObservedSessionFile`, `wakeupObservedSessionKey`, `notifyClaimedAt`, `notifyClaimedBy`
-- **Worker, runtime, and transport:** `workerPid`, `workerNonce`, `workerStartedAt`, `logsDir`, `workerLogPath`, `runtimeId`,
-  `runtimeSessionName`, `runtimeProfileDir`, `seedGeneration`, `relayTargetId`, `managedBrowser`
-- **Errors and cleanup:** `error`, `errorCode`, `cleanupPending`, `cleanupAttemptCount`, `cleanupRetryAt`, `cleanupWarnings`,
-  `lastCleanupAt`
+- **Identity and status:** `id`, `status` (`queued | preparing | submitted | waiting | complete | failed | cancelled`; `preparing` is included in `ACTIVE_ORACLE_JOB_STATUSES` and `jobBlocksAdmission`, while `PHASE_STATUS` maps no phase to it), `phase` (`queued | submitted | cloning_runtime | launching_browser | verifying_auth | configuring_model | uploading_archive | awaiting_response | extracting_response | downloading_artifacts | complete | complete_with_artifact_errors | failed | cancelled`).
+- **Lifecycle timestamps and events:** `phaseAt`, `createdAt`, `queuedAt`, `submittedAt`, `completedAt`, `heartbeatAt`, `cancelRequestedAt`, `cancelReason`, `lifecycleEvents` (capped at `64` entries).
+- **Origin, selection, and config:** `cwd`, `projectId`, `sessionId`, `originSessionFile`, `requestSource` (`command | tool`), `selection` (`{ provider, preset?, mode?, modelFamily, effort?, tool?, autoSwitchToThinking }`), `extensionProvenance` (`{ schemaVersion: 1, packageName, packageVersion, sourcePath, gitHead? }`), `config`.
+- **Thread and prompt state:** `followUpToJobId`, `chatUrl`, `conversationId`, `promptPath`, `reasoningPath` (initialized to `reasoning.md` by `createJob`, never written by the worker), `promptSendState` (`not_sent | attempted | accepted`).
+- **Observed UI and turn metadata:** `observedSelection` (`{ at, product?, modelLabel?, effortLabel?, effortControls?, deepResearchVerified?, deepResearchIframeTitle? }`), `observedTurn` (`{ at, durationLabel?, durationSeconds? }`, for example `Worked for 15m 7s` or `Research completed in 6m`).
+- **Generation and collection:** `responsePath`, `responseFormat` (`text/plain`), `generationStatus` (`completed` once generation finishes, omitted beforehand), `collectionStatus` (`complete | partial | failed`), `collectionRequiredMissing`, `collectionOptionalMissing`, `collectionBinding` (`{ conversationId, responseIndex, messageId?, turnSha256?, frameId? }`), `responseCapturePath`.
+- **Recollection state:** `recollectionNeeded`, `recollectionError`, `recollectionPriorWorker` (`{ runtimeSessionName?, workerPid?, workerStartedAt?, cleanupPending?, cleanupWarnings? }`; `run-job.mjs --recollect` also persists `cleanupAttemptCount` and `cleanupRetryAt` in it, which the `OracleJob` type does not declare).
+- **Archive and artifacts:** `archivePath`, `archiveSha256`, `archiveDeletedAfterUpload`, `artifactPaths`, `artifactsManifestPath`, `artifactFailureCount`.
+- **Notification delivery:** `notifiedAt`, `notificationEntryId`, `notificationSessionKey`, `notificationSessionFile`, `wakeupAttemptCount`, `wakeupLastRequestedAt`, `notifyClaimedAt`, `notifyClaimedBy`.
+- **Wake-up settlement and observation:** `wakeupSettledAt`, `wakeupSettledSource` (`oracle_read` tool, `oracle_status` for `/oracle-status`, or `oracle_read_command` for `/oracle-read`), `wakeupSettledSessionFile`, `wakeupSettledSessionKey`, `wakeupSettledBeforeFirstAttempt`, `wakeupObservedAt`, `wakeupObservedSource`, `wakeupObservedSessionFile`, `wakeupObservedSessionKey`.
+- **Worker, runtime, and transport:** `workerPid`, `workerNonce`, `workerStartedAt`, `logsDir`, `workerLogPath`, `runtimeId`, `runtimeSessionName`, `runtimeProfileDir`, `seedGeneration`, `relayTargetId`, `managedBrowser` (`{ endpoint, browserUrl }`).
+- **Errors and cleanup:** `error`, `errorCode`, `cleanupPending`, `cleanupAttemptCount`, `cleanupRetryAt`, `cleanupWarnings`, `lastCleanupAt`.
 
-Legacy jobs written before collection binding or session-file provenance existed remain readable: missing `collectionStatus`
-is treated as unknown rather than failed, and jobs without `sessionId` stay inspectable by `projectId` without wake-up
-rebinding.
+Legacy jobs written before collection binding or session-file provenance existed remain readable: missing `collectionStatus` is treated as unknown rather than failed, and jobs without `sessionId` stay inspectable by `projectId` without wake-up rebinding.
 
-`observedSelection` is optional, including on legacy jobs. It remains the single UI-provenance
-object: `modelLabel` is the already-read model-selector text, `effortLabel` the observed slider
-stop (`<Label> (<index> of <count>)`), and `at` the latest observation time. Each ChatGPT submission
-re-reads the currently open Power control without opening its menu or changing the selection, even when
-model configuration already matches. An absent/unmounted control, including Deep Research, clears
-stale effort evidence with `effortLabel: null` and `effortControls: "absent"`. A retained menu
-contradicted by its collapsed opener is absent too; a failed read or unparsable mounted control
-uses `"unavailable"` instead and does not block submission. Neither case infers the offered count,
-and a configuration-time stop is not retained as the submission's currently offered set after the
-picker closes. The current model-selector DOM text, or an existing supported compact opener's
-snapshot label, supplies `modelLabel`; an unreadable label clears old model/product provenance.
-`product` prefers a readable slider stop over a generic picker caption and classifies those actual controls as Pro,
-Thinking, or Instant, or a verified research pill/frame as Deep Research; unknown labels
-remain unclassified rather than copying the requested preset. Slider observations are merged
-immediately, so failure before model configuration finishes no longer loses a logged reading.
-The bound research iframe's `Deep research` title comes from the existing `DOM.describeNode`
-reply. All merges go through the worker's per-job lock and atomic write, preserving other fields.
-No page/response text, cookie, or secret is added to this metadata.
+`observedSelection` is optional (including on legacy and Grok jobs) and records UI provenance without storing page text, cookies, or secrets:
 
-## Response format
+- **Fields and slider reads.** `at` holds the latest observation timestamp, `modelLabel` holds the model-selector DOM text (or a supported compact opener's snapshot label, clearing stale model/product provenance when unreadable), and `effortLabel` holds the observed Power slider stop (`<Label> (<index> of <count>)`, the bare target label when the picker closed onto the selection while stepping, or `null`).
+- **Passive post-configuration re-read.** After model configuration, each ChatGPT job re-reads the mounted Power control without opening its menu, focusing the slider, or inferring an offered stop count from requested settings or an earlier step.
+- **Absent vs unavailable controls.** An unmounted Power control—including on `deep_research` jobs or when a retained menu is contradicted by a collapsed opener—sets `effortLabel: null` and `effortControls: "absent"`; a mounted control whose description cannot be read or parsed sets `effortLabel: null` and `effortControls: "unavailable"` without blocking submission.
+- **Lowercase `product` classification.** `mergeObservedSelection` (`worker/chatgpt-ui-helpers.mjs`) prefers a readable slider stop over a generic picker caption and sets `product` to `"pro"`, `"thinking"`, `"instant"`, or (when `deepResearchVerified` or `deepResearchIframeTitle` is present) `"deep_research"`; unrecognized labels leave `product` unset rather than copying `selection.preset`.
+- **Immediate atomic merges.** Slider readings merge under the per-job `job` lock as soon as they are observed so a failure mid-configuration preserves earlier readings, and `deepResearchIframeTitle` (`Deep research`) is merged from the bound iframe's `DOM.describeNode` attributes during frame binding.
 
-`responseFormat` in `job.json` is `"text/plain"`. The file path is `response.md` for continuity across job layouts; its
-contents are normalized UTF-8 plain text/Markdown (from native Markdown export, an exact single `markdown` code block, or
-derived DOM Markdown) for agent and user consumption.
+### Response format
+
+`responseFormat` in `job.json` is `"text/plain"`. The file path is `response.md` across all job layouts; its contents are normalized UTF-8 plain text or Markdown (from native Markdown export, an exact single `markdown` code block, or derived DOM Markdown) for agent and user consumption.
 
 ## ChatGPT page-state classifier
 
-Before configuring the composer or uploading, the worker classifies the page using the current URL, accessibility snapshot,
-and filtered provider-owned page signals into these states: `authenticated_and_ready`, `login_required`, `challenge_blocking`,
-`transient_outage_error`, `auth_transitioning`, or `unknown`. Shared control names and DOM selectors across ChatGPT shell revisions live in
-`extensions/oracle/worker/chatgpt-ui-helpers.mjs`.
+Before configuring the composer or uploading, the ChatGPT worker classifies the page from its URL, accessibility snapshot, filtered page signals, and `/backend-api/me` probe (`worker/provider-page-signals.mjs`, `worker/auth-flow-helpers.mjs`, and `worker/chatgpt-ui-helpers.mjs`), evaluating states in this order:
 
-- **Ready (`authenticated_and_ready`):** requires the expected ChatGPT origin outside `/auth/*`, an enabled composer textbox
-  (`Ask ChatGPT` in the current shell or `Chat with ChatGPT` in the earlier shell; `Work with ChatGPT` is a separate surface
-  and never counts as ready), the `Add files and more` control, and no login, challenge, or outage signals. The model picker
-  is verified later during model configuration and is not touched by Deep Research jobs.
-- **Login required (`login_required`):** matches a URL under `/auth/*`, sign-in actions (`Log in`, `Sign up`,
-  `Continue with Google`), a logged-out shell without upload controls, or a redirect off the ChatGPT origin.
-- **Challenge blocking (`challenge_blocking`):** matches human-verification markers such as `Just a moment`,
-  `Verify you are human`, `Cloudflare`, CAPTCHA/Turnstile prompts, or unusual-activity blocks.
-- **Transient outage (`transient_outage_error`):** matches provider error banners such as `Something went wrong`,
-  `A network error occurred`, websocket error text, or `Try again later`.
+1. **Settling challenge (`unknown`).** Matches challenge-settling text (`Verification successful` or `Waiting for chatgpt.com to respond`) alongside challenge markers, returning `unknown` so the poller waits.
+2. **Challenge blocking (`challenge_blocking`).** Matches human-verification markers (`Just a moment`, `Verify you are human`, `Cloudflare`, CAPTCHA/Turnstile/hCaptcha prompts, or unusual/suspicious-activity blocks). During `/oracle-auth`, `classifyChatAuthPage` next checks filtered signal text for HTTP `431` (`Request Header Or Cookie Too Large`) and returns `login_required`.
+3. **Transient outage (`transient_outage_error`).** Matches provider outage or rate-limit banners (`Too many requests`, `rate limit`, `Try again later`, `Something went wrong`, `A network error occurred`, websocket error text, or `network error`).
+4. **Login required (`login_required`, session or shell).** Matches `/backend-api/me` returning an anonymous `ua-*` id alongside an auth path (`/auth/*`, `auth.openai.com`, `/login`, `/signin`, `/log-in`) or a visible login control (`hasLoginCta` matches `Log in`, `Login`, `Sign in`, `Signin`, or `Continue with`); `/backend-api/me` status `401`; or an auth path or `domLoginCta` shell lacking non-anonymous `id`/`email` identity.
+5. **Auth transitioning (`auth_transitioning`).** Matches an auth path where `/backend-api/me` returned non-anonymous account identity, or an allowed ChatGPT origin with a usable composer and `/backend-api/me` status `200` or `403` where `domLoginCta` remains visible alongside that account identity.
+6. **Ready (`authenticated_and_ready`).** Requires an allowed ChatGPT origin outside auth paths, an enabled composer textbox (`Ask ChatGPT` or `Chat with ChatGPT`; `Work with ChatGPT` is a separate surface and never counts as ready) plus `Add files and more`, `/backend-api/me` status `200` or `403` (or `ok: true` in `/oracle-auth`), and no visible `domLoginCta`. The model picker is verified during `configuring_model` and is untouched by `deep_research` jobs.
+7. **Off-origin redirect (`login_required`) and fallback (`unknown`).** A non-empty URL outside the allowed ChatGPT origins returns `login_required`; all other incomplete pages return `unknown`.
 
-Provider error patterns live in `worker/provider-page-signals.mjs`, shared by job and auth classifiers. Snapshot
-filtering drops textbox/searchbox/combobox/link entries and navigation/complementary (sidebar) subtrees with their
-continuation lines: right after Send, ChatGPT titles the new chat in the sidebar with the prompt itself (observed
-2026-11-09). Raw snapshots still drive login and composer control detection. The page expression reads visible text
-(at most 8000 characters) outside editors, navigation, sidebar and conversation turns (including the current shell's
-`data-turn-key` exchanges), never the document title. Failed evaluations contribute no evidence: a
-missed error may time out, but a prompt or earlier answer quoting an error must not fail a job. Diagnostics retain a
-separate `.signals.txt` capture; worker error logs name only the matched pattern, not the captured page text.
+Grok jobs and `/oracle-auth grok` use `classifyGrokPage` and `classifyGrokAuthPage` in `worker/provider-page-signals.mjs`, checking the same challenge and outage patterns, `https://grok.com` login controls, and the `Ask Grok anything` plus `Attach` composer without `/backend-api/me`.
 
-Completion reads these signals lazily, only when Retry is visible without Stop. Response-failure matching also considers
-the bound assistant turn only when it is at most 400 trimmed characters. Long answers quoting error messages never
-trigger Retry; Retry still happens at most once and only on the job's own conversation.
+Provider error patterns sit in `worker/provider-page-signals.mjs`, shared by the job and auth classifiers. Snapshot signal filtering drops `textbox`, `searchbox`, `combobox`, `link`, `navigation`, and `complementary` (sidebar) subtrees with their continuation lines so prompt text echoed into the composer or the sidebar's chat title never triggers a false match, while raw snapshots drive login and composer control detection.
+
+The in-page signal expression reads at most `8000 characters` of visible text outside editors, navigation, sidebars, and conversation turns (including `data-turn-key` exchanges), never the document title; failed evaluations contribute no evidence, `.signals.txt` captures diagnostic text on failure, and worker error logs record only the matched pattern.
+
+During completion polling, `detectCompletionFailure` reads page signals lazily, only when `Retry` is visible without a stop control, and includes the bound assistant turn only when its trimmed length is at most `400` characters. Long answers that quote error messages never trigger `Retry`; `Retry` clicks at most once per job and only after re-verifying the job's own conversation.
 
 ## Collection
 
-Generation and collection are tracked independently. `generationStatus: "completed"` records that the assistant finished
-generating; `collectionStatus` records what the worker captured (`complete` when saved with no required gaps, `partial` when
-saved with named gaps in `collectionRequiredMissing` or `collectionOptionalMissing`, or `failed` when no usable response bytes
-were captured).
+Generation (the provider writing the reply) and collection (saving the reply and its files) are tracked independently. `generationStatus` is set to `"completed"` once generation finishes (and is omitted beforehand); `collectionStatus` records local capture fidelity (`complete` with no gaps, `partial` with named required or optional gaps, or `failed` when no usable response bytes were saved).
 
-Required gaps indicate degraded answer fidelity (`response`, `rich_response_fidelity`, `unresolved_source_links`,
-`bound_response_capture`, `redacted_transport_links`, `native_export_source_links`, `diagram_source:<count>`); optional gaps
-indicate a missing secondary file (`native_markdown_export`, `research_widget_state`, `artifact:<candidate>`,
-`artifact_inspection:<state>`).
+Gap codes recorded in `job.json` and `response.capture.json`:
+
+- **Required (`collectionRequiredMissing`):** `response` (no usable `response.md` bytes), `rich_response_fidelity` (`fidelity` is `"text_only"`), `bound_response_capture` (bound capture threw), `redacted_transport_links` (signed links stripped from `response.md`), `unresolved_source_links` (unresolved citation, `[n]` pill, or source), `native_export_source_links` (DOM source URL absent from Deep Research Markdown), and `diagram_source:<count>` (diagrams lacking Mermaid source).
+- **Optional (`collectionOptionalMissing`):** `native_markdown_export` (no validated Deep Research Markdown download), `research_widget_state` (no Markdown in `report_message`), `artifact:<candidate>` (unvalidated artifact candidate), `artifact_inspection:<state>` (`not_performed` when `artifacts.capture` is `false`, or `failed`), and `capture_error:<message>` (redacted exception from bound capture).
 
 ### Exact binding
 
-Collection binds to the single assistant turn produced for the job: `conversationId`, `responseIndex` (observed at
-completion), the turn's `data-message-id` (or `data-chatgpt-selection-message-id`, resolved through heading wrappers), and
-`turnSha256` over normalized text (class attributes churn between renders, so sanitized HTML is not hashed). Every capture
-evaluation verifies the page's conversation URL in the same browser call as the DOM read; if the tab moved to another
-conversation, the worker reopens the job's conversation and retries boundedly. Message identity takes precedence over a stale
-positional index, a positional root spanning multiple message identities is refused even on first capture, and missing or
-ambiguous identity fails closed: for ChatGPT, streamed intermediate text is never written as a fallback `response.md`,
-`collectionStatus` becomes `failed`, and `recollectionNeeded: true` tells callers to recollect rather than resubmit.
+Collection binds to the single assistant turn produced for the job: `conversationId`, `responseIndex` (baseline assistant count at send), the turn's `data-message-id` or `data-chatgpt-selection-message-id` (resolved through heading wrappers), `turnSha256` over normalized text (HTML class attributes churn across renders, so sanitized HTML is not hashed), and `frameId` for Deep Research.
+
+Every capture evaluation checks `location.pathname` against `conversationId` in the same browser call as the DOM read; if the tab moved to another conversation, `acquireBoundTurn` reopens `job.chatUrl` and retries up to `20` times.
+
+Message identity takes precedence over a stale positional index, a positional root spanning multiple message ids is refused on first capture, and missing or ambiguous identity fails closed: on ChatGPT, streamed intermediate text is never written as a fallback `response.md`, `collectionStatus` becomes `failed`, and `recollectionNeeded: true` directs callers to recollect rather than resubmit (Grok has no bound DOM capture and retains its streamed `text_fallback` response).
 
 ### Capture
 
-`extensions/oracle/worker/response-capture.mjs` contains closure-free browser functions evaluated in the owned page or bound
-report frame (and tested directly by the synthetic Chromium harness). From the bound root it extracts raw text, sanitized
-HTML, derived Markdown, code blocks, stable source URLs (signed transport URLs are dropped; literal URLs in text and code are
-inventoried), structural artifact candidates, child frames, and the reasoning-time label (`Worked for ...` in the exchange's
-activity header or `Research completed in ...`). A code block is a `pre` or the current shell's `CodeBlock-…` container (a
-live reply nests a `pre` in it, a reloaded conversation renders a bare block `code`, and a runnable block such as Python
-holds a CodeMirror editor); its language comes from a `language-*` class or, failing that, the container's action-bar label
-(`YAML` becomes a `yaml` fence), the label never becomes prose, and nested wrappers are not double-counted. The editor
-renders only the rows near the viewport, so an editor block's text is the editor's own document, written back into the
-sanitized HTML as rows. A turn consisting of a single `markdown` code block is saved verbatim (`exact_code`); otherwise
-derived Markdown is written (`derived_markdown`). Exact payload files and the surrounding derived response are distinct
-fidelity claims.
+`extensions/oracle/worker/response-capture.mjs` defines closure-free browser functions evaluated directly in the owned page or bound report frame:
 
-Deep Research renders its report inside a cross-origin, sandboxed ChatGPT App iframe (`internal://deep-research` inside the
-reply in the earlier shell, or `Deep research` in a sibling block of the reply's `data-turn-key` exchange in the current
-shell) whose same-origin child frame (`frames[0]`) holds the report while the top document keeps only a placeholder and the
-conversation API carries no report text. Because reading that frame requires CDP `Target.setAutoAttach` armed on the pinned
-tab before send (Chrome only surfaces frames created after arming), Deep Research requires a shared-Chrome transport (the
-existing-Chrome relay or the managed browser) and fails on the isolated seed profile; see
-[Operations → Troubleshooting](OPERATIONS.md#troubleshooting) for the named Deep Research failure codes.
-
-When saving a Deep Research report, the worker prefers its Markdown source (`native_markdown`): first the validated native
-export file (`native_report_download`), then the Apps SDK widget state (`frames[0].openai.widgetState.report_message`,
-recorded as `report_widget_state`). Both preserve Mermaid diagram fences and citation tokens
-(`U+E200 cite U+E202 <ref> ... U+E201`), which the collector converts into numbered Markdown footnotes backed by
-`content_references` (unresolved tokens keep a numbered footnote and add `unresolved_source_links`; fenced code is never
-rewritten). Only if neither Markdown source is available does collection convert the rendered iframe DOM: its status line and
-counters are dropped, each citation pill stays a visible `[n]` and counts as an unresolved source, and each diagram rendered
-without source becomes a placeholder counted in `diagram_source:<count>`. `response.capture.json` records the token, source,
-and unresolved counts under `citations`.
+- **Scoped DOM extraction.** From the bound root, `captureScopedResponse` extracts raw text, sanitized HTML, derived Markdown, code blocks, stable source URLs (dropping signed transport URLs while inventorying literal URLs in text and code), structural artifact candidates, child frames, and the reasoning-time label (`Worked for ...` or `Research completed in ...`).
+- **Code blocks and CodeMirror editors.** A code block is a `pre` or `CodeBlock-…` container: live replies nest `pre`, reloaded conversations render bare block `code`, and runnable blocks such as Python mount a CodeMirror editor whose full document replaces viewport-clipped rows.
+- **Fence languages and exact-code mode.** A block's fence language comes from `language-*` or the action-bar label (`YAML` becomes `yaml`) without leaking into prose; a non-Deep-Research turn containing a single `markdown` code block is saved verbatim (`exact_code`), and otherwise derived Markdown (`derived_markdown`) is written.
+- **Deep Research cross-origin frame.** Deep Research (`preset: "deep_research"`) renders its report in a cross-origin sandboxed App iframe on `web-sandbox.oaiusercontent.com` (titled `internal://deep-research` in the earlier shell or `Deep research` beside `data-turn-key`) whose same-origin child frame (`frames[0]`) holds the report while the top page holds a placeholder.
+- **Shared-Chrome requirement for Deep Research.** Chrome surfaces that iframe as a CDP child session only when `Target.setAutoAttach` was armed on `relayTargetId` before the frame was created, so Deep Research requires shared Chrome and fails on the isolated seed profile with `deep_research_report_unreadable` (alongside `deep_research_toggle_not_found` and `deep_research_clarification_requested`).
+- **Deep Research Markdown sources.** Collection prefers Markdown sources (`native_markdown`): first the validated native export (`native_report_download`), then Apps SDK widget state (`frames[0].openai.widgetState.report_message`, `report_widget_state`), converting citation tokens (`U+E200 cite U+E202 <ref> ... U+E201`) into numbered footnotes backed by `content_references` (`unresolved_source_links` when unresolved) while preserving Mermaid and code fences.
+- **Rendered iframe DOM fallback.** Only if neither Markdown source is available does collection convert the rendered iframe DOM, dropping status counters, keeping `[n]` pills (`unresolved_source_links`), and counting sourceless diagrams in `diagram_source:<count>`, with token, source, and unresolved counts saved under `citations` in `response.capture.json`.
 
 ### Artifacts
 
-Artifact candidates are discovered only inside the bound turn or bound report frame from elements with `download` attributes,
-file-like `href`s, or export labels (container elements that wrap other controls or exceed 200 characters of text are excluded
-so the research widget wrapper never masks its own `Export` button). A link to another site without a `download` attribute is
-a citation, never a candidate, whatever its path or label: ChatGPT serves a reply's files from its own origin or OpenAI's
-user-content host. Visible labels are display metadata, never authoritative filenames. Each candidate is tracked in
-`artifacts.json` (`discovered`, `downloaded`, `validated`, `failed`), verified against its declared size and format (PDF,
-ZIP, PNG, UTF-8 text), and stored once under `artifacts/<sha256>-<name>`.
+Artifact candidates are discovered only inside the bound turn or bound report frame from elements with `download` attributes, file-like `href`s, or export labels, excluding container elements that wrap other controls or exceed `200 characters` of text so the research widget wrapper never masks its `Export` button. Links to external origins without a `download` attribute are citations rather than candidates; visible labels are display metadata, never trusted filenames.
 
-Standard turn artifacts are captured in-realm by activating the control under temporary `fetch`, `window.open`, and anchor
-hooks, falling back to `agent-browser download <ref> <dest>`. For Deep Research native Markdown export, the sandboxed iframe's
-**Export → Export to Markdown** menu delegates the download to the host page, where frame hooks cannot see the bytes. Before
-clicking export, the worker calls `Page.enable` on both the pinned tab session and the bound frame session, registers a
-`URL.createObjectURL` `Blob` map in each realm, and listens for `Page.downloadWillBegin` and `Page.downloadProgress`. It
-accepts only a download initiated by the main frame or bound report frame tree, reads the bytes from the registered `Blob` (or
-`data:` URL), and validates them against Chrome's `totalBytes` and the report title. A download from a transport URL the hooks
-did not read is reported as an optional gap rather than refetched. Because `chrome.debugger` extension relays do not route
-`Browser.setDownloadBehavior`, the worker never sends it, never alters the user's download directory, and never scans
-`~/Downloads` or `chrome://downloads`.
+Each candidate is tracked in `artifacts.json` (`discovered`, `downloaded`, `validated`, `failed`), capped at `25 MiB` (`CAPTURE_LIMIT_BYTES` in `response-capture.mjs`), validated against declared size and format (PDF, ZIP including Office XML members for `.docx`, `.xlsx`, and `.pptx`, PNG, or non-null UTF-8 text), and written once to `artifacts/<sha256>-<name>`.
+
+Standard turn artifacts run `captureDownload` (`105 s` timeout) in-realm under temporary `fetch`, `window.open`, and anchor hooks, falling back to `agent-browser download <ref> <dest>` (`90 s` timeout).
+
+For Deep Research **Export → Export to Markdown**, the sandboxed iframe delegates the download to the host page where frame hooks cannot see the bytes. Before clicking export, `collectNativeDownload` (`90 s` timeout) calls `Page.enable` on both the pinned tab session and bound frame session, arms a `URL.createObjectURL` `Blob` registry in each realm, and listens for `Page.downloadWillBegin` and `Page.downloadProgress` from the bound frame tree.
+
+It then reads bytes from the registered `Blob` or `data:` URL (up to `25 MiB`) and verifies Chrome's `totalBytes` and the report title; if `Page.downloadWillBegin` reports an `https:` signed transport URL whose saved disk file relays cannot read, it records an optional `native_markdown_export` gap rather than issuing a separate network fetch.
+
+Because `chrome.debugger` extension relays do not route `Browser.setDownloadBehavior`, the worker never sends it, never alters Chrome's download directory, and never scans `~/Downloads` or `chrome://downloads`.
 
 ### Recollection
 
-`oracle_read({ jobId, action: "recollect" })` invokes the worker's `--recollect` entrypoint on a completed job without
-touching the composer or sending a prompt. Recollection opens a fresh `oracle-<uuid>` driver session (kept short for macOS's
-103-byte Unix socket limit), arms CDP frame capture before navigating, reacquires the bound turn, and re-runs collection and
-native export capture.
+Recollection repeats collection on a finished answer without touching the composer or sending a prompt. `oracle_read({ jobId, action: "recollect", responseIndex?, messageId? })` admits only a job whose `status` is `complete` (`Recollection requires an already completed job.`) and forwards the optional legacy binding arguments to `run-job.mjs --recollect`.
 
-- A positional-only binding (when initial capture failed before learning `messageId`) resolves through the user turn that
-  displays `context-<id>.tar.zst`, verifies the first reply sits at `responseIndex`, and refuses an archive shown in zero or
-  multiple user turns. Jobs completed before binding existed require `responseIndex` and `messageId` together; an explicit
-  pair may add identity to a positional binding but never move it or replace a saved exact binding.
-- A root without `data-message-id` (attribute drift) is recollected only if its `turnSha256` still matches.
-- Earlier usable bytes always survive: if recollection fails, `recollectionError` is recorded, `bound_response_capture` is
-  marked missing, any `messageId` learned before the failure stays persisted, and existing `response.md` and validated
-  artifacts stay intact.
-- During recollection, admission clears `lastCleanupAt`, heartbeats continuously, and saves predecessor worker provenance in
-  `recollectionPriorWorker` so background pollers do not kill the live recollection worker as a stale cleanup process; a
-  warning-free teardown restores the predecessor identity, while a teardown with warnings keeps the fresh identity so
-  reconciliation retries against the current resources. `SIGTERM`/`SIGINT` run the same cleanup and finalization.
-- Browser teardown waits until the driver inventory stops listing the session before returning (a session not listed is
-  never closed, an unreadable inventory is a cleanup error, and a relay target absent from the inventory never reaches the
-  driver).
+The worker runs under the per-job `recollect` lock and the global `admission` lock, and refuses immediately rather than queueing if runtime capacity or the conversation lease is busy.
+
+The worker opens a short `oracle-<uuid>` driver session (sized for macOS's `103-byte` Unix socket path limit), arms CDP frame capture before navigating, reacquires the bound turn, and re-runs collection and export capture:
+
+- **Anchored binding.** A positional-only binding locates the user turn carrying `context-<id>.tar.zst`, verifies its first reply sits at `responseIndex`, and refuses an archive shown in zero or multiple user turns.
+- **Timed-out jobs.** The worker's `--recollect` entry point also accepts a job that failed with the completion timeout after `promptSendState: "accepted"` (`timedOutRecollectionBinding`), using the same archive anchor. `oracle_read` does not reach that path, because it refuses any job that is not `complete`.
+- **Legacy binding.** Jobs completed before binding existed require explicit `responseIndex` and `messageId` together, which may add identity to a saved positional index without moving it or replacing a saved exact binding.
+- **Attribute drift.** A turn root missing `data-message-id` after markup drift is recollected only when its `turnSha256` matches.
+- **Non-destructive preservation.** `preserveCaptureFile` writes `<capture-file>.<sha256>.previous` before overwriting any capture or artifact file with changed bytes. If recollection fails, `recollectionError` is recorded, `bound_response_capture` is marked missing, any `messageId` learned before the failure stays persisted, and existing `response.md` and validated `artifacts/` files remain intact.
+- **Worker provenance handoff.** On admission, `--recollect` clears `lastCleanupAt`, heartbeats continuously, and saves predecessor worker fields in `recollectionPriorWorker` so background pollers do not kill the live recollection worker as a stale terminal-cleanup process; warning-free teardown restores the predecessor identity, whereas teardown with warnings keeps the fresh identity so cleanup retries target the resources that exist (`SIGTERM` and `SIGINT` run the same finalizer).
 
 ## Same-thread follow-ups
 
-Same-thread continuity is persisted as job metadata (`chatUrl` and `conversationId`), never by keeping a browser or tab open
-between jobs:
+Same-thread continuity is stored as job metadata (`chatUrl` and `conversationId`), never by holding open a browser process or tab between jobs:
 
-- `/oracle-followup <job-id> <request>` resolves `followUpJobId` to the prior job's saved `chatUrl` and `conversationId`.
-- `oracle_submit` also accepts an explicit `chatGptConversationId` (raw UUID or `https://chatgpt.com/c/<id>` URL) to continue
-  a browser-created ChatGPT thread without prior job state.
-- Admission acquires a per-`conversationId` lease before launching the worker (or queues the job if another job holds that
-  conversation), then opens the target URL in a fresh runtime clone or fresh pinned tab.
+- `/oracle-followup <job-id> <request>` passes `followUpJobId` to `oracle_submit`, which resolves a `complete` same-project job's saved `chatUrl` and `conversationId` (`follow_up_job_not_found`, `follow_up_job_wrong_project`, `follow_up_job_not_complete`, `follow_up_job_missing_chat_url`).
+- `oracle_submit` also accepts `chatGptConversationId` (an id or `https://chatgpt.com/c/<id>` URL; `invalid_chatgpt_conversation_id` when malformed, `oracle_thread_target_conflict` if combined with `followUpJobId`) to continue a browser-created ChatGPT thread without prior job state.
+- **Conversation lease refusal vs queueing.** When a runtime slot is free at admission, `oracle_submit` attempts to acquire the per-`conversationId` lease and refuses the submission immediately if another active job holds that conversation; it never queues behind an active job on the same thread.
+- **Queued follow-up promotion.** A follow-up enters `queued` state only when all `browser.maxConcurrentJobs` runtime slots are busy (before `conversation` leases are checked), and `promoteQueuedJobs` later promotes it once both a runtime slot and the `conversation` lease are free, opening `chatUrl` in a fresh runtime clone or fresh pinned tab.
 
-## Poller / wake-up model
+<a id="poller--wake-up-model"></a>
+## Poller and wake-ups
 
-Each live persisted host session runs a background poller (`poller.intervalMs`, default 5000 ms):
+Each live persisted host session outside `print` and `json` modes runs a background poller in `extensions/oracle/lib/poller.ts` (`poller.intervalMs`, default `5000 ms` from `DEFAULT_CONFIG` in `extensions/oracle/lib/config.ts`):
 
-- **Process identity reads.** The host's own start time is cached for its lifetime; other live
-  pids have a two-second cache, with `kill(pid, 0)` evicting dead entries immediately. Poll scans,
-  reconciliation, queue promotion, wake-up leases, and footer/readiness refreshes asynchronously
-  prime their pids in batched process-table reads. Successful priming keeps synchronous `ps`
-  (or PowerShell) off the poll tick; failed priming retains the synchronous fallback. Exact
-  `lstart` strings are preserved for persisted `workerStartedAt` comparisons. Spawn identity
-  waits and every signal-sending identity check bypass the short-lived cache.
-- **Footer readiness.** Every poll re-evaluates submit prerequisites for the session footer (`oracle: ready`, `auth needed`,
-  `browser unavailable`, `config error`) using the same error codes agents see, emitting at most one warning per distinct
-  blocker and clearing automatically when resolved. The agent-browser 0.41.2 floor caches its version verdict by resolved
-  executable path, modification time, and size, including in-flight checks, so unchanged drivers spawn once.
-- **Durable record on disk.** Completed job durability lives in `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` (`job.json`,
-  `response.md`, `artifacts/`), which outlives the agent turn subject to `cleanup.*` retention, `/oracle-clean`, and the
-  lifetime of the jobs directory (default `/tmp`).
-- **One best-effort, idle-gated wake-up.** When a session's job reaches `complete`, `failed`, or `cancelled`, the poller
-  delivers at most one wake-up message and records `notifiedAt`. All activity, lifecycle, claim, retention, and target gates
-  run before the first notification mark (`isIdle()` and `hasPendingMessages()` defer busy sessions; hosts without these
-  probes keep immediate delivery). The commit then marks each eligible job and always requests the marked batch with
-  `{ triggerTurn: true, deliverAs: "followUp" }`, even if the session becomes busy or the poller stops during commit.
-  A returned mark with another `notifiedAt` is skipped because another poller already announced it. Multiple jobs finishing
-  together are batched into a single wake-up message, and any job the origin session already read through `oracle_read` is marked settled
-  (`wakeupSettledBeforeFirstAttempt`) so no redundant wake-up is sent. Manual `oracle_read`, `/oracle-read`, or
-  `/oracle-status` inspection after a wake-up records settlement provenance on the job.
-- **Consumption and retry guard.** Wake-up text directs users to `/oracle-read [job-id]` (and agents to `oracle_read`),
-  surfaces saved file paths, and explicitly instructs agents not to treat a failed or cancelled wake-up as an automatic
-  `oracle_auth`, `oracle_submit`, or `oracle_cancel` retry trigger.
+- **Process identity cache.** The host's own start time is cached for its lifetime; other live pids use a `2 s` (`2000 ms`) cache with `kill(pid, 0)` evicting dead entries on `ESRCH`.
+- **Batched process-table priming.** Poll scans, reconciliation, queue promotion, `wakeup-target` scans, and footer updates batch-prime pids asynchronously via `ps` (`lstart`, preserving spacing for `workerStartedAt` comparisons) or PowerShell `Get-Process` (`5 s` timeout), falling back to synchronous reads only on error; spawn waits and signal-sending checks (`readProcessStartedAtFresh`) bypass the cache.
+- **Non-blocking tick locks.** Each scan refreshes this session's `wakeup-target` lease (stale after `2 minutes`, `120000 ms`) and attempts the global `reconcile` and `admission` locks with a `50 ms` timeout (`POLLER_LOCK_TIMEOUT_MS`) so lock contention never stalls UI ticks.
+- **Footer readiness and notifications.** Every poll re-evaluates submit prerequisites for the session footer (`oracle: ready`, `auth needed`, `browser unavailable`, `config error`) using the same error classification agents see. Only `browser_unavailable` and `config_error` emit `ui.notify` warnings—at most once per distinct state and message—while `auth_needed` updates the footer silently because its label already names `/oracle-auth`.
+- **Delivery target.** A poller delivers a job's wake-up when the job belongs to its own session, or when the job belongs to the same project and its origin session holds no live `wakeup-target` lease (`jobCanNotifyContext`). A session in another project never delivers it.
+- **Driver version cache.** The `agent-browser` `0.41.2` check caches its verdict (including in-flight promises) by resolved binary path, modification time, and file size so unchanged drivers spawn once.
+- **Durable record.** Job durability sits in `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` (`job.json`, `response.md`, `artifacts/`), subject to `cleanup.*` retention, `/oracle-clean`, and the lifetime of the jobs directory.
+- **Notification claims and retry schedule.** On `complete`, `failed`, or `cancelled`, the poller acquires a `60 s` claim (`ORACLE_NOTIFICATION_CLAIM_TTL_MS`, `notifyClaimedAt` / `notifyClaimedBy`) and checks activity, lifecycle, retention, and target gates (`isIdle()` and `hasPendingMessages()` defer busy sessions; hosts without them deliver immediately), allowing up to `3` attempts (`ORACLE_WAKEUP_MAX_ATTEMPTS`) at `0 s`, `15 s`, and `60 s` (`ORACLE_WAKEUP_RETRY_DELAYS_MS`).
+- **Wake-up commit.** Commit increments `wakeupAttemptCount`, sets `wakeupLastRequestedAt` and `notifiedAt`, and always sends the marked batch via `{ triggerTurn: true, deliverAs: "followUp" }` even if the session turns busy or the poller stops mid-commit (skipping any job whose returned `notifiedAt` shows another poller already announced it).
+- **Batching and settlement.** Jobs finishing together batch into one message. When the origin session reads a finished job through `oracle_read` before the first attempt, the job is settled with `wakeupSettledBeforeFirstAttempt: true` and no wake-up is sent. `/oracle-read` and `/oracle-status` before the first attempt record only `wakeupObservedAt`; after an attempt, any of the three records `wakeupSettledAt` and `wakeupSettledSource`, which stops the remaining attempts.
+- **Consumption and retry guard.** Wake-up messages direct users to `/oracle-read [job-id]` and agents to `oracle_read`, include saved file paths, and instruct agents not to treat a `failed` or `cancelled` wake-up as an automatic `oracle_auth`, `oracle_submit`, or `oracle_cancel` retry trigger.
+
+<a id="cleanup-maintenance-model"></a>
+## Cleanup and retention
+
+Runtime teardown, stale-job recovery, and retention pruning in `extensions/oracle/lib/jobs.ts` and `shared/job-lifecycle-helpers.mjs` are bounded and preserve completed job outputs:
+
+- **Immediate runtime teardown.** Worker `finally` blocks, `/oracle-cancel`, and `/oracle-clean` release `runtime` and `conversation` leases, close the isolated browser (`10 s` timeout on `agent-browser close`) or pinned tab, and delete `runtimeProfileDir`. Stale lock directories are swept before `reconcile` runs.
+- **Stale-job detection.** `reconcileStaleOracleJobs` marks an active job (`preparing`, `submitted`, `waiting`) failed when it has no `workerPid` after `30 s` (`30000 ms`, `ORACLE_MISSING_WORKER_GRACE_MS`), when its `workerPid` exited or mismatches `workerStartedAt`, or when its latest timestamp (`heartbeatAt`, `submittedAt`, or `createdAt`) is older than `3 minutes` (`180000 ms`, `ORACLE_STALE_HEARTBEAT_MS`).
+- **Stale terminal-cleanup workers.** Terminal jobs with `cleanupPending` use the same `3 minutes` threshold from `lastCleanupAt` (then `heartbeatAt` or `completedAt`) before `reconcileStaleOracleJobs` terminates a wedged cleanup worker and retries teardown.
+- **Bounded cleanup retries.** When teardown leaves warnings, `cleanupPending` is set, `cleanupAttemptCount` increments, and `cleanupRetryAt` schedules backoff across at most `5` total attempts: the initial attempt plus up to four retries spaced `15 s`, `1 min`, `5 min`, and `15 min` apart. On the fifth failed attempt, `cleanupPending` clears so background polls stop retrying and only an explicit `/oracle-clean` tries again (legacy jobs without `cleanupAttemptCount` get one reconciliation pass).
+- **Capped diagnostics, preserved errors.** Cleanup warnings append to `logs/worker.log`, return to command callers, and persist in `cleanupWarnings` (deduplicated and capped at `8` entries of `500 characters` each). Warnings never overwrite `error` or `errorCode` and never block retention pruning once `cleanupPending` clears, though a worker whose own `finally` teardown produced warnings skips autonomous queue promotion so resources reconcile first.
+- **Retention pruning and post-wake-up grace.** `pruneTerminalOracleJobs` removes terminal job directories once age from `completedAt` (or `createdAt`) reaches `cleanup.completeJobRetentionMs` (`complete` and `cancelled`) or `cleanup.failedJobRetentionMs` (`failed`) and `cleanupPending`, live `60 s` notification claims, and the `2 minutes` (`120000 ms`, `ORACLE_WAKEUP_POST_SEND_RETENTION_MS`) post-send retention grace measured from `wakeupLastRequestedAt` have all cleared.
+- **Removal guard (`removeTerminalOracleJob`).** Both automatic pruning and `/oracle-clean` enforce the live-claim, live-worker, and `2 minutes` `wakeupLastRequestedAt` grace under the `job` lock, returning an ISO retry-after timestamp when blocked by that grace so follow-up turns never read deleted paths; for retention defaults and operator cleanup commands, see [Continue, cancel, and clean up](OPERATIONS.md#continue-cancel-and-clean-up).
 
 ## Design lineage
 
-Earlier iterations automated the user's running Chrome without target pinning. That approach was rejected because
-`agent-browser tab new <url>` and `agent-browser tab <index>` switch the active tab and invoke CDP `Page.bringToFront`,
-stealing window focus and interrupting typing.
+Earlier iterations automated the user's running Chrome without target pinning. That approach was rejected because `agent-browser tab new <url>` and `agent-browser tab <index>` switch the active tab and invoke CDP `Page.bringToFront`, stealing window focus and interrupting typing.
 
-Replacing unpinned real-Chrome automation removed fixed port `9222` attachment, `cdpVerified`/`cdpUrl` job fields, parked
-reusable tabs, selected-tab index tracking, temporary `chrome://downloads` tabs, `downloads-manager.items_` scraping, and
-`~/Downloads` file-copy recovery. Every current transport preserves the no-focus-steal and no-global-scrape invariants: the
-default transport runs an isolated browser per job cloned from the auth seed profile, while the opt-in relay and
-managed-browser transports pin every CDP command to a single job-owned tab and capture artifacts in-realm or through
-frame-scoped CDP download events.
+Replacing unpinned real-Chrome automation removed fixed port `9222` attachment, `cdpVerified`/`cdpUrl` job fields, parked reusable tabs, selected-tab index tracking, temporary `chrome://downloads` tabs, `downloads-manager.items_` scraping, and `~/Downloads` file-copy recovery.
+
+Every transport preserves the no-focus-steal and no-global-scrape invariants: the default transport runs an isolated browser per job cloned from the auth seed profile, while the opt-in relay and managed-browser transports pin every CDP command to a single job-owned tab and capture artifacts in-realm or through frame-scoped CDP download events.
+
+## Observations behind the rules
+
+Dated empirical observations from driver and provider runs that motivated the invariants in earlier sections:
+
+- **2026-11-09 — ChatGPT contenteditable batch insertion and normalized digest:** A loopback contenteditable tracer on macOS with driver 0.41.2 (2026-11-09) preserved embedded newlines, quotes, CJK, emoji and code fences; `fill` with an unknown ref exited 1. A batch with `--session`, `--cdp`, and `--pin-tab` navigated and filled only its newly pinned target while the other `about:blank` tab remained unchanged. Chrome rendered trailing spaces as non-breaking spaces, so the post-insertion proof compares NFC/whitespace-normalized length and SHA-256 in Node and the hydrated editor.
+- **2026-11-09 — Driver session sidecars after close:** The same tracer left only `.target` after close, both in `~/.agent-browser` and with an explicit socket directory.
+- **2026-11-09 — ChatGPT sidebar title after Send:** Snapshot and DOM signal filtering exclude sidebar subtrees because right after Send, ChatGPT titles the new chat in the sidebar with the prompt itself (observed 2026-11-09).

@@ -1,170 +1,115 @@
 # OMP Oracle security model
 
-For operators and reviewers evaluating what `omp-oracle` sends off the machine, how it handles
-provider credentials, and which local trust boundaries it enforces in Oh My Pi (OMP) and `pi`.
-For transport and configuration setup, see [Operations](OPERATIONS.md); for supported hosts,
-platforms, and limits, see [Compatibility](COMPATIBILITY.md) and [Architecture](ARCHITECTURE.md).
-To report a suspected vulnerability privately, follow the [security policy](../SECURITY.md).
+This page is for operators and security reviewers checking what OMP Oracle, published on npm as `omp-oracle`, sends off the machine, who can reach provider credentials, and where the trust boundaries sit in the coding-agent hosts Oh My Pi (OMP) and `pi`.
+
+Companion guides: [Set up a transport](OPERATIONS.md#set-up-a-transport) · [Config files](OPERATIONS.md#config-files) · [Compatibility](COMPATIBILITY.md) · [Architecture](ARCHITECTURE.md) · [Security policy](../SECURITY.md).
 
 ## What leaves the machine
 
-For each job, `oracle_submit` sends the prompt and one project archive to the selected provider
-(`chatgpt.com` or `grok.com`) through that provider's web app in the browser under your own
-account. `omp-oracle` adds no telemetry, analytics, or hosted control plane; the browser still
-makes the ordinary web requests required to load and run the provider's web app.
+Each job, meaning one submitted request, sends your prompt and one archive of selected project files to the provider (`chatgpt.com` for ChatGPT, `grok.com` for Grok), through the provider's web app in a local browser, under your own account.
 
-The archive is built locally from project-relative paths you or the agent pass to `oracle_submit`:
+When you run `/oracle` or `/oracle-followup`, the host agent chooses the `files` paths. The dispatch prompt tells it to archive the whole project for a broad request, and the target files plus nearby code for a narrow one. Name the paths in your request to control what is archived.
 
-- Default exclusions apply when expanding a whole-repo `.` or a directory input: VCS and tool
-  state anywhere in the tree (`.git`, `.hg`, `.svn`, `.pi`, `.oracle-context`, `.cursor`,
-  `.artifacts`, `.crabbox`), dependency, cache, and build directories (`node_modules`, `target`,
-  `.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `.terraform`, `.gradle`, `.yarn/cache`, and
-  siblings), and `secrets/` or `.secrets/`.
-- Files excluded by default during directory expansion: `.env` and `.env.*` (except `.env.dist`,
-  `.env.example`, `.env.sample`, `.env.template`), `.netrc`, `.npmrc`, `.pypirc`, `.coverage`,
-  `.DS_Store`, `Thumbs.db`, `.scratchpad.md`, SSH private key names (`id_dsa`, `id_ecdsa`,
-  `id_ed25519`, `id_rsa`), `.tfstate.*`, and key, bytecode, or database suffixes (`.db`, `.key`,
-  `.p12`, `.pfx`, `.pem`, `.pyc`, `.pyd`, `.pyo`, `.sqlite`, `.sqlite3`, `.tsbuildinfo`,
-  `.tfstate`).
-- Root-level generated output (`coverage`, `htmlcov`, `tmp`, `temp`, `.tmp`, `dist`, `build`,
-  `out`) is excluded by default when expanding `.`; when a whole-repo `.` archive still exceeds
-  the upload ceiling, the largest generated-output directories outside source roots (`src/`,
-  `source/`, `sources/`, `lib/`) are pruned automatically.
-- An input named explicitly is archived as named: an explicitly passed file is included even when
-  its name matches a default exclusion, and an explicitly passed directory that default exclusions
-  would skip (for example `.git`) is archived with its whole subtree. Review requests that need Git
-  history should pass a diff bundle file rather than naming `.git`.
-- Every archive input must resolve inside the project root without symlink escapes. Any path that
-  resolves outside the project is rejected before a job is created
-  (`archive_input_symlink_escape`). Symlinks inside the tree are archived as symlinks, never
-  followed.
-- Archives are capped at 250 MiB for ChatGPT (`.tar.zst`) and 200 MiB for Grok (`.tar.gz`).
-  Oversize archives are pruned or rejected locally; nothing is partially uploaded.
+OMP Oracle adds no telemetry, analytics, or hosted control plane; the browser makes the ordinary web requests required to load and run the provider's web app. Archives have a per-provider upload ceiling: `250 MiB` as `.tar.zst` for ChatGPT, and `200 MiB` as `.tar.gz` for Grok. Oversize selections are pruned locally (for whole-repo `.` inputs) or rejected locally with `archive_too_large` before a job is created; nothing is partially uploaded.
 
-Default exclusions are a floor, not a guarantee. Review
-[`extensions/oracle/lib/archive.ts`](../extensions/oracle/lib/archive.ts) and
-[`prompts/oracle.md`](../prompts/oracle.md) before running on private or regulated code, and pass
-narrower paths when the whole repository should not leave the machine.
+Prompts travel to `agent-browser`, the local browser-automation CLI, on standard input rather than command-line arguments: ChatGPT uses JSON `batch` input and Grok uses `eval --stdin` (with `AGENT_BROWSER_NO_WEBMCP=1` and `AGENT_BROWSER_NO_VERSION_CHECK=1`; see [Driver execution and prompt insertion](ARCHITECTURE.md#driver-execution-and-prompt-insertion)). Keeping prompts off process arguments avoids per-argument OS limits and hides prompt text from local process listings.
 
-Prompts are carried to the driver on stdin, never as command-line arguments: ChatGPT uses JSON `batch` input and
-Grok uses `eval --stdin`. This avoids per-argument OS limits and prompt disclosure through process listings.
-ChatGPT verifies the editor's normalized length and SHA-256 before send; a mismatch sends nothing.
+On ChatGPT, the detached job worker compares the normalized character length and SHA-256 of the composer editor against the prompt before clicking send and aborts on a mismatch; Grok fills via `eval --stdin` without a post-fill SHA-256 check.
+
+### Default exclusions
+
+When `oracle_submit` expands a whole-repo `.` selection or a directory input, it leaves out default exclusions (paths skipped automatically by directory or file name):
+
+- Directories excluded anywhere in the tree: `.git`, `.hg`, `.svn`, `.pi`, `.oracle-context`, `.cursor`, `.artifacts`, `.crabbox`, `node_modules`, `target`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.nox`, `.hypothesis`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.parcel-cache`, `.cache`, `.gradle`, `.terraform`, `DerivedData`, `.build`, `.pnpm-store`, `.serverless`, `.aws-sam`, `secrets`, `.secrets`, and `.yarn/cache`.
+- Directories excluded at the project root: `coverage`, `htmlcov`, `tmp`, `temp`, `.tmp`, `dist`, `build`, and `out`.
+- Files excluded during directory expansion: `.coverage`, `.DS_Store`, `.env`, `.netrc`, `.npmrc`, `.pypirc`, `.scratchpad.md`, `Thumbs.db`, `id_dsa`, `id_ecdsa`, `id_ed25519`, and `id_rsa`; any file starting `.env.` except `.env.dist`, `.env.example`, `.env.sample`, and `.env.template`; any file ending `.db`, `.key`, `.p12`, `.pfx`, `.pyc`, `.pyd`, `.pyo`, `.pem`, `.sqlite`, `.sqlite3`, `.tsbuildinfo`, or `.tfstate`; and any file whose name contains `.tfstate.`.
+
+When a whole-repo `.` archive exceeds the upload ceiling after default exclusions, Oracle prunes the largest directories named `build`, `dist`, `out`, `coverage`, `htmlcov`, `tmp`, `temp`, or `.tmp` that are not under `src`, `source`, `sources`, or `lib`. Any other oversize selection fails without automatic pruning.
+
+### What the defaults do not cover
+
+Default exclusions match directory and file names during directory expansion; they do not inspect file contents or block explicitly named paths:
+
+- An explicitly named input is archived as named: passing a file explicitly includes it even when its name matches a default exclusion, and passing an excluded directory explicitly (such as `.git`) archives its entire subtree. Pass a diff bundle file rather than `.git` when a request needs Git history.
+- `.omp` is not in the default exclusion list: a whole-repo `.` archive excludes `.pi` and includes `.omp`. Oh My Pi users should pass narrower directory or file paths when `.omp` must stay local.
+- Archive inputs resolve against the project root, not the working directory. Walking up from the working directory, Oracle takes the nearest directory that holds the host's config directory (`.omp` on Oh My Pi, `.pi` on `pi`) or an `AGENTS.md` file, and stops at the Git root; with no such marker it takes the Git root. Running from a subdirectory can therefore archive sibling paths inside that root.
+- Outside a Git repository the walk continues to the filesystem root. With no marker on the way, the project root is the working directory. Otherwise it is the nearest marked parent, and that can be your home directory, because the host keeps its own `.omp` or `.pi` directory there. A whole-repo `.` archive then takes in your home directory, minus the default exclusions, and is uploaded when it fits under the ceiling. Run `/oracle` inside a Git repository, or name the paths.
+- Before a job is created, `oracle_submit` rejects non-existent inputs with `archive_input_missing`, paths lexically outside the project root with `archive_input_outside_project`, and explicit inputs whose `realpath` escapes the project root with `archive_input_symlink_escape`. Symlinks encountered inside an expanded directory are packed as symlink entries without following or re-checking their targets.
+- Default exclusions do not catch every secret: credentials stored under custom file names or inline in source code are included unless you pass narrower `files` paths that omit them. Review [`extensions/oracle/lib/archive.ts`](../extensions/oracle/lib/archive.ts) and [`prompts/oracle.md`](../prompts/oracle.md) before running on private or regulated code.
 
 ## Provider credentials
 
+Each sign-in transport (how a job reaches a signed-in provider session) enforces its own credential and browser-isolation boundary.
+
 ### Isolated seed profile (default)
 
-- `/oracle-auth` reads provider cookies from the local browser cookie store in read-only mode. It
-  never launches or mutates your real browser profile; on macOS the Chromium `Cookies` database
-  and its `Cookies-wal` / `Cookies-shm` sidecars are snapshotted into a private temp directory
-  before reading.
-- Imported cookies are written to an isolated seed profile at `browser.authSeedProfileDir` (or
-  `<authSeedProfileDir>-grok` for Grok), which must be an absolute path outside known real browser
-  user-data trees. Staged profiles swap in atomically, keep the previous seed for rollback, and
-  record a `.oracle-seed-generation` marker verified before any job is admitted.
-- Each job clones the seed into a private runtime profile under `browser.runtimeProfilesDir` and
-  deletes the clone in `finally`. Runtime and conversation leases prevent two jobs from sharing a
-  runtime profile or a provider thread.
-- Safe-storage password overrides (every `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` variable, such as
-  `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` or `SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD`) are
-  scrubbed from the environment before browser, helper, or archive subprocesses start.
-- Seed and runtime profiles hold live provider sessions. Treat `browser.authSeedProfileDir` and
-  `browser.runtimeProfilesDir` as credential stores: keep them on an encrypted disk and do not
-  copy them between machines.
+The isolated seed profile copies only allowlisted provider cookies into a separate browser directory and runs each job in a disposable clone:
+
+- `/oracle-auth`, the sign-in command, snapshots the local Chromium `Cookies` database and its `Cookies-wal` and `Cookies-shm` sidecars into a `0700` temporary directory under the system temporary root, opens SQLite read-only, and deletes that snapshot immediately afterward. It never launches or mutates your real browser profile.
+- Cookie decryption reads the browser's Safe Storage secret from the OS keyring (see [Cookie sources in Operations](OPERATIONS.md#cookie-sources)): macOS Keychain via `security find-generic-password` when `auth.chromiumKeychain` is set or via the `@steipete/sweet-cookie` cookie reader, `secret-tool` or `kwallet-query` and `dbus-send` or a one-run `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` override on Linux, and `@steipete/sweet-cookie`'s Chrome backend on Windows.
+- `/oracle-auth` allowlists cookies before seeding: only recognized session, account, and Cloudflare challenge cookies on `chatgpt.com`, `chat.openai.com`, `openai.com`, `auth.openai.com`, `sentinel.openai.com`, `atlas.openai.com`, `ws.chatgpt.com`, and `browser.chatUrl` (restricted to `https://chatgpt.com` or `https://chat.openai.com`), or `grok.com`, `x.ai`, and `x.com` for Grok, are imported; foreign-domain, non-auth, analytics, and login-CSRF cookies are dropped.
+- Imported cookies are written to the auth seed profile, the isolated browser profile `/oracle-auth` fills, at `browser.authSeedProfileDir` (or `<authSeedProfileDir>-grok` for Grok). That path must be absolute and outside real browser user-data directories and cookie sources, with its parent directory created at mode `0700` and a `0600` `.oracle-seed-generation` marker verified before any job starts.
+- Each job copies the seed into a per-job runtime profile under `browser.runtimeProfilesDir`, whose parent directory uses mode `0700` while profile contents follow Chrome and process umask, and removes that copy during teardown once Chrome closes; runtime and conversation leases prevent sharing a runtime profile or provider thread (see [Isolated seed profile in Architecture](ARCHITECTURE.md#isolated-seed-profile)).
+- Per-job Chrome starts with `--remote-debugging-port=0` (bound to loopback by Chrome default) and `--remote-allow-origins=*`, and `browser.args` cannot override `--user-data-dir`, `--remote-debugging-port`, `--remote-debugging-pipe`, `--remote-debugging-address`, or `--remote-allow-origins`. Any local process or local web page that discovers the ephemeral loopback DevTools port while a job runs can connect to that runtime profile without an `Origin` check.
+- Every `SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD` variable (such as `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` or `SWEET_COOKIE_CHROMIUM_SAFE_STORAGE_PASSWORD`) is scrubbed from subprocess environments before browser, helper, or archive processes start.
+- Seed and runtime profiles hold live provider sessions. Keep `browser.authSeedProfileDir` and `browser.runtimeProfilesDir` on an encrypted disk and do not copy them between machines.
 
 ### Existing-Chrome relay (opt-in, ChatGPT only)
 
-- No cookies are copied. Each job drives one tab in your signed-in Chrome through the configured
-  CDP relay endpoint, and `/oracle-auth` refuses cookie import in relay mode.
-- `browser.chatGptRelayEndpoint` can be set only in agent-level config and must be a loopback
-  `http://` origin (`127.0.0.1`, `localhost`, or `[::1]`) without credentials.
-- Each job owns one tab, pins every browser command to its target id, and fails closed on a
-  missing or mismatched target instead of touching another tab. Cleanup verifies ownership and
-  closes only the job's tab (or releases the window's last tab to `about:blank`).
-- The relay controls your live browser session: the provider attributes every action to your
-  account, and any local process that can reach the relay endpoint can drive that Chrome. The
-  extension adds no authentication to the endpoint; keep it on loopback.
+The existing-Chrome relay drives one tab inside a signed-in Chrome you already run without copying cookies:
+
+- No cookies are copied, and `/oracle-auth` refuses cookie import when `browser.chatGptRelayEndpoint` is configured.
+- `browser.chatGptRelayEndpoint` is accepted only in the user-wide agent-level `oracle.json` and must be a loopback `http://` origin (`127.0.0.1`, `localhost`, or `[::1]`) without credentials, path, query, or fragment.
+- Each job creates one job-owned pinned tab, pins every command to that tab's target id, fails closed on a missing or mismatched target instead of touching another tab, and closes only its own tab or releases the window's last tab to `about:blank` (see [Existing-Chrome relay transport in Architecture](ARCHITECTURE.md#existing-chrome-relay-transport)).
+- The relay drives your live browser session: ChatGPT attributes every action to your signed-in account, and any local process that reaches `browser.chatGptRelayEndpoint` can control that Chrome. The extension adds no endpoint authentication; keep the relay bound to loopback.
 
 ### Managed browser (opt-in, ChatGPT only)
 
-- No cookies are copied. Jobs drive one owned tab each in a Chrome running on the dedicated
-  profile at `browser.chatGptManagedProfileDir`, and `/oracle-auth` opens ChatGPT sign-in there.
-  The directory is agent-level only, must not be a real browser profile root, and must stay
-  separate from the ChatGPT and Grok seed profiles and `browser.runtimeProfilesDir`.
-- Oracle attaches to a running Chrome only when the endpoint's live `/json/version` browser id
-  matches the `DevToolsActivePort` record Chrome wrote inside that profile, so a stale file never
-  binds the profile or its account to another browser on a reused port.
-- DevTools listens on loopback only, on an ephemeral port (`--remote-debugging-port=0`), without
-  wildcard `--remote-allow-origins`; any local process that reaches that port while Chrome runs
-  can drive that browser.
-- Oracle quits only a Chrome process its keeper spawned, never one it found running. Signalling
-  the keeper quits its Chrome cleanly; a keeper that crashes or is killed outright leaves Chrome
-  running rather than guessing at a PID.
-- Before every browser command on a managed job's tab, the worker checks that the same browser id
-  still answers at the endpoint, stopping with `managed_browser_changed` if another browser took
-  the port instead of sending the prompt or archive there. A command already past that check when
-  the browser changes can still reach `agent-browser`, whose reconnect can open a blank tab in the
-  other browser before the next check halts the job.
+The managed browser runs ChatGPT in a dedicated Chrome profile without copying cookies from your personal browser:
+
+- No cookies are copied; jobs drive one job-owned pinned tab each in a Chrome serving `browser.chatGptManagedProfileDir`, and `/oracle-auth` opens ChatGPT sign-in in that profile.
+- `browser.chatGptManagedProfileDir` is agent-level only, must lie outside real browser user-data roots and cookie sources, and must stay separate from the ChatGPT and Grok auth seed profiles and `browser.runtimeProfilesDir`.
+- Managed Chrome binds DevTools to loopback on an ephemeral port (`--remote-debugging-address=127.0.0.1` and `--remote-debugging-port=0`) without `--remote-allow-origins=*`, and blocks the same `browser.args` profile and DevTools overrides as isolated mode; any local process that reaches that port while Chrome runs can drive that browser.
+- Oracle attaches to a running Chrome only when its live `/json/version` `webSocketDebuggerUrl`, saved as the browser identity `browserUrl`, matches the `DevToolsActivePort` record inside `browser.chatGptManagedProfileDir`, so a stale port file never binds the profile to another browser on a reused port.
+- Before every browser command on a managed tab, the worker checks that the same browser identity (`browserUrl`) answers at the endpoint and stops with `managed_browser_changed` if another browser took the port. A command already past that check when the browser changes can reach `agent-browser`, whose reconnect can open a blank tab in the replacement browser before the next check halts the job.
+- Oracle quits only a Chrome process spawned by its detached keeper process `managed-browser.mjs` and never quits a Chrome it found running (see [Managed browser transport in Architecture](ARCHITECTURE.md#managed-browser-transport)).
 
 ## Host trust boundary
 
-- Project-level `oracle.json` may override only `defaults`, `worker`, `poller`, `artifacts`, and
-  `cleanup`; any other key is rejected. Browser paths, cookie sources, keychain items, the relay
-  endpoint, and the managed browser profile are agent-level only, so a repository cannot point the
-  extension at a different browser or credential source.
-- Project config is ignored when the host reports the project untrusted (`--no-approve` or a
-  saved do-not-trust decision). On OMP hosts without Pi's trust exports, project overrides require
-  an explicit host trust decision or approval flag.
-- Oracle refuses to run without a persisted host session (`--no-session`), so completion wake-ups
-  cannot be routed to a different session than the one that submitted the job.
+Repository files cannot redirect browser paths or credentials, and untrusted repositories cannot load project overrides:
+
+- Project config (the repository-scoped `oracle.json`) may set only `defaults`, `worker`, `poller`, `artifacts`, and `cleanup`. Any other top-level key fails config loading with `Invalid oracle project config: <key> cannot be overridden at the project level`, keeping `browser` and `auth` settings agent-level only.
+- Every command and tool asks the host whether the project is trusted (`ctx.isProjectTrusted?.() ?? true`): a host omitting `isProjectTrusted` counts as trusted, and an untrusted project set via `--no-approve` or a saved untrusted decision has its project config skipped whole. Standalone loads without a session context honor `--approve` or `-a` and `--no-approve` or `-na`, then `pi`'s trust store, and skip the project file when no trust store exists.
+- All projects for an OS user share `PI_ORACLE_JOBS_DIR`, while `oracle_read`, `/oracle-read`, and `/oracle-status` refuse to return another project's job unless its owning `projectId` is passed explicitly.
+- Oracle refuses to submit or poll without a persisted host session (`--no-session`). A completion wake-up, the best-effort message sent when a job finishes, goes to the session that submitted the job while that session is live. Once that session has no live poller, another saved session in the same project can deliver it; a session in another project never does.
 
 ## Local data
 
-- Job state lives under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` with `0700` directories
-  and `0600` files, written atomically: `job.json`, `prompt.md`, the archive (deleted once the
-  upload succeeds), `response.md`, `response.capture.json`, `artifacts.json` and `artifacts/`
-  with size and SHA-256 records, and `logs/worker.log`.
-- Tool results returned to the agent carry redacted job details rather than raw job state.
-- Auth diagnostics (`oracle-auth.log`, URL, snapshot, body, and screenshot) are written to a
-  `0700` per-run directory under `/tmp/pi-oracle-auth-*/`; lock and lease state lives under
-  `${PI_ORACLE_STATE_DIR:-/tmp/pi-oracle-state}`. Treat job directories and auth diagnostics as
-  sensitive local files; `/oracle-clean <job-id|all>` and age-based retention remove terminal job
-  directories.
-- Reads, listings, and queue promotion accept only valid job ids and non-symlink job directories
-  and `job.json` files. On POSIX both must belong to the current uid and have no group/world
-  write bits; the saved `job.json` id must match the requested id. Absolute job paths must be
-  direct children of the configured jobs root; cwd-relative directories are never used.
-  Windows skips uid/mode checks, but keeps the id and symlink checks.
-- A symlinked or foreign-owned state root is refused with
-  `Oracle state directory <dir> is <a symlink | owned by uid N>; refusing to use it. Point PI_ORACLE_STATE_DIR at a private directory you own.`
-  The default jobs root remains `/tmp` (intentionally shared); on multi-user hosts configure a
-  private, per-user `PI_ORACLE_STATE_DIR` rather than sharing `/tmp/pi-oracle-state`. Do not
-  repair or delete another user's directory; see the [refusal remedy](OPERATIONS.md#oracle-refuses-the-state-directory).
+Job files, auth diagnostics, and coordination locks are stored on local disk under owner-only directory modes and ownership checks:
 
-Driver `.target` sidecars contain conversation URLs. Teardown deletes that session's `.target` and `.config` only
-after a successful inventory proves the driver no longer lists it; failed close or inventory leaves evidence intact.
-The resolved driver socket directory and namespace are honored. Old leftovers are not swept automatically; see
-[Operations](OPERATIONS.md#old-agent-browser-session-sidecars).
+- Each job directory under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` and its `artifacts/` and `logs/` subdirectories use mode `0700` (see [the job directory layout](ARCHITECTURE.md#job-layout-under-the-configured-jobs-dir)). Sensitive files include `job.json`, `prompt.md`, the archive, `response.md`, `response.capture.json`, `response.raw.txt`, `response.raw.html`, `response.block-<n>.txt`, `.previous` backups, `artifacts.json`, `artifacts/`, and `logs/`.
+- `job.json`, response captures, `artifacts.json`, downloaded artifacts, `.previous` recollection backups, and text failure dumps (`<reason>.url.txt`, `<reason>.snapshot.txt`, `<reason>.body.txt`, `<reason>.signals.txt`) are written to `0600` temporary files and renamed atomically into place.
+- `prompt.md` is written directly with mode `0600`, `logs/worker.log` is appended with mode `0600`, `<reason>.png` failure screenshots are written by `agent-browser screenshot` inside `0700` `logs/`, and context archives are built first directly in the system temporary directory (`0600` for `.tar.gz`; process umask via `zstd -o` for `.tar.zst`) before rename into the `0700` job directory.
+- Before saving `response.md`, `response.raw.txt`, `response.raw.html`, `response.block-<n>.txt`, `response.capture.json`, and `artifacts.json`, response capture strips active DOM elements (`script`, `style`, `form`, `input`, `textarea`) and transient HTML attributes, and replaces HTTP or HTTPS URLs carrying signed query parameters such as `sig`, `signature`, `token`, `access_token`, `auth`, `policy`, `expires`, `x-amz-*`, `x-goog-*`, `se`, `sp`, or `sv` with `[transport-url-redacted]`.
+- Tool results returned to the host agent include status, `projectId`, `sessionId` (which is the session file path), `chatUrl`, `response.md` previews and paths, and error messages. They omit the saved `config` snapshot and the browser runtime paths from `job.json`.
+- Each `/oracle-auth` run creates a `0700` `pi-oracle-auth-*` directory under the system temporary directory (`$TMPDIR` on macOS, usually `/tmp` on Linux) and prints its path; it holds `0600` `oracle-auth.log`, `oracle-auth.url.txt`, `oracle-auth.snapshot.txt`, and `oracle-auth.body.txt`, plus `oracle-auth.png` when captured. `/oracle-clean <job-id|all>` and retention remove terminal job directories only; delete `pi-oracle-auth-*` bundles manually when finished.
+- Job reads, listings, and queued-job starts accept only alphanumeric, hyphen, and underscore job ids, paths directly under the configured jobs root, non-symlink job directories and `job.json` files, and a saved `job.json` `id` matching the directory id. On POSIX, both the directory and `job.json` must belong to the current `uid` and have no group or world write bits; Windows skips `uid` and mode checks while keeping the id, parent-directory, and symlink checks.
+- Lock and lease state is stored under `${PI_ORACLE_STATE_DIR:-/tmp/pi-oracle-state}` (`0700` directories, `0600` metadata and `managed-browser.log`). A symlinked state root (or, on POSIX, one owned by another `uid`) is refused with `Oracle state directory <dir> is <a symlink | owned by uid N>; refusing to use it. Point PI_ORACLE_STATE_DIR at a private directory you own.`
+- The default jobs root `/tmp` is shared across local accounts. On multi-user hosts, set private per-user directories for both `PI_ORACLE_JOBS_DIR` and `PI_ORACLE_STATE_DIR` instead of sharing `/tmp` and `/tmp/pi-oracle-state`, and do not repair or delete another user's directory (see [Oracle refuses the state directory](OPERATIONS.md#oracle-refuses-the-state-directory)).
+- `agent-browser` session `.target` and `.config` sidecar files hold conversation URLs and session settings. Teardown deletes a session's sidecars in the resolved driver socket directory, honoring `AGENT_BROWSER_NAMESPACE`, only after `agent-browser session list` confirms the session is absent; a failed close or session listing leaves sidecars on disk for manual cleanup (see [Old agent-browser session sidecars](OPERATIONS.md#old-agent-browser-session-sidecars)).
 
 ## Release integrity
 
-- npm releases are published by [`.github/workflows/release.yml`](../.github/workflows/release.yml)
-  through npm trusted publishing: no long-lived npm token exists, and the job that can publish runs
-  no repository or dependency code. Versions published this way carry an npm provenance
-  attestation naming the commit and workflow run, shown on the package page and checked by
-  `npm audit signatures`. `0.4.6` and earlier were published from the maintainer's workstation and
-  carry none.
+Published npm packages are built and attested from tagged commits on `main` without long-lived registry tokens:
+
+- npm releases are published by [`.github/workflows/release.yml`](../.github/workflows/release.yml) through npm trusted publishing: no long-lived npm token exists, and the job that can publish runs no repository or dependency code. Versions published this way carry an npm provenance attestation naming the commit and workflow run, shown on the package page and checked by `npm audit signatures`. `0.4.6` and earlier were published from the maintainer's workstation and carry none.
 
 ## Out of scope
 
-- Hostile processes running as your own user, and unauthorized access to loopback DevTools or
-  relay ports. Ownership checks stop another uid's planted jobs from being promoted, but are not
-  a sandbox or port authentication. On multi-user hosts keep state and profiles private and
-  ensure other accounts cannot reach browser-control ports; do not use a shared shell host
-  without that isolation.
-- Provider-side handling of uploaded archives and prompts is governed by your ChatGPT or Grok
-  account and its data settings, not by this extension.
-- Provider UI drift can fail a job; it cannot cause `oracle_submit` to upload paths outside the
-  selected archive inputs.
+The following threats sit outside OMP Oracle's local boundary:
+
+- Hostile processes running under your own OS user, and unauthorized local access to loopback DevTools or relay ports. File ownership checks stop another `uid`'s planted jobs from being read or promoted, and are not a process sandbox or port authenticator. On multi-user machines, keep profiles and state private and restrict access to loopback browser-control ports; do not run on a shared shell host without that isolation.
+- Provider-side retention and training handling of uploaded archives and prompts, which are governed by your ChatGPT or Grok account and its data settings rather than this extension.
+- Provider web-UI drift: layout changes can fail a job, and cannot cause `oracle_submit` to upload paths outside the selected archive inputs.
 
 To report a suspected vulnerability privately, see the [security policy](../SECURITY.md).
