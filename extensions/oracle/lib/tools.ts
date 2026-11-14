@@ -428,6 +428,7 @@ function redactJobDetails(
     collectionOptionalMissing: job.collectionOptionalMissing,
     recollectionError: job.recollectionError,
     recollectionNeeded: job.recollectionNeeded,
+    recollectionCompletionVerifiedAt: job.recollectionCompletionVerifiedAt,
     promptSendState: job.promptSendState,
     observedSelection: job.observedSelection,
     observedTurn: job.observedTurn,
@@ -1273,7 +1274,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
-        const job = readJobForProject(params.jobId, params.projectId ?? getProjectId(ctx.cwd));
+        let job = readJobForProject(params.jobId, params.projectId ?? getProjectId(ctx.cwd));
         if (params.action === "recollect") {
           // A job that timed out waiting for its reply after the prompt was accepted is recollected
           // through the user turn that carries its archive; the worker applies the same binding.
@@ -1284,8 +1285,11 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           if (!timedOut && (params.responseIndex === undefined) !== (params.messageId === undefined)) throw new Error("Legacy turn binding requires responseIndex and messageId together.");
           const explicit = params.responseIndex !== undefined || params.messageId !== undefined
             ? JSON.stringify({ responseIndex: params.responseIndex, messageId: params.messageId }) : undefined;
-          // Collection-only worker run, awaited in-turn; its own deadlines end it in minutes, this backstop ends a wedged transport.
-          await execFileAsync(resolveNodeExecutable(), [workerPath, job.id, "--recollect", ...(explicit ? [explicit] : [])], { maxBuffer: 1024 * 1024, timeout: 10 * 60 * 1000 });
+          // The saved completion timeout (90 minutes by default) plus the existing ten-minute
+          // launch/collection/cleanup allowance. Never kill a healthy wait at the old backstop.
+          const timeout = (timedOut && job.selection.tool !== "deep_research" ? job.config.worker.completionTimeoutMs : 0) + 10 * 60 * 1000;
+          await execFileAsync(resolveNodeExecutable(), [workerPath, job.id, "--recollect", ...(explicit ? [explicit] : [])], { maxBuffer: 1024 * 1024, timeout });
+          job = readJobForProject(params.jobId, params.projectId ?? getProjectId(ctx.cwd));
         } else if (params.responseIndex !== undefined || params.messageId !== undefined) throw new Error("Turn binding parameters require action=recollect.");
         const readerSessionFile = getSessionFile(ctx);
         const latest = isTerminalOracleJob(job)

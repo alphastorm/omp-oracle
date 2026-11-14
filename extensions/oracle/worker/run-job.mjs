@@ -2061,7 +2061,7 @@ const STALE_STOP_CONTROL_MS = 120_000;
 const MISSING_TURN_RELOAD_MS = 300_000;
 const MISSING_TURN_RELOAD_MAX = 1;
 
-async function reconcileStreamedTurn(job, responseIndex, streamedText) {
+async function reconcileStreamedTurn(job, responseIndex, streamedText, binding = undefined) {
   const conversationUrl = job.chatUrl;
   if (!conversationUrl || !isConversationPathUrl(conversationUrl)) return streamedText;
   const conversationId = isGrokJob(job) ? undefined : job.conversationId;
@@ -2075,7 +2075,9 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText) {
       await heartbeat();
       await sleep(RELOAD_RECONCILE_POLL_MS);
       let reloaded = "";
-      if (conversationId) {
+      if (binding) {
+        reloaded = (await captureBoundTurn(job, binding)).captured.rawText;
+      } else if (conversationId) {
         const observation = await observeTurns(job, { conversationId }).catch(() => undefined);
         if (observation && !observation.onConversation) {
           await returnToOwnConversation(job, observedPagePath(observation.href));
@@ -2108,7 +2110,7 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText) {
 // button labeled Stop in the current one) is the authoritative generation signal; observeTurns reads
 // rendered controls (not retained hidden workspaces) in the same evaluation as the turns, and the
 // accessibility labels remain a fallback.
-async function waitForChatCompletion(job, baselineAssistantCount) {
+async function waitForChatCompletion(job, baselineAssistantCount, recollectionBinding = undefined) {
   const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
   const conversationId = isGrokJob(job) ? undefined : job.conversationId;
   let lastCompletionSignature = "";
@@ -2123,6 +2125,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let missingTurnReload;
 
   while (Date.now() < timeoutAt) {
+    if (recollectionBinding && shuttingDown) throw new Error("Recollection interrupted; nothing was resent.");
     await heartbeat();
     // A page showing another conversation never contributes text, generation state, or Retry: the
     // job reopens its own conversation and starts the stability count over, within its deadline.
@@ -2158,7 +2161,15 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const hasRetryButton = snapshot.includes('button "Retry"');
     throwIfProviderTransientError(job, snapshot, "waiting for response completion");
     const messages = observation ? observation.messages : await assistantMessages(job);
-    const targetMessage = messages[baselineAssistantCount];
+    let targetMessage = messages[baselineAssistantCount];
+    if (recollectionBinding) {
+      // Never verify the last reply or a stale positional neighbour. The archive anchor proves
+      // the exchange first; once learned, message identity survives later turns and index drift.
+      // Do not freeze a streaming turn's content hash when the UI has no message identity.
+      const turn = await captureBoundTurn(job, recollectionBinding).catch(() => undefined);
+      targetMessage = turn ? { text: turn.captured.rawText } : undefined;
+      if (turn?.binding.messageId) recollectionBinding = { ...recollectionBinding, messageId: turn.binding.messageId };
+    }
     const targetText = targetMessage?.text || "";
     const responseFailureText = await detectCompletionFailure({ hasStopStreaming, hasRetryButton, turnText: targetText, readSignals: () => readPageSignals(job) });
     // The bound turn must exist before it can be finished. Generation state is the authority for
@@ -2169,7 +2180,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       // The snapshot is a separate read: act on a failure only while the page still shows this
       // job's conversation, and never click Retry on another conversation's turn.
       if (conversationId && (await observeTurns(job, { conversationId }).catch(() => undefined))?.onConversation !== true) continue;
-      if (!retriedAfterFailure) {
+      if (!recollectionBinding && !retriedAfterFailure) {
         const retryEntry = findEntry(
           snapshot,
           (candidate) => candidate.kind === "button" && candidate.label === "Retry" && !candidate.disabled,
@@ -2211,7 +2222,9 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
         responseText: targetText,
       });
     } else if (!hasStopStreaming && hasTargetCopyResponse && !targetText) {
-      const artifactCandidates = await collectArtifactCandidates(job, baselineAssistantCount).catch(() => []);
+      const artifactCandidates = recollectionBinding
+        ? (await captureBoundTurn(job, recollectionBinding).catch(() => undefined))?.captured.candidates || []
+        : await collectArtifactCandidates(job, baselineAssistantCount).catch(() => []);
       completionSignature = deriveAssistantCompletionSignature({
         hasStopStreaming,
         hasTargetCopyResponse,
@@ -2259,7 +2272,8 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
           const report = await waitForDeepResearchReport(job, timeoutAt, { responseIndex: baselineAssistantCount });
           return { responseIndex: baselineAssistantCount, responseText: report };
         }
-        return { responseIndex: baselineAssistantCount, responseText: await reconcileStreamedTurn(job, baselineAssistantCount, targetText) };
+        return { responseIndex: baselineAssistantCount, responseText: await reconcileStreamedTurn(job, baselineAssistantCount, targetText, recollectionBinding),
+          ...(recollectionBinding ? { binding: recollectionBinding } : {}) };
       }
     } else {
       lastCompletionSignature = "";
@@ -2271,6 +2285,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
 
   // The reply may still finish in the conversation: keep its position so recollection can
   // bind it through the user turn that carries this job's archive, never by resubmitting.
+  if (recollectionBinding) throw new Error("Recollection deadline reached: the reply was still being generated or its bound completion could not be verified; nothing was resent.");
   if (!isGrokJob(job) && job.conversationId) {
     await mutateJob((latest) => ({ ...latest, collectionBinding: latest.collectionBinding ?? { conversationId: job.conversationId, responseIndex: baselineAssistantCount }, recollectionNeeded: true })).catch(() => undefined);
   }
@@ -2894,7 +2909,8 @@ async function runRecollection() {
       // this live worker as a stale terminal-cleanup worker mid-collection (observed live).
       // The predecessor's provenance is persisted, not held in memory, so a killed worker loses nothing.
       await mutateJob((job) => ({ ...job, runtimeSessionName: `oracle-${randomUUID()}`, recollectionPriorWorker: priorWorker,
-        workerPid: process.pid, workerStartedAt: readProcessStartedAt(process.pid), cleanupPending: true, heartbeatAt: at, lastCleanupAt: undefined }));
+        workerPid: process.pid, workerStartedAt: readProcessStartedAt(process.pid), cleanupPending: true, heartbeatAt: at, lastCleanupAt: undefined,
+        ...(timedOut ? { recollectionError: "Recollection is verifying completion; if its worker stops before this message is replaced, the attempt was interrupted. Nothing was resent." } : {}) }));
       acquired = true;
     });
     // After a clean teardown the predecessor's identity returns; after a warning the fresh
@@ -2921,6 +2937,7 @@ async function runRecollection() {
       shuttingDown = true;
       void (async () => {
         await log(`Received ${signal} during recollection, cleaning up oracle runtime`).catch(() => undefined);
+        if (timedOut) await mutateJob((job) => job.status === "complete" ? job : { ...job, recollectionError: `Recollection interrupted by ${signal}; nothing was resent.` }).catch(() => undefined);
         const warnings = await cleanupRuntime(currentJob).catch((error) => [`Runtime cleanup failed on ${signal}: ${error instanceof Error ? error.message : String(error)}`]);
         await finalizeRecollection(warnings).catch(() => undefined);
         process.exit(0);
@@ -2935,19 +2952,29 @@ async function runRecollection() {
       await launchBrowser(currentJob, "about:blank");
       if (currentJob.selection.tool === "deep_research") await armDeepResearchFrameCapture(currentJob);
       await agentBrowser(currentJob, "open", currentJob.chatUrl);
+      if (timedOut && currentJob.selection.tool !== "deep_research") {
+        const completion = await waitForChatCompletion(currentJob, binding.responseIndex, binding);
+        binding = completion.binding;
+      }
+      if (shuttingDown) return;
       // Reacquire before collecting: an anchored binding becomes an exact one (message ID and turn
       // hash) here, and a page that shows another conversation is reopened on the job's own.
       binding = (await acquireBoundTurn(currentJob, binding)).binding;
       if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
+      if (shuttingDown) return;
       await collectBoundResult(currentJob, binding);
-      await mutateJob((job) => ({ ...job, recollectionError: undefined }));
+      if (shuttingDown) return;
+      if (timedOut && currentJob.collectionRequiredMissing?.includes("bound_response_capture")) throw new Error("The verified turn could not be collected; recollect again, nothing was resent.");
+      if (!timedOut) await mutateJob((job) => ({ ...job, recollectionError: undefined }));
       if (timedOut) {
         const artifactFailureCount = currentJob.artifactFailureCount || 0;
-        currentJob = await mutateJob((job) => transitionOracleJobPhase(job, artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete", {
-          at: new Date().toISOString(),
+        const at = new Date().toISOString();
+        currentJob = await mutateJob((job) => shuttingDown ? job : transitionOracleJobPhase(job, artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete", {
+          at,
           source: "oracle:recollect",
           message: "The reply had finished in the conversation; recollected after the completion timeout, nothing was resent.",
-          patch: { error: undefined, generationStatus: "completed", recollectionNeeded: undefined, responsePath: currentJob.responsePath, responseFormat: "text/plain", artifactFailureCount, completedAt: new Date().toISOString() },
+          patch: { error: undefined, generationStatus: "completed", recollectionNeeded: undefined, recollectionError: undefined, responsePath: currentJob.responsePath, responseFormat: "text/plain", artifactFailureCount, completedAt: at,
+            recollectionCompletionVerifiedAt: job.recollectionCompletionVerifiedAt ?? at },
         }));
         await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
       }

@@ -4,6 +4,12 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+
+- recollecting a job that timed out waiting for its reply now verifies completion of the bound turn before saving it or marking the job complete; a still-streaming reply could previously be saved partial and reported complete. Successful timeout recovery records `recollectionCompletionVerifiedAt`; a wait that expires or is interrupted keeps the original failure and can be recollected again without resending. If you recollected a reply after a timeout with 0.4.15, check that the saved reply is complete
+
 ## 0.4.15 - 2026-11-13
 
 ### Changed

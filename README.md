@@ -195,6 +195,10 @@ flowchart LR
 
 The components, the job lifecycle, and the state on disk are in [Architecture](docs/ARCHITECTURE.md).
 
+### Recollect after a timeout
+
+Ask the agent to run `oracle_read({ jobId, action: "recollect" })` to recover a reply without sending anything again. It waits for the bound reply to finish before collecting it and records `recollectionCompletionVerifiedAt` on success. The read is synchronous and can take the configured completion wait (90 minutes by default), plus collection and cleanup. Until it succeeds, the job keeps its original failed status and timeout text; an interrupted or expired attempt can be recollected again. Recollecting an already complete job's artifacts does not set the field. See [Recollect a finished answer](docs/OPERATIONS.md#recollect-a-finished-answer).
+
 <a id="privacy-and-security"></a>
 
 ## What leaves your machine

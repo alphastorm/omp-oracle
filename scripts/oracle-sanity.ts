@@ -2233,6 +2233,26 @@ async function testOracleReadRecollectsTimedOutJobs(config: OracleConfig): Promi
     assert(String((await recollect(saved, { responseIndex: 3 }))?.message).includes("cannot move the saved turn index"), "an explicit index should never move the one the timeout saved");
     assert(String((await recollect(unindexed, { responseIndex: 3, messageId: "m-1" }))?.message).includes("without messageId"), "a timed-out job should refuse a messageId, which its archive-anchored binding never uses");
     assert((await workerCalls()).length === started, "a refused recollection should never start the worker");
+
+    // The synchronous read must expose the worker's persisted receipt and current status,
+    // not manufacture either from the pre-recollection snapshot.
+    const receiptJobId = await timedOutJob();
+    const receiptPath = join(getJobDir(receiptJobId), "job.json");
+    await writeFile(fakeWorkerPath, `import { readFileSync, writeFileSync } from "node:fs";
+const path = ${JSON.stringify(receiptPath)};
+const job = JSON.parse(readFileSync(path, "utf8"));
+const at = new Date().toISOString();
+writeFileSync(job.responsePath, "Full recollected reply");
+writeFileSync(path, JSON.stringify({ ...job, status: "complete", phase: "complete", completedAt: at,
+  generationStatus: "completed", recollectionCompletionVerifiedAt: at, error: undefined, recollectionNeeded: undefined }));
+`, { encoding: "utf8", mode: 0o600 });
+    const receiptResult = await readTool.execute!("oracle-read-recollection-receipt", { jobId: receiptJobId, action: "recollect" }, undefined, () => { }, ctx) as { details?: unknown };
+    const reported = asRecord(asRecord(receiptResult.details)?.job);
+    const persisted = readJob(receiptJobId);
+    assert(persisted?.recollectionCompletionVerifiedAt, "fixture worker should persist the completion receipt");
+    assert(reported?.status === persisted.status, "read should report the current persisted status");
+    assert(reported?.recollectionCompletionVerifiedAt === persisted.recollectionCompletionVerifiedAt, "read should project the exact saved completion receipt");
+    assert(reported?.responsePreview === "Full recollected reply", "read should expose the post-recollection response");
   } finally {
     for (const jobId of jobIds) await cleanupJob(jobId);
     await rm(fixtureDir, { recursive: true, force: true });

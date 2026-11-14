@@ -190,6 +190,8 @@ export interface OracleJob {
   collectionOptionalMissing?: string[];
   recollectionError?: string;
   recollectionNeeded?: boolean;
+  /** Completion verified while recollecting a timed-out reply, never ordinary/artifact collection. */
+  recollectionCompletionVerifiedAt?: string;
   promptSendState?: "not_sent" | "attempted" | "accepted";
   observedSelection?: OracleObservedSelection;
   observedTurn?: { at: string; durationLabel?: string; durationSeconds?: number };
