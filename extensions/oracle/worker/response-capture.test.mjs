@@ -138,9 +138,8 @@ function fakeRelay(downloads) {
   const cdp = {
     calls: [],
     on(method, listener) { const set = listeners.get(method) || new Set(); set.add(listener); listeners.set(method, set); return () => set.delete(listener); },
-    async evaluate(sessionId, expression) { cdp.calls.push([sessionId, expression.slice(0, 40)]); return undefined; },
-    async send(method, params, sessionId) {
-      cdp.calls.push([sessionId, method]);
+    async send(method, params, sessionId, timeoutMs) {
+      cdp.calls.push([sessionId, method === 'Runtime.evaluate' ? params.expression.slice(0, 40) : method, timeoutMs]);
       if (method === 'Page.getFrameTree') return sessionId === 'P'
         ? { frameTree: { frame: { id: 'MAIN' }, childFrames: [{ frame: { id: 'ADS' } }, { frame: { id: 'REPORT' } }] } }
         : { frameTree: { frame: { id: 'REPORT' }, childFrames: [{ frame: { id: 'REPORT_DOC' } }] } };

@@ -4,6 +4,12 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+
+- recollecting a timed-out ChatGPT job now checks the bound reply before marking it complete: chat requires inactive rendered generation and two identical non-empty reads after reload, while Deep Research requires its completion marker and a non-empty report whose verified body is retained. Previously, streaming or frozen partial text could be reported complete. `recollectionCompletionVerifiedAt` records these UI checks, not provider-side finality; live validation must establish whether reload can hide ongoing generation. Timeout recovery has bounded startup/collection and returns durable state even after a failed worker exit; nothing is resent. Timed-out Grok recollection is unsupported. If you recollected a reply after a timeout with 0.4.15, check that the saved reply is complete
+
 ## 0.4.15 - 2026-11-13
 
 ### Changed

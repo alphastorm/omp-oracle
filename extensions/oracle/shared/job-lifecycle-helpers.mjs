@@ -416,15 +416,17 @@ export function markOracleJobWakeupSettled(job, options) {
  *   collectionBinding?: { responseIndex?: number; messageId?: string; turnSha256?: string } | undefined }} job
  * @param {{ responseIndex?: number } | undefined} explicit
  * @param {(path: string) => string} basenameOf
- * @returns {{ conversationId: string | undefined; responseIndex: number; anchorFileName: string } | undefined}
+ * @returns {{ conversationId: string | undefined; responseIndex: number; anchorFileName: string; messageId?: string } | undefined}
  */
 export function timedOutRecollectionBinding(job, explicit, basenameOf) {
   if (job.status !== "failed" || !/^Timed out waiting for (?:ChatGPT|Grok) response completion$/.test(job.error || "")) return undefined;
+  if (job.error === "Timed out waiting for Grok response completion") throw new Error("Timed-out Grok recollection is not supported by this version; nothing was resent.");
   if (job.promptSendState !== "accepted" || !job.archivePath) return undefined;
   const saved = Number.isInteger(job.collectionBinding?.responseIndex) ? job.collectionBinding.responseIndex : undefined;
   const requested = Number.isInteger(explicit?.responseIndex) && explicit.responseIndex >= 0 ? explicit.responseIndex : undefined;
   if (saved !== undefined && requested !== undefined && saved !== requested) throw new Error("Recollection cannot move the saved turn index.");
   const responseIndex = saved ?? requested;
   if (responseIndex === undefined) throw new Error("Recollecting a timed-out job needs its saved or an explicit responseIndex.");
-  return { conversationId: job.conversationId, responseIndex, anchorFileName: basenameOf(job.archivePath) };
+  return { conversationId: job.conversationId, responseIndex, anchorFileName: basenameOf(job.archivePath),
+    ...(job.collectionBinding?.messageId ? { messageId: job.collectionBinding.messageId } : {}) };
 }

@@ -208,6 +208,7 @@ export function formatOracleJobSummary(job, options = {}) {
     job.collectionRequiredMissing?.length ? `collection-required-missing: ${job.collectionRequiredMissing.join(" | ")}` : undefined,
     job.collectionOptionalMissing?.length ? `collection-optional-missing: ${job.collectionOptionalMissing.join(" | ")}` : undefined,
     job.recollectionError ? `recollection-error: ${job.recollectionError}` : undefined,
+    job.recollectionCompletionVerifiedAt ? `recollection-completion-verified-at: ${job.recollectionCompletionVerifiedAt}` : undefined,
     job.recollectionNeeded ? `recollection-needed: the bound turn was not captured; run oracle_read({ jobId: "${job.id}", action: "recollect" }) instead of resubmitting` : undefined,
     job.promptSendState ? `prompt-send-state: ${job.promptSendState}` : undefined,
     promptSendAdvice(job),

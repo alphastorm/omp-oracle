@@ -147,7 +147,7 @@ export declare function composeResearchResponse(input: {
   citations?: { tokens: number; sources: number; unresolved: string[] };
 };
 export declare function captureDownload(selector: string): Promise<OracleDownloadedBytes>;
-export declare function activateDownloadControl(selector: string, report?: boolean): Promise<{ activated: true; menuOption?: string }>;
+export declare function activateDownloadControl(selector: string, report?: boolean, timeoutMs?: number): Promise<{ activated: true; menuOption?: string }>;
 export declare function armDownloadRegistry(): number;
 export declare function disarmDownloadRegistry(): void;
 export declare function readRegisteredDownload(url: string): Promise<string>;
@@ -156,8 +156,9 @@ export declare function collectNativeDownload(input: {
   cdp: OracleNativeDownloadCdp;
   pageSessionId: string;
   frameSessionId?: string;
-  activate: () => Promise<unknown>;
+  activate: (remainingMs: number) => Promise<unknown>;
   timeoutMs?: number;
+  deadlineAt?: number;
   onWait?: () => void;
 }): Promise<OracleNativeDownload>;
 export declare function redactTransportSecrets(text: unknown): string;

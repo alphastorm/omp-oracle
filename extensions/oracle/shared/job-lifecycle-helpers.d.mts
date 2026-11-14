@@ -149,4 +149,4 @@ export declare function timedOutRecollectionBinding(
   },
   explicit: { responseIndex?: number } | undefined,
   basenameOf: (path: string) => string,
-): { conversationId: string | undefined; responseIndex: number; anchorFileName: string } | undefined;
+): { conversationId: string | undefined; responseIndex: number; anchorFileName: string; messageId?: string } | undefined;

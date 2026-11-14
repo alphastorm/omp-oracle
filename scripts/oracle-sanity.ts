@@ -2226,6 +2226,12 @@ async function testOracleReadRecollectsTimedOutJobs(config: OracleConfig): Promi
     assert(JSON.stringify((await workerCalls()).at(-1)) === JSON.stringify([unindexed, "--recollect", JSON.stringify({ responseIndex: 3 })]), "an explicit responseIndex should reach the recollection worker");
 
     const started = (await workerCalls()).length;
+    const grok = await timedOutJob({ error: "Timed out waiting for Grok response completion",
+      selection: { provider: "grok" }, collectionBinding: undefined });
+    const grokPath = join(getJobDir(grok), "job.json");
+    const grokBefore = await readFile(grokPath, "utf8");
+    assert(String((await recollect(grok))?.message).includes("Timed-out Grok recollection is not supported"), "Grok timeout recovery must be refused explicitly");
+    assert(await readFile(grokPath, "utf8") === grokBefore, "refused Grok recollection must leave the saved job untouched");
     const otherFailure = await timedOutJob({ error: "ChatGPT is showing a transient outage/rate-limit page" });
     assert(String((await recollect(otherFailure))?.message).startsWith("Recollection requires a completed job"), "a job that failed for another reason should not be recollected");
     const neverAccepted = await timedOutJob({ promptSendState: "attempted" });
@@ -2233,6 +2239,32 @@ async function testOracleReadRecollectsTimedOutJobs(config: OracleConfig): Promi
     assert(String((await recollect(saved, { responseIndex: 3 }))?.message).includes("cannot move the saved turn index"), "an explicit index should never move the one the timeout saved");
     assert(String((await recollect(unindexed, { responseIndex: 3, messageId: "m-1" }))?.message).includes("without messageId"), "a timed-out job should refuse a messageId, which its archive-anchored binding never uses");
     assert((await workerCalls()).length === started, "a refused recollection should never start the worker");
+
+    // The synchronous read must expose the worker's persisted receipt and current status,
+    // not manufacture either from the pre-recollection snapshot.
+    const receiptJobId = await timedOutJob();
+    const receiptPath = join(getJobDir(receiptJobId), "job.json");
+    await writeFile(fakeWorkerPath, `import { readFileSync, writeFileSync } from "node:fs";
+const path = ${JSON.stringify(receiptPath)};
+const job = JSON.parse(readFileSync(path, "utf8"));
+const at = new Date().toISOString();
+writeFileSync(job.responsePath, "Full recollected reply");
+writeFileSync(path, JSON.stringify({ ...job, status: "complete", phase: "complete", completedAt: at,
+  generationStatus: "completed", recollectionCompletionVerifiedAt: at, error: undefined, recollectionNeeded: undefined }));
+`, { encoding: "utf8", mode: 0o600 });
+    const receiptResult = await readTool.execute!("oracle-read-recollection-receipt", { jobId: receiptJobId, action: "recollect" }, undefined, () => { }, ctx) as { details?: unknown };
+    const reported = asRecord(asRecord(receiptResult.details)?.job);
+    const persisted = readJob(receiptJobId);
+    assert(persisted?.recollectionCompletionVerifiedAt, "fixture worker should persist the completion receipt");
+    assert(reported?.status === persisted.status, "read should report the current persisted status");
+    assert(reported?.recollectionCompletionVerifiedAt === persisted.recollectionCompletionVerifiedAt, "read should project the exact saved completion receipt");
+    assert(reported?.responsePreview === "Full recollected reply", "read should expose the post-recollection response");
+    await writeFile(fakeWorkerPath, `console.error("Fixture cleanup deadline"); process.exitCode = 1;\n`, { encoding: "utf8", mode: 0o600 });
+    const exited = await readTool.execute!("oracle-read-recollection-hard-exit", { jobId: receiptJobId, action: "recollect" }, undefined, () => { }, ctx) as { details?: unknown };
+    const exitedDetails = asRecord(exited.details);
+    assert(asRecord(exitedDetails?.job)?.status === "complete", "a subprocess failure must not hide the durable completed state");
+    assert(asRecord(exitedDetails?.job)?.recollectionCompletionVerifiedAt === persisted.recollectionCompletionVerifiedAt, "the unsuccessful subprocess result must retain the saved receipt");
+    assert(asRecord(exitedDetails?.error)?.message, "the durable outcome must include the separate subprocess error");
   } finally {
     for (const jobId of jobIds) await cleanupJob(jobId);
     await rm(fixtureDir, { recursive: true, force: true });

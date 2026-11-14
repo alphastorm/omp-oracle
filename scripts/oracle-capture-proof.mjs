@@ -15,7 +15,8 @@ import { composerTextDigest, composerTextDigestExpression } from '../extensions/
 import { detectCompletionFailure, throwIfProviderTransientError } from '../extensions/oracle/worker/provider-page-signals.mjs';
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
 import { usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
-import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, timedOutRecollectionBinding } from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
+import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, timedOutRecollectionBinding, transitionOracleJobPhase } from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
+import * as recollectionBudgets from '../extensions/oracle/shared/recollection-budget.mjs';
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, composeResearchResponse, durationLabelSeconds, observeConversationExpression, readResearchReportState, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
 import { CHATGPT_COMPOSER_EDITOR_SELECTOR, CHATGPT_STOP_CONTROL_SELECTOR, classifyDeepResearchTurn, deriveAssistantCompletionSignature, isChatGptComposerEntry, waitForStationaryControl } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
 import { chatGptGenerationActive, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStaleStopState } from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
@@ -118,11 +119,20 @@ try {
   const openUrl = async (url) => { opens.push(url); if (url.startsWith(origin)) await navigate(url); };
   // `sleep` is imported by the worker from the shared time helpers, so it is injected, not extracted;
   // bounded capture retries need no wall-clock delay against a static synthetic page.
-  const workerSource = extract(['captureBoundTurn', 'acquireBoundTurn', 'returnToOwnConversation', 'noteOwnConversation', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection', 'OracleWorkerError']);
-  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','composeResearchResponse','durationLabelSeconds','readResearchReportState','redactTransportSecrets','turnContentSha256','validateArtifactBytes','appendOracleJobLifecycleEvent','applyOracleJobCleanupWarnings','jobDir','evalPage','openUrl','conversationIdFromUrl','sleep','usesSharedBrowser','timedOutRecollectionBinding','AgentBrowserTimeoutError'];
+  const workerSource = extract(['captureBoundTurn', 'persistRecollectionIdentity', 'acquireBoundTurn', 'returnToOwnConversation', 'noteOwnConversation', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'runRecollection', 'OracleWorkerError', 'waitForChatCompletion', 'reconcileStreamedTurn', 'observeTurns', 'observedPagePath']);
+  const dependencyNames = ['createHash','existsSync','readFile','writeFile','rename','chmod','mkdir','join','basename','captureExpression','captureDownload','collectionOutcome','composeResearchResponse','durationLabelSeconds','readResearchReportState','redactTransportSecrets','turnContentSha256','validateArtifactBytes','appendOracleJobLifecycleEvent','applyOracleJobCleanupWarnings','jobDir','evalPage','openUrl','conversationIdFromUrl','sleep','usesSharedBrowser','timedOutRecollectionBinding','AgentBrowserTimeoutError','completionDependencies','budgets'];
   // The browser adapter retains dead session identities and enforces the Unix socket limit.
   // Collection itself still executes production functions against real Chromium above.
   const factory = new Function(...dependencyNames, `let currentJob; let shuttingDown=false; let conversationLeftEpisode=false;
+    const { RECOLLECTION_STARTUP_BUDGET_MS, RECOLLECTION_POST_WAIT_BUDGET_MS, RECOLLECTION_FINALIZE_RESERVE_MS, recollectionWaitMs, recollectionOperationTimeoutMs } = budgets;
+    const { transitionOracleJobPhase, observeConversationExpression, CHATGPT_STOP_CONTROL_SELECTOR, chatGptGenerationActive,
+      deriveAssistantCompletionSignature, nextStaleStopState, isConversationPathUrl, classifyDeepResearchTurn,
+      nextMissingTurnState, nextMissingTurnReloadState, detectCompletionFailure, throwIfProviderTransientError } = completionDependencies;
+    const RELOAD_RECONCILE_TIMEOUT_MS=5000, RELOAD_RECONCILE_POLL_MS=50, STALE_STOP_CONTROL_MS=120000, MISSING_TURN_RELOAD_MS=300000, MISSING_TURN_RELOAD_MAX=1;
+    const ARTIFACT_DOWNLOAD_TIMEOUT_MS=90000;
+    async function snapshotText() { return ''; }
+    async function readPageSignals() { return { text: '', composerPresent: true }; }
+    async function collectArtifactCandidates() { return []; }
     const retiredSessions=new Set();
     const jobId='synthetic', ORACLE_STATE_DIR='synthetic';
     function isGrokJob() { return false; }
@@ -140,7 +150,8 @@ try {
     function readProcessStartedAt() { return 'synthetic'; }
     function randomUUID() { return crypto.randomUUID(); }
     async function log() {}
-    async function heartbeat() {}
+    let onHeartbeat;
+    async function heartbeat() { await onHeartbeat?.(currentJob); }
     async function withHeartbeatWhile(task) { return task(); }
     const admissions = [];
     let nextCleanupWarnings = [];
@@ -155,10 +166,14 @@ try {
     return {
       admissions,
       collect:async(job,binding,fallbackText)=>{currentJob=job;await collectBoundResult(job,binding,fallbackText);return currentJob;},
-      recollect:async(job, warnings=[])=>{currentJob=job;retiredSessions.add(job.runtimeSessionName);nextCleanupWarnings=warnings;await runRecollection();return currentJob;}
+      recollect:async(job, warnings=[], observe)=>{currentJob=job;onHeartbeat=observe;retiredSessions.add(job.runtimeSessionName);nextCleanupWarnings=warnings;await runRecollection();return currentJob;}
     };`);
   const makeWorker = (dir) => factory(createHash,existsSync,readFile,writeFile,rename,chmod,mkdir,join,basename,captureExpression,captureDownload,collectionOutcome,composeResearchResponse,durationLabelSeconds,readResearchReportState,
-    redactTransportSecrets,turnContentSha256,validateArtifactBytes,appendOracleJobLifecycleEvent,applyOracleJobCleanupWarnings,dir,evalPage,openUrl,conversationIdFromUrl,() => sleep(1),usesSharedBrowser,timedOutRecollectionBinding,AgentBrowserTimeoutError);
+    redactTransportSecrets,turnContentSha256,validateArtifactBytes,appendOracleJobLifecycleEvent,applyOracleJobCleanupWarnings,dir,evalPage,openUrl,conversationIdFromUrl,() => sleep(1),usesSharedBrowser,timedOutRecollectionBinding,AgentBrowserTimeoutError,
+    { transitionOracleJobPhase, observeConversationExpression, CHATGPT_STOP_CONTROL_SELECTOR, chatGptGenerationActive,
+      deriveAssistantCompletionSignature, nextStaleStopState, isConversationPathUrl, classifyDeepResearchTurn,
+      nextMissingTurnState, nextMissingTurnReloadState, detectCompletionFailure, throwIfProviderTransientError },
+    recollectionBudgets);
   const jobDir = join(root, 'job');
   await mkdir(jobDir);
   const job = { id: 'synthetic', phase: 'downloading_artifacts', status: 'waiting', submittedAt: new Date().toISOString(), responsePath: join(jobDir, 'response.md'), conversationId: 'synthetic', selection: { provider: 'chatgpt' }, config: { artifacts: { capture: true } } };
@@ -539,6 +554,45 @@ ${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, 
     const doubled = await makeWorker(refusedDir).recollect({ ...refusedJob, collectionBinding: { conversationId: 'own', responseIndex: 1 } });
     assert.match(doubled.recollectionError, /appears in several user turns/);
     assert.equal(existsSync(refusedJob.responsePath), false);
+
+    // A timed-out recollection runs the production completion detector, even with a later reply.
+    const timeoutDir = join(root, 'timeout-job');
+    await mkdir(timeoutDir);
+    const timeoutJob = { ...anchoredJob, status: 'failed', phase: 'failed', submittedAt: new Date().toISOString(),
+      error: 'Timed out waiting for ChatGPT response completion', promptSendState: 'accepted', recollectionNeeded: true,
+      responsePath: join(timeoutDir, 'response.md'),
+      config: { ...anchoredJob.config, worker: { pollMs: 50, completionTimeoutMs: 100 } } };
+    const later = exchange('later', 'Later prompt', 'later-answer', 'LATER FINISHED ANSWER');
+    pages.set('/c/own', ownPage('BOUND PARTIAL', true) + later);
+    await navigate(ownUrl);
+    const waitingStates = [];
+    const timedOut = await makeWorker(timeoutDir).recollect(timeoutJob, [], state => {
+      waitingStates.push(state.status);
+      assert.equal(state.error, timeoutJob.error);
+      assert.equal(state.completedAt, timeoutJob.completedAt);
+      assert.equal(existsSync(timeoutJob.responsePath), false, 'No partial response may be collected during the wait');
+    });
+    assert(waitingStates.length > 1);
+    assert(waitingStates.every(status => status === 'failed'));
+    assert.equal(timedOut.status, 'failed');
+    assert.equal(timedOut.recollectionCompletionVerifiedAt, undefined);
+    assert.match(timedOut.recollectionError, /still being generated/);
+    assert(timedOutRecollectionBinding(timedOut, undefined, basename));
+    // The same job can retry; make the final text arrive after the new wait has started.
+    let reads = 0;
+    const fullPage = ownPage('BOUND FULL ANSWER', false) + later;
+    const verified = await makeWorker(timeoutDir).recollect({ ...timedOut,
+      config: { ...timedOut.config, worker: { pollMs: 50, completionTimeoutMs: 5000 } } }, [], async () => {
+      if (++reads === 4) {
+        pages.set('/c/own', fullPage);
+        await evaluate(`document.querySelector('[data-chatgpt-selection-message-id="own-1"]').innerHTML='<p>BOUND FULL ANSWER</p>';document.querySelector('[data-testid="stop-button"]').remove();`);
+      }
+    });
+    assert.equal(verified.status, 'complete', verified.recollectionError);
+    assert.match(verified.recollectionCompletionVerifiedAt, /^\d{4}-\d\d-\d\dT.*Z$/);
+    assert.equal(await readFile(verified.responsePath, 'utf8'), 'BOUND FULL ANSWER');
+    assert.equal(verified.collectionBinding.messageId, 'own-1');
+    assert.equal(anchored.recollectionCompletionVerifiedAt, undefined, 'Already complete artifact recollection has no receipt');
 
     // The composer control wait is evaluated through toString in pages that get no animation frames.
     await evaluate(`document.body.innerHTML = '<button id="plus" style="position:fixed;left:10px;top:10px;width:40px;height:40px">+</button>'; window.requestAnimationFrame = () => 0;`);
