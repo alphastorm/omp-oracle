@@ -4,8 +4,9 @@
 export default {
   packageName: "omp-oracle",
   artifactRoot: ".artifacts/platform-smoke",
-  // windows-native stays an available target, but the fork owns no Parallels template, so it is
-  // not release-required. Windows native is upstream-validated at pi-oracle 0.7.20 only.
+  // The runner accepts only these targets. windows-native, carried from upstream (validated there
+  // at pi-oracle 0.7.20 only), needs a Parallels template this fork does not own; add it here and
+  // to smoke:platform:all to run it.
   requiredTargets: ["macos", "ubuntu"],
   requiredSuites: ["platform-build", "real-extension"],
   workflows: {
@@ -21,7 +22,7 @@ export default {
       ],
     },
     platformMatrix: {
-      description: "Doctor-first packed-install macOS/Ubuntu/Windows platform proof.",
+      description: "Doctor-first packed-install proof on every required target.",
       commands: ["npm run smoke:platform:all"],
     },
     release: {
@@ -43,6 +44,7 @@ export default {
   realSmoke: {
     defaultProvider: "zai",
     defaultModel: "glm-5.2",
+    // Env names pi reads a provider's credential from; any one of them is enough.
     authEnvByProvider: {
       zai: ["ZAI_API_KEY"],
       openai: ["OPENAI_API_KEY"],
@@ -62,6 +64,8 @@ export default {
       "ant-ling": ["ANT_LING_API_KEY"],
       nvidia: ["NVIDIA_API_KEY"],
       moonshot: ["MOONSHOT_API_KEY"],
+      opencode: ["OPENCODE_API_KEY"],
+      xiaomi: ["XIAOMI_API_KEY"],
       kimi: ["KIMI_API_KEY"],
     },
   },

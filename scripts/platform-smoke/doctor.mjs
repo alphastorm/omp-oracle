@@ -207,8 +207,10 @@ export async function runDoctor(config) {
   console.log("\n── Auth environment ──");
   const requiredAuth = requiredRealSmokeAuthEnv(config);
   if (requiredAuth.length === 0) ok("no real-smoke auth env required by configured suites");
-  for (const name of requiredAuth) {
-    env(name) ? ok(`${name} = (present, redacted)`) : fail(`${name} missing for required real-extension suite`);
+  else {
+    // Alternatives: pi takes a provider's credential from any one of them (ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN).
+    const present = requiredAuth.filter((name) => env(name));
+    present.length > 0 ? ok(`${present.join(", ")} = (present, redacted)`) : fail(`${requiredAuth.join(" or ")} missing for required real-extension suite`);
   }
 
   console.log("\n── Target tools ──");

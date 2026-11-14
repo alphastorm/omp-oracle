@@ -7,9 +7,10 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import platformSmokeConfig from "../platform-smoke.config.mjs";
 
-const DEFAULT_PROVIDER = "zai";
-const DEFAULT_MODEL = "glm-5.2";
+// The platform harness forwards these credential env names into each target, so both read one config.
+const { defaultProvider: DEFAULT_PROVIDER, defaultModel: DEFAULT_MODEL, authEnvByProvider } = platformSmokeConfig.realSmoke;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const PACKAGE_NAME = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).name;
 
@@ -70,33 +71,6 @@ function commandExists(command, args = ["--version"]) {
   });
 }
 
-function apiKeyNameForProvider(provider) {
-  return {
-    zai: "ZAI_API_KEY",
-    openai: "OPENAI_API_KEY",
-    anthropic: "ANTHROPIC_API_KEY",
-    google: "GEMINI_API_KEY",
-    xai: "XAI_API_KEY",
-    groq: "GROQ_API_KEY",
-    deepseek: "DEEPSEEK_API_KEY",
-    cerebras: "CEREBRAS_API_KEY",
-    fireworks: "FIREWORKS_API_KEY",
-    together: "TOGETHER_API_KEY",
-    openrouter: "OPENROUTER_API_KEY",
-    ai_gateway: "AI_GATEWAY_API_KEY",
-    mistral: "MISTRAL_API_KEY",
-    minimax: "MINIMAX_API_KEY",
-    "minimax-cn": "MINIMAX_CN_API_KEY",
-    "ant-ling": "ANT_LING_API_KEY",
-    nvidia: "NVIDIA_API_KEY",
-    moonshot: "MOONSHOT_API_KEY",
-    opencode: "OPENCODE_API_KEY",
-    kimi: "KIMI_API_KEY",
-    cloudflare: "CLOUDFLARE_API_KEY",
-    xiaomi: "XIAOMI_API_KEY",
-  }[provider];
-}
-
 async function doctor() {
   const provider = env("PI_ORACLE_REAL_TEST_PROVIDER") ?? DEFAULT_PROVIDER;
   const model = env("PI_ORACLE_REAL_TEST_MODEL") ?? DEFAULT_MODEL;
@@ -111,10 +85,10 @@ async function doctor() {
   for (const [command, args, label] of requiredCommands) {
     if (!(await commandExists(command, args))) failures.push(`${label} is not available on PATH`);
   }
-  const keyName = apiKeyNameForProvider(provider);
+  const keyNames = authEnvByProvider[provider] ?? [];
   if (truthy(env("PI_ORACLE_REAL_TEST_MODEL_AGENT"))) {
-    if (keyName && !env(keyName)) failures.push(`${keyName} is not set for provider ${provider}`);
-    if (!keyName) warnings.push(`No known API-key env mapping for provider ${provider}; pi may still work if that provider is configured another way.`);
+    if (keyNames.length > 0 && !keyNames.some((name) => env(name))) failures.push(`${keyNames.join(" or ")} is not set for provider ${provider}`);
+    if (keyNames.length === 0) warnings.push(`No known API-key env mapping for provider ${provider}; pi may still work if that provider is configured another way.`);
   }
 
   console.log("Oracle real smoke doctor");

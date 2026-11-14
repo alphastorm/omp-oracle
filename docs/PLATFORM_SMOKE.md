@@ -19,7 +19,7 @@ The [platform smoke configuration (`platform-smoke.config.mjs`)](../platform-smo
 
 As configured, `scripts/platform-smoke.mjs` accepts only the targets in `requiredTargets` (`macos` and `ubuntu`) and runs both `platform-build` and `real-extension` on each target.
 
-Passing `--target windows-native` or running `npm run smoke:platform:windows-native` fails with `unsupported target: windows-native`, even though `--help` lists the target; see [Windows template maintenance](#windows-template-maintenance) for why the upstream Windows files stay in the tree and what changing `requiredTargets` entails.
+`--help` lists the same targets, and `--target windows-native` fails with `unsupported target: windows-native`; see [Windows template maintenance](#windows-template-maintenance) for why the upstream Windows files stay in the tree and what changing `requiredTargets` entails.
 
 ## Required local setup
 
@@ -55,7 +55,7 @@ For the inactive Parallels `windows-native` prerequisites and `PLATFORM_SMOKE_WI
 - `PI_ORACLE_REAL_TEST_TIMEOUT_MS`: per-agent timeout in milliseconds (default `180000` ms).
 - `PI_ORACLE_REAL_TEST_ARTIFACT_ROOT`: output directory for standalone `scripts/oracle-real-smoke.mjs` runs (default `.artifacts/real-smoke`).
 - `PI_ORACLE_REAL_TEST_KEEP_TMP`: set `PI_ORACLE_REAL_TEST_KEEP_TMP=1` to preserve the temporary fixture directory after a standalone `scripts/oracle-real-smoke.mjs` run.
-- `PI_ORACLE_REAL_TEST_MODEL_AGENT`: set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path; `smoke:platform:doctor` then requires the provider API key variable (`ZAI_API_KEY` by default, printed only as present and redacted), while `scripts/oracle-real-smoke.mjs` writes a synthetic `.oracle-seed-generation` marker so no ChatGPT or Grok browser cookies are needed.
+- `PI_ORACLE_REAL_TEST_MODEL_AGENT`: set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path; `smoke:platform:doctor` and `smoke:real:doctor` then require one of the provider's credential variables listed in `realSmoke.authEnvByProvider` in `platform-smoke.config.mjs` (`ZAI_API_KEY` by default, `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` for `anthropic`, printed only as present and redacted), while `scripts/oracle-real-smoke.mjs` writes a synthetic `.oracle-seed-generation` marker so no ChatGPT or Grok browser cookies are needed.
 - `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK`: set `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1` to enable the optional second-agent negative symlink check in standalone runs; `npm run sanity:oracle` covers archive exclusions and symlink-escape rejection by default.
 
 ## Commands
@@ -99,7 +99,7 @@ On each target (`macos` and `ubuntu`), `platform-build` runs these checks in ord
 `real-extension` is release-blocking packed-install runtime proof on each target. Its target command runs:
 
 1. Runs `npm ci` when `node_modules` is absent on the Crabbox lease.
-2. Runs `npm run smoke:real:doctor` to verify `pi`, `tar`, `zstd`, `agent-browser`, and (when `PI_ORACLE_REAL_TEST_MODEL_AGENT=1`) the provider API key variable.
+2. Runs `npm run smoke:real:doctor` to verify `pi`, `tar`, `zstd`, `agent-browser`, and (when `PI_ORACLE_REAL_TEST_MODEL_AGENT=1`) one of the provider's credential variables.
 3. Runs `npm run smoke:real:packed`, which packs this checkout with `npm pack`, installs the tarball into a clean `pi` project, runs `pi install -l ./node_modules/omp-oracle --approve`, verifies `pi list --approve`, executes `/oracle-status` through the installed `pi` loader (never source `pi -e`), and asserts that no job was created and the command never names `extensions/oracle/index.ts`.
 
 The default suite needs no provider credentials and submits nothing. With `PI_ORACLE_REAL_TEST_MODEL_AGENT=1`, a model turn calls `oracle_submit` from the installed package instead, and the suite asserts whole-project archive creation and default exclusions.
@@ -126,9 +126,9 @@ Artifacts are local evidence only; do not commit or share them without redaction
 
 ## Windows template maintenance
 
-`scripts/platform-smoke/platform-build-windows.ps1`, the `smoke:platform:windows-native` script in `package.json`, and these Parallels template notes are carried from upstream `pi-oracle` (where Windows native support was validated at `pi-oracle` `0.7.20`; see [Platforms and runtime](COMPATIBILITY.md#platforms-and-runtime)).
+`scripts/platform-smoke/platform-build-windows.ps1`, the `windows-native` branches of the platform-smoke scripts, and these Parallels template notes are carried from upstream `pi-oracle` (where Windows native support was validated at `pi-oracle` `0.7.20`; see [Platforms and runtime](COMPATIBILITY.md#platforms-and-runtime)).
 
-Because this fork owns no Windows Parallels lane, `platform-smoke.config.mjs` sets `requiredTargets` to `["macos", "ubuntu"]`: `scripts/platform-smoke.mjs` rejects `--target windows-native` with `unsupported target: windows-native`, and `npm run smoke:platform:doctor` skips Windows checks.
+Because this fork owns no Windows Parallels lane, `platform-smoke.config.mjs` sets `requiredTargets` to `["macos", "ubuntu"]`: `scripts/platform-smoke.mjs` leaves `windows-native` out of `--help` and rejects `--target windows-native` with `unsupported target: windows-native`, and `npm run smoke:platform:doctor` skips Windows checks.
 
 Adding `"windows-native"` to `requiredTargets` is required for the runner and doctor to accept the target, and because `scripts/platform-smoke/invariants.mjs` requires `smoke:platform:all` to match `requiredTargets`, enabling it also makes `windows-native` release-blocking.
 
@@ -147,5 +147,5 @@ When the Windows target lacks a reusable tool such as `zstd` or `agent-browser`,
 5. Remove downloads, caches, checkouts, `.pi`, `.artifacts`, `.debug`, browser auth and session state, and secrets.
 6. Shut down Windows cleanly.
 7. Create or promote the configured power-off `crabbox-ready` snapshot.
-8. In a local configuration that adds `"windows-native"` to `requiredTargets` (and updates `smoke:platform:all` to match), run `npm run smoke:platform:doctor` and `npm run smoke:platform:windows-native` against the promoted snapshot.
+8. In a local configuration that adds `"windows-native"` to `requiredTargets` (and updates `smoke:platform:all` to match), run `npm run smoke:platform:doctor` and `node scripts/platform-smoke.mjs run --target windows-native` against the promoted snapshot.
 9. Clean stale Crabbox clones and leases.

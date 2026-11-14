@@ -17,6 +17,10 @@ try {
   config = null;
 }
 
+// `run` accepts exactly these targets and suites, and the help lists the same sets.
+const supportedTargets = config?.requiredTargets ?? ["ubuntu"];
+const supportedSuites = config?.requiredSuites ?? ["platform-build"];
+
 function printHelp() {
   console.log(`Usage: node scripts/platform-smoke.mjs <command> [options]
 
@@ -26,17 +30,14 @@ Commands:
   run --suite <name>         Run one suite on the configured target(s)
 
 Options:
-  --target       Comma-separated target names. Supported: macos,ubuntu,windows-native
-  --suite        Suite name. Supported: platform-build,real-extension
+  --target       Comma-separated target names. Supported: ${supportedTargets.join(",")}
+  --suite        Suite name. Supported: ${supportedSuites.join(",")}
   --help, -h     Show this help
 
 Examples:
   node scripts/platform-smoke.mjs doctor
-  node scripts/platform-smoke.mjs run --target macos
-  node scripts/platform-smoke.mjs run --target ubuntu
-  node scripts/platform-smoke.mjs run --target windows-native
-  node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native --suite platform-build
-  node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native --suite real-extension
+${supportedTargets.map((target) => `  node scripts/platform-smoke.mjs run --target ${target}`).join("\n")}
+${supportedSuites.map((suite) => `  node scripts/platform-smoke.mjs run --target ${supportedTargets.join(",")} --suite ${suite}`).join("\n")}
 
 Canonical workflows:
   Everyday local iteration: npm run verify:oracle
@@ -94,13 +95,11 @@ function splitCsv(value) {
 }
 
 function validateSelection(targets, suites) {
-  const supportedTargets = new Set(config.requiredTargets ?? ["ubuntu"]);
-  const supportedSuites = new Set(config.requiredSuites ?? ["platform-build"]);
   for (const target of targets) {
-    if (!supportedTargets.has(target)) throw new Error(`unsupported target: ${target}`);
+    if (!supportedTargets.includes(target)) throw new Error(`unsupported target: ${target}`);
   }
   for (const suite of suites) {
-    if (!supportedSuites.has(suite)) throw new Error(`unsupported suite: ${suite}`);
+    if (!supportedSuites.includes(suite)) throw new Error(`unsupported suite: ${suite}`);
   }
 }
 
