@@ -37,6 +37,7 @@ function harness(job, observations) {
   const process = new EventEmitter();
   process.argv = ['node', 'worker', job.id, '--recollect'];
   process.pid = 123;
+  process.uptime = () => 0;
   process.exit = () => {};
   const history = [], collected = [], bindings = [], clicks = [];
   let observation;

@@ -356,10 +356,12 @@ test('a foreign atomic capture observation cannot pass reload verification', asy
 });
 
 test('repeated empty reload captures cannot earn a receipt', async t => {
-  const run = fixture(t, { reloads: [page(''), page('')] });
-  const result = await run.run();
-  assert.equal(result.status, 'failed');
-  assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+  for (const blank of ['', ' \n ']) {
+    const run = fixture(t, { reloads: [page(blank), page(blank)] });
+    const result = await run.run();
+    assert.equal(result.status, 'failed');
+    assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+  }
 });
 
 test('research accepts DOM Markdown whose co-captured visible body is the verified report', async t => {
