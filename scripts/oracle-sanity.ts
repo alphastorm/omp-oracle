@@ -3829,7 +3829,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("Do not default to a one-file archive just because the user mentioned one file"), "/oracle prompt should preserve surrounding context even for targeted asks when the archive budget allows it");
   assert(promptSource.includes("the `.git` directory is not included in oracle exports"), "/oracle prompt should tell review/ship-readiness requests to create and include a git diff bundle file");
   assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "/oracle prompt should describe whole-repo auto-pruning when archives are still too large");
-  assert(promptSource.includes("outside obvious source roots like `src/` and `lib/`"), "/oracle prompt should describe the source-root guard for auto-pruning");
+  assert(promptSource.includes("that are not inside a source root (`src/`, `source/`, `sources/`, `lib/`)"), "/oracle prompt should describe the source-root guard for auto-pruning");
   assert(promptSource.includes("If a submitted oracle job later fails because upload is rejected"), "/oracle prompt should describe the post-submit upload-rejection fallback ladder");
   assert(promptSource.includes("fails before dispatch with `details.error.code === \"archive_too_large\"` or an upload-limit message"), "/oracle prompt should distinguish retryable submit-time oversize failures from other submit-time errors");
   assert(promptSource.includes("after at most two total `oracle_submit` attempts"), "/oracle prompt should cap automatic archive-too-large retries");
@@ -3856,7 +3856,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   }
   assert(toolsSource.includes("obvious credentials/private data"), "oracle tool guidance should mention default exclusion of obvious credentials/private data");
   assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "oracle prompt should describe whole-repo auto-pruning when archives are still too large");
-  assert(promptSource.includes("outside obvious source roots like `src/` and `lib/`"), "oracle prompt should describe the source-root guard for auto-pruning");
+  assert(promptSource.includes("that are not inside a source root (`src/`, `source/`, `sources/`, `lib/`)"), "oracle prompt should describe the source-root guard for auto-pruning");
   assert(toolsSource.includes("After a successful or queued oracle_submit, stop"), "oracle tool guidance should explain queued oracle submissions as successful waits");
   assert(toolsSource.includes("queued jobs and retained pre-submit archives"), "queued archive admission errors should explain that stranded pre-submit archives count against the byte cap");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");

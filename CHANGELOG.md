@@ -29,6 +29,7 @@ history is kept below the divider.
   - release preparation and evidence commits go to `main` directly, not through pull requests
 - the `/oracle-auth` timeout check in `docs/TEST_PLAN.md` runs again: its cookie path sits outside the agent directory and its fake driver answers the version check. The script predated both requirements and failed before reaching the timeout it tests
 - `oracle_read` with `action: "recollect"` recovers a job that timed out waiting for its reply after the prompt was accepted, as 0.4.10 announced. The tool refused every job that was not `complete`, although the worker handled the timed-out case and the job's own status output (`recollection-needed: … run oracle_read({ jobId, action: "recollect" })`) told callers to run it. A timed-out job recorded before its reply index was saved takes `responseIndex` alone
+- the `/oracle` and `/oracle-followup` prompts name every directory automatic pruning removes (`build`, `dist`, `out`, `coverage`, `htmlcov`, `tmp`, `temp`, `.tmp`) and every source root that protects one (`src`, `source`, `sources`, `lib`), and `/oracle` says Deep Research runs on the existing-Chrome relay or the managed browser and fails on the isolated seed profile. It said Deep Research needed the relay, so an agent on the managed browser could refuse a Deep Research request the worker accepts
 
 ### Security
 
