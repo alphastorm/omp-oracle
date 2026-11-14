@@ -626,7 +626,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
     const signals = await load('worker/provider-page-signals.mjs');
     const page = { id: 'bound', text: 'Complete reply', stop: false, ...options.page };
     let now = Date.parse(at), evaluations = 0, opens = 0, sent = options.mode !== 'ordinary', failed = false;
-    const events = { writes: [], calls: [], captures: 0, downloads: 0, afterShutdown: 0, readsAfterOutcome: 0, history: [], returns: [] };
+    const events = { writes: [], calls: [], logs: [], captures: 0, downloads: 0, afterShutdown: 0, readsAfterOutcome: 0, history: [], returns: [] };
     const fakeProcess = new EventEmitter();
     Object.assign(fakeProcess, { pid: process.pid, argv: ['node', 'worker', 'fixture', '--recollect'], exitCode: 0 });
     let exited;
@@ -649,7 +649,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
     pages.set('/payload.txt', options.invalidArtifact ? '<!doctype html><html>Sign in</html>' : 'artifact payload\n');
     await navigate(`${origin}/c/recollection`);
     const job = { id: 'fixture', status: options.mode === 'complete' ? 'complete' : 'failed', phase: options.mode === 'complete' ? 'complete' : 'failed',
-      createdAt: at, submittedAt: at, phaseAt: at, completedAt: at, error: options.mode === 'complete' ? undefined : options.grok ? 'Timed out waiting for Grok response completion' : timeoutText,
+      createdAt: at, submittedAt: at, phaseAt: at, completedAt: at, error: options.mode === 'complete' ? undefined : options.timeoutError ?? (options.grok ? 'Timed out waiting for Grok response completion' : timeoutText),
       promptSendState: 'accepted', archivePath: '/fixture/context-fixture.tar.zst', conversationId: 'recollection', chatUrl: `${origin}/c/recollection`,
       collectionBinding: { conversationId: 'recollection', responseIndex: 0, ...options.binding }, recollectionNeeded: true,
       runtimeId: 'fixture', runtimeSessionName: 'prior', cleanupPending: false, responsePath: join(directory, 'response.md'),
@@ -711,7 +711,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       tryAcquireRuntimeLeaseForJob: async () => { events.calls.push('runtime-lease'); return true; },
       tryAcquireConversationLeaseForJob: async () => { events.calls.push('conversation-lease'); return true; }, releaseLease: async () => {},
       launchBrowser: async () => { events.calls.push('launch'); }, closeBrowser: async () => {}, cleanupRuntime: async () => [],
-      withHeartbeatWhile: async task => task(), heartbeat: async () => {}, log: async () => {}, sleep: async ms => { now += ms; },
+      withHeartbeatWhile: async task => task(), heartbeat: async () => {}, log: async message => { events.logs.push(message); }, sleep: async ms => { now += ms; },
       evalPage: async (_job, expression) => {
         evaluations++;
         if (signalled) events.afterShutdown++;
@@ -846,6 +846,11 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
     const f = await fixture({ reloadFailure: true }, candidateRoot, change);
     unchanged(f, await f.run());
   });
+  add('reload-failure-retains-original-error', async change => {
+    const f = await fixture({ reloadFailure: true }, candidateRoot, change);
+    const result = await f.run(); unchanged(f, result);
+    assert.equal(result.job.recollectionError, 'Fixture reload failed');
+  });
   add('reload-instability-and-generation-reset-stability', async change => {
     for (const mode of ['growing', 'generating', 'foreign']) {
       let reloadCaptures = 0;
@@ -869,6 +874,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
     for (const signalAt of ['wait', 'before-commit', 'callback']) {
       const f = await fixture({ signalAt }, candidateRoot, change);
       const result = await f.run(); unchanged(f, result);
+      assert(!result.events.logs.some(message => message.includes('; job fixture is complete')), signalAt);
       if (signalAt === 'wait') assert.equal(result.events.afterShutdown, 0);
       if (signalAt === 'before-commit') assert.equal(result.events.readsAfterOutcome, 1, 'Only signal finalization may acquire the job after the pre-commit fence');
     }
@@ -911,7 +917,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       for (const key of ['status', 'responsePath', 'generationStatus', 'collectionStatus', 'collectionBinding', 'recollectionCompletionVerifiedAt']) assert.deepEqual(result[key], job[key], key);
     }
   });
-  add('unsupported-timeouts-are-mutation-free', async change => {
+  const assertUnsupportedTimeout = async (options, change) => {
     const source = await readFile(join(candidateRoot, 'extensions/oracle/lib/tools.ts'), 'utf8');
     const tree = ts.createSourceFile('tools.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     let object;
@@ -921,20 +927,27 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       ts.forEachChild(node, visit);
     };
     visit(tree); assert(object);
-    for (const options of [{ grok: true }, { research: true }]) {
-      const f = await fixture(options, candidateRoot, change);
-      const result = await f.run();
-      assert.match(result.error, /unsupported.*nothing was changed or resent/);
-      assert.deepEqual(result.files, f.initialFiles);
-      assert.deepEqual(result.events.calls, []);
-      const deps = { ORACLE_READ_PARAMS: {}, readJobForProject: () => f.initial, getProjectId: () => 'fixture',
-        timedOutRecollectionBinding: f.admission, basename,
-        buildOracleToolErrorResult: (_tool, error) => ({ error: error.message }),
-        execFileAsync: async () => { throw new Error('Worker must not be spawned'); } };
-      const reader = new Function(...Object.keys(deps), ts.transpile(`const tool = ${object.getText(tree)};`) + ';return tool;')(...Object.values(deps));
-      const refused = await reader.execute('fixture', { jobId: 'fixture', action: 'recollect' }, undefined, undefined, { cwd: 'fixture' });
-      assert.match(refused.error, /unsupported.*nothing was changed or resent/);
-    }
+    const f = await fixture(options, candidateRoot, change);
+    const result = await f.run();
+    assert.match(result.error, /unsupported.*the job was not changed and nothing was resent/);
+    assert.deepEqual(result.files, f.initialFiles);
+    assert.deepEqual(result.events.calls, []);
+    const deps = { ORACLE_READ_PARAMS: {}, readJobForProject: () => f.initial, getProjectId: () => 'fixture',
+      timedOutRecollectionBinding: f.admission, basename,
+      buildOracleToolErrorResult: (_tool, error) => ({ error: error.message }),
+      execFileAsync: async () => { throw new Error('Worker must not be spawned'); } };
+    const reader = new Function(...Object.keys(deps), ts.transpile(`const tool = ${object.getText(tree)};`) + ';return tool;')(...Object.values(deps));
+    const refused = await reader.execute('fixture', { jobId: 'fixture', action: 'recollect' }, undefined, undefined, { cwd: 'fixture' });
+    assert.match(refused.error, /unsupported.*the job was not changed and nothing was resent/);
+  };
+  add('grok-provider-with-chatgpt-timeout-is-refused', async change => {
+    await assertUnsupportedTimeout({ grok: true, timeoutError: timeoutText }, change);
+  });
+  add('chatgpt-provider-with-grok-timeout-is-refused', async change => {
+    await assertUnsupportedTimeout({ timeoutError: 'Timed out waiting for Grok response completion' }, change);
+  });
+  add('unsupported-timeouts-are-mutation-free', async change => {
+    for (const options of [{ grok: true }, { research: true }]) await assertUnsupportedTimeout(options, change);
     assert.throws(() => timedOutRecollectionBinding({ status: 'failed', error: 'Timed out waiting for Grok response completion' }, undefined, basename), /Grok.*unsupported/);
   });
   const results = [];
@@ -962,6 +975,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       ['old response borrowing', 'strict-old-response-fallback-is-excluded', once('else if (!verifiedRecollection && job.responsePath', 'else if (job.responsePath')],
       ['strict rethrow', 'collector-error-never-commits', removeLine('if (verifiedRecollection) throw error;')],
       ['artifact persistence rethrow', 'collector-error-never-commits', removeLine('if (verifiedRecollection && persisting) throw error;')],
+      ['bound reload rethrow', 'reload-failure-retains-original-error', removeLine('if (binding) throw error;')],
       ['later capture substitution', 'stable-identity-saves-verified-capture', once('verifiedRecollection ? verifiedRecollection.verifiedTurn : await acquireBoundTurn(job, binding)', 'await acquireBoundTurn(job, binding)')],
       ['proof outside transition', 'stable-identity-saves-verified-capture', once('const verifiedAt = timedOutChat ? new Date().toISOString() : undefined;', 'const verifiedAt = timedOutChat ? new Date().toISOString() : undefined; if (timedOutChat) await mutateJob(job => ({ ...job, recollectionCompletionVerifiedAt: verifiedAt }));')],
       ['proof on complete recollection', 'completed-recollection-never-initializes-proof', once('if (!timedOutChat) await mutateJob((job) => ({ ...job, recollectionError: undefined }));', 'if (!timedOutChat) await mutateJob((job) => ({ ...job, recollectionError: undefined, recollectionCompletionVerifiedAt: new Date().toISOString() }));')],
@@ -971,6 +985,8 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       ['Retry activation', 'recollection-never-sends-or-retries', once('if (!recollectionBinding && !retriedAfterFailure)', 'if (!retriedAfterFailure)')],
       ['Research refusal', 'unsupported-timeouts-are-mutation-free', Object.assign(text => text, { lifecycle: removeLine('if (job.selection?.tool === "deep_research")') })],
       ['Grok refusal', 'unsupported-timeouts-are-mutation-free', Object.assign(text => text, { lifecycle: removeLine('if (job.error === "Timed out waiting for Grok response completion"') })],
+      ['Grok provider mismatch', 'grok-provider-with-chatgpt-timeout-is-refused', Object.assign(text => text, { lifecycle: once(' || job.selection?.provider === "grok"', '') })],
+      ['Grok timeout-text mismatch', 'chatgpt-provider-with-grok-timeout-is-refused', Object.assign(text => text, { lifecycle: once('job.error === "Timed out waiting for Grok response completion" || ', '') })],
     ];
     for (const [name, caseName, change] of mutations) {
       const mutated = change(await readFile(join(candidateRoot, 'extensions/oracle/worker/run-job.mjs'), 'utf8'));
