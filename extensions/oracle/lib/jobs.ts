@@ -37,7 +37,7 @@ import type { OracleObservedSelection } from "../shared/job-observability-helper
 import { parseTimestamp } from "../shared/time-helpers.mjs";
 import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 import { withJobLock, withLock } from "./locks.js";
-import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationId, requirePersistedSessionFile, type OracleCleanupReport } from "./runtime.js";
+import { cleanupRuntimeArtifacts, getProjectId, getSessionId, isHomeDirectoryOrAbove, isPathInsideDirectory, parseConversationId, requirePersistedSessionFile, type OracleCleanupReport } from "./runtime.js";
 
 export type OracleJobStatus = SharedOracleJobStatus;
 export type OracleJobPhase = SharedOracleJobPhase;
@@ -1073,11 +1073,6 @@ export async function createJob(
   return job;
 }
 
-function isPathInsideDirectory(rootPath: string, candidatePath: string): boolean {
-  const boundary = relativePath(rootPath, candidatePath);
-  return boundary === "" || (!boundary.startsWith(`..${sep}`) && boundary !== ".." && !isAbsolute(boundary));
-}
-
 export function resolveArchiveInputs(cwd: string, files: string[]): { absolute: string; relative: string }[] {
   if (files.length === 0) {
     throw new Error("oracle_submit requires at least one file or directory to archive");
@@ -1090,6 +1085,9 @@ export function resolveArchiveInputs(cwd: string, files: string[]): { absolute: 
     }
     if (file.trim() === "." && file !== ".") {
       throw new Error("Archive input must use '.' exactly for a whole-repo archive");
+    }
+    if (file === "." && isHomeDirectoryOrAbove(realCwd)) {
+      throw new Error(`Archive input '.' would archive ${realCwd}, the home directory or a directory above it. Start the session in the project directory, or name the files and directories to include.`);
     }
     const absolute = resolve(cwd, file);
     const relativeFromCwd = relativePath(cwd, absolute);

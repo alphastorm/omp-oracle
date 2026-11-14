@@ -11,8 +11,9 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, s
 import { createRequire } from "node:module";
 import { hostname, tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join, parse } from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import type { TSchema } from "typebox";
 import {
@@ -1534,6 +1535,57 @@ async function testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncesto
     assert(getProjectId(subdirCwd) === getProjectId(projectRoot), "workspace-root detection should prefer the nearest project markers over an unrelated ancestor git root");
     assert(resolveArchiveInputs(getProjectId(subdirCwd), ["AGENTS.md"])[0]?.relative === "AGENTS.md", "archive input resolution should stay anchored to the nearest marked project root instead of widening to an unrelated ancestor git repo");
   } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testWorkspaceRootStopsBelowTheHomeDirectory(): Promise<void> {
+  // Oh My Pi and pi keep their own config directory (~/.omp, ~/.pi) in the home directory, so it
+  // always carries a project marker. An unmarked directory below it must stay its own project:
+  // lifted to the home directory, its relative archive inputs resolve against the wrong root,
+  // its jobs share one project with every other such directory, and '.' archives the home directory.
+  const fixtureDir = await realpath(await mkdtemp(join(tmpdir(), `oracle-sanity-home-boundary-${randomUUID()}-`)));
+  const home = join(fixtureDir, "home");
+  const unmarked = join(home, "notes", "drafts");
+  const markedProject = join(home, "work", "app");
+  const markedSubdir = join(markedProject, "src");
+  const agentDir = join(fixtureDir, "agent");
+  const originalHome = process.env.HOME;
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  try {
+    for (const dir of [join(home, ".omp"), join(home, ".pi"), unmarked, markedSubdir, agentDir]) await mkdir(dir, { recursive: true, mode: 0o700 });
+    await writeFile(join(home, "AGENTS.md"), "# user notes\n", { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(markedProject, "AGENTS.md"), "# app\n", { encoding: "utf8", mode: 0o600 });
+    process.env.HOME = home;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    assert(getProjectId(unmarked) === unmarked, "an unmarked directory below the home directory should be its own project, not the home directory");
+    assert(getProjectId(markedSubdir) === markedProject, "a marked project below the home directory should still own its subdirectories");
+    assert(getProjectId(home) === home, "a session started in the home directory should keep it as its project");
+    await mkdir(join(home, ".git"), { mode: 0o700 });
+    assert(getProjectId(unmarked) === unmarked, "a Git repository at the home directory, such as dotfiles, should not lift unmarked subdirectories into it");
+
+    const refusal = (root: string) => {
+      try { resolveArchiveInputs(root, ["."]); return ""; } catch (error) { return error instanceof Error ? error.message : String(error); }
+    };
+    assert(refusal(home).includes("home directory"), "a whole-repo archive of the home directory should be refused");
+    assert(refusal(parse(home).root) !== "", "a whole-repo archive of the filesystem root should be refused");
+    assert(refusal(unmarked) === "", "a whole-repo archive of a project below the home directory should still be allowed");
+    assert(resolveArchiveInputs(home, ["notes"])[0]?.relative === "notes", "naming a path under the home directory should still be allowed");
+
+    const pi = createPiHarness();
+    registerOracleTools(pi as unknown as ExtensionAPI, join(fixtureDir, "unused-worker.mjs"));
+    const submitTool = pi.tools.get("oracle_submit");
+    assert(submitTool?.execute, "oracle submit tool should register for the home-directory archive refusal");
+    const sessionFile = join(fixtureDir, "session.jsonl");
+    const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as ExtensionContext["sessionManager"], createUiStub(), home);
+    const result = await submitTool.execute!("oracle-submit-home-directory", { prompt: "sanity", files: ["."] }, undefined, () => { }, ctx) as { details?: unknown };
+    assert(asRecord(asRecord(result.details)?.error)?.code === "archive_input_too_broad", "oracle_submit should refuse a whole-repo archive of the home directory with a stable error code");
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
     await rm(fixtureDir, { recursive: true, force: true });
   }
 }
@@ -3831,6 +3883,7 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await mkdir(join(fixtureDir, "apps", "api", "secrets"), { recursive: true });
     await mkdir(join(fixtureDir, "apps", "api", ".secrets"), { recursive: true });
     await mkdir(join(fixtureDir, ".pi"), { recursive: true });
+    await mkdir(join(fixtureDir, ".omp"), { recursive: true });
     await mkdir(join(fixtureDir, ".oracle-context", "jobs"), { recursive: true });
     await mkdir(join(fixtureDir, ".cursor"), { recursive: true });
     await mkdir(join(fixtureDir, ".artifacts", "platform-smoke"), { recursive: true });
@@ -3847,10 +3900,12 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await writeFile(join(fixtureDir, ".npmrc"), "//registry.npmjs.org/:_authToken=secret\n");
     await writeFile(join(fixtureDir, ".scratchpad.md"), "private notes\n");
     await writeFile(join(fixtureDir, "dev.sqlite"), "sqlite\n");
+    for (const sidecar of ["dev.sqlite-wal", "dev.sqlite-shm", "cache.db-journal"]) await writeFile(join(fixtureDir, sidecar), "database pages\n");
     await writeFile(join(fixtureDir, "secrets", "prod.pem"), "pem\n");
     await writeFile(join(fixtureDir, "apps", "api", "secrets", "service.pem"), "pem\n");
     await writeFile(join(fixtureDir, "apps", "api", ".secrets", "token.txt"), "token\n");
     await writeFile(join(fixtureDir, ".pi", "settings.json"), "{}\n");
+    await writeFile(join(fixtureDir, ".omp", "mcp.json"), "{}\n");
     await writeFile(join(fixtureDir, ".oracle-context", "jobs", "job.json"), "{}\n");
     await writeFile(join(fixtureDir, ".cursor", "debug-22d6ee.log"), "debug\n");
     await writeFile(join(fixtureDir, ".artifacts", "platform-smoke", "summary.json"), "{}\n");
@@ -3871,7 +3926,9 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     assert(!rootEntries.includes(".npmrc"), "root archive expansion should exclude credential dotfiles by default");
     assert(!rootEntries.includes(".scratchpad.md"), "root archive expansion should exclude scratchpad notes by default");
     assert(!rootEntries.includes("dev.sqlite"), "root archive expansion should exclude local database files by default");
+    for (const sidecar of ["dev.sqlite-wal", "dev.sqlite-shm", "cache.db-journal"]) assert(!rootEntries.includes(sidecar), `root archive expansion should exclude the database sidecar ${sidecar} by default`);
     assert(!rootEntries.includes(".pi/settings.json"), "root archive expansion should exclude local pi state by default");
+    assert(!rootEntries.includes(".omp/mcp.json"), "root archive expansion should exclude local Oh My Pi state by default");
     assert(!rootEntries.includes(".oracle-context/jobs/job.json"), "root archive expansion should exclude local oracle state by default");
     assert(!rootEntries.includes(".cursor/debug-22d6ee.log"), "root archive expansion should exclude local editor state by default");
     assert(!rootEntries.includes(".artifacts/platform-smoke/summary.json"), "root archive expansion should exclude local platform-smoke artifacts by default");
@@ -3897,6 +3954,9 @@ async function testArchiveDefaultExclusions(): Promise<void> {
 
     const explicitPiEntries = await resolveExpandedArchiveEntries(fixtureDir, [".pi"]);
     assert(explicitPiEntries.includes(".pi/settings.json"), "explicitly requested .pi directories should be preserved");
+
+    const explicitOmpEntries = await resolveExpandedArchiveEntries(fixtureDir, [".omp"]);
+    assert(explicitOmpEntries.includes(".omp/mcp.json"), "explicitly requested .omp directories should be preserved");
 
     const explicitOracleContextEntries = await resolveExpandedArchiveEntries(fixtureDir, [".oracle-context"]);
     assert(explicitOracleContextEntries.includes(".oracle-context/jobs/job.json"), "explicitly requested .oracle-context directories should be preserved");
@@ -6104,6 +6164,7 @@ async function runPlatformSanity(): Promise<void> {
   await testArchiveDefaultExclusions();
   await testGrokArchiveUsesGzipTarFormat(config);
   await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
+  await testWorkspaceRootStopsBelowTheHomeDirectory();
   testArchiveEntryGroupMergeHandlesLargeArrays();
   testArchiveRejectsBlankInputs();
   await testArchiveMissingInputNamesProjectRoot();
@@ -6211,6 +6272,7 @@ async function main() {
   await testArchiveDefaultExclusions();
   await testGrokArchiveUsesGzipTarFormat(config);
   await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
+  await testWorkspaceRootStopsBelowTheHomeDirectory();
   testArchiveEntryGroupMergeHandlesLargeArrays();
   testArchiveRejectsBlankInputs();
   await testArchiveMissingInputNamesProjectRoot();

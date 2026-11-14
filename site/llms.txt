@@ -26,7 +26,7 @@
 - Per job, exactly two things leave the machine, under the operator's own account: the prompt and one
   project archive (`.tar.zst` for ChatGPT up to 250 MiB, `.tar.gz` for Grok up to 200 MiB).
 - Archive inputs must resolve inside the project without symlink escapes, or the job is rejected
-  locally. `.git`, `.pi`, `node_modules`, `secrets/`, `.env` files, keys, and databases are excluded by default
+  locally. `.git`, `.omp`, `.pi`, `node_modules`, `secrets/`, `.env` files, keys, and databases are excluded by default
   during directory expansion; explicitly named paths are archived as named. Default exclusions do not
   catch every secret, so pass narrower paths when the whole repository should not leave the machine.
 - By default, `/oracle-auth` reads the operator's browser cookies once in read-only mode into an

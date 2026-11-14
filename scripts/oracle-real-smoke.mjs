@@ -281,6 +281,8 @@ async function preparePackedProject({ runDir, provider, model, timeoutMs }) {
   writeFileSync(join(piProject, ".crabbox", "ignored", "capture.txt"), "ignore me\n");
   mkdirSync(join(piProject, ".pi"), { recursive: true });
   writeFileSync(join(piProject, ".pi", "workspace-notes.txt"), "ignore me\n");
+  mkdirSync(join(piProject, ".omp"), { recursive: true });
+  writeFileSync(join(piProject, ".omp", "workspace-notes.txt"), "ignore me\n");
   mkdirSync(join(piProject, ".oracle-context"), { recursive: true });
   writeFileSync(join(piProject, ".oracle-context", "context.md"), "ignore me\n");
   writeFileSync(join(piProject, ".scratchpad.md"), "ignore me\n");
@@ -423,7 +425,7 @@ async function run(mode = "packed") {
       const entries = await tarList(archivePath);
       writeFileSync(join(test1, "archive-list.txt"), `${entries.join("\n")}\n`);
       assert("archive-includes-readme", entryExists(entries, "README.md"), "archive should include README.md");
-      for (const excluded of [".pi", ".oracle-context", ".scratchpad.md", ".artifacts", ".crabbox"]) {
+      for (const excluded of [".pi", ".omp", ".oracle-context", ".scratchpad.md", ".artifacts", ".crabbox"]) {
         assert(`archive-excludes-${excluded.replace(/[^a-z0-9]+/gi, "-")}`, !entryExists(entries, excluded), `archive should exclude ${excluded}`);
       }
     } else {

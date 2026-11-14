@@ -29,6 +29,7 @@ const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".hg",
   ".svn",
   ".pi",
+  ".omp",
   ".oracle-context",
   ".cursor",
   ".artifacts",
@@ -75,7 +76,13 @@ const DEFAULT_ARCHIVE_EXCLUDED_FILES = new Set([
   "id_ed25519",
   "id_rsa",
 ]);
-const DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES = [".db", ".key", ".p12", ".pfx", ".pyc", ".pyd", ".pyo", ".pem", ".sqlite", ".sqlite3", ".tsbuildinfo", ".tfstate"];
+const DEFAULT_ARCHIVE_EXCLUDED_DATABASE_SUFFIXES = [".db", ".sqlite", ".sqlite3"];
+// SQLite keeps recent database pages in its -wal and -journal sidecars, so they carry the database's data.
+const DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES = [
+  ...DEFAULT_ARCHIVE_EXCLUDED_DATABASE_SUFFIXES,
+  ...DEFAULT_ARCHIVE_EXCLUDED_DATABASE_SUFFIXES.flatMap((suffix) => ["-wal", "-shm", "-journal"].map((sidecar) => `${suffix}${sidecar}`)),
+  ".key", ".p12", ".pfx", ".pyc", ".pyd", ".pyo", ".pem", ".tsbuildinfo", ".tfstate",
+];
 const DEFAULT_ARCHIVE_EXCLUDED_SUBSTRINGS = [".tfstate."];
 const DEFAULT_ARCHIVE_EXCLUDED_ENV_ALLOWLIST = new Set([".env.dist", ".env.example", ".env.sample", ".env.template"]);
 const DEFAULT_ARCHIVE_EXCLUDED_PATH_SEQUENCES = [[".yarn", "cache"]] as const;
