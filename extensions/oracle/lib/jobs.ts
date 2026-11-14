@@ -190,6 +190,7 @@ export interface OracleJob {
   collectionOptionalMissing?: string[];
   recollectionError?: string;
   recollectionNeeded?: boolean;
+  recollectionCompletionVerifiedAt?: string;
   promptSendState?: "not_sent" | "attempted" | "accepted";
   observedSelection?: OracleObservedSelection;
   observedTurn?: { at: string; durationLabel?: string; durationSeconds?: number };

@@ -428,6 +428,7 @@ function redactJobDetails(
     collectionOptionalMissing: job.collectionOptionalMissing,
     recollectionError: job.recollectionError,
     recollectionNeeded: job.recollectionNeeded,
+    recollectionCompletionVerifiedAt: job.recollectionCompletionVerifiedAt,
     promptSendState: job.promptSendState,
     observedSelection: job.observedSelection,
     observedTurn: job.observedTurn,
@@ -1269,7 +1270,8 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     label: "Oracle Read",
     description: "Read saved status and outputs, optionally naming the owning projectId for an external-project job, or recollect the reply of a completed or timed-out job without sending a prompt.",
     promptSnippet: "Read oracle job status, queue position, artifacts, and response preview by job id.",
-    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of a completed job's reply, or of a job that timed out waiting for its reply after the prompt was accepted; it never submits or regenerates a response."],
+    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of a completed job's reply, or of a job that timed out waiting for its reply after the prompt was accepted; it never submits or regenerates a response.",
+      "Only complete together with recollectionCompletionVerifiedAt means a verified recollection; a failed job can name a response file from an attempt that did not commit."],
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
