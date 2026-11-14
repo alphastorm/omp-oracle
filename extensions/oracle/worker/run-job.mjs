@@ -3195,8 +3195,10 @@ async function runRecollection() {
     if (!shuttingDown) {
       clearTimeout(deadlineRecordTimer);
       await Promise.all(deadlineWrites);
-      clearTimeout(deadlineTimer);
-      stageDeadline = undefined;
+      if (!shuttingDown) {
+        clearTimeout(deadlineTimer);
+        stageDeadline = undefined;
+      }
     }
   }
 }
