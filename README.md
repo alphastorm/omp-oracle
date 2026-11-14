@@ -43,7 +43,7 @@ OMP Oracle is an extension for the Oh My Pi (OMP) and `pi` coding agents. The ag
 In a saved Oh My Pi or `pi` session, ask in plain language:
 
 ```text
-/oracle Review the pending changes. Include the whole repo unless a narrower archive is clearly better.
+/oracle Review the pending changes. Give me the highest risks first.
 ```
 
 The agent checks that Oracle is ready, packs the archive, and submits one background job. The submit result names the job and the file the answer will be written to. For a ChatGPT job with the default jobs directory it includes these lines:
