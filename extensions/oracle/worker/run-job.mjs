@@ -17,7 +17,7 @@ import {
   jobBlocksAdmission,
   runQueuedJobPromotionPass,
 } from "../shared/job-coordination-helpers.mjs";
-import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
+import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, clearOracleJobCleanupState, timedOutRecollectionBinding, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { closeAgentBrowserSession, applyAgentBrowserEnvDefaults, killProcess, killProcessTree, readProcessStartedAt, resolveAgentBrowserBinary, runCommand as spawnCommand, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { getOracleJobsDir, getOracleStateDir, isTrustedOracleJobDir, isValidOracleJobId, listTrustedOracleJobIds } from "../shared/state-path-helpers.mjs";
 import { sleep } from "../shared/time-helpers.mjs";
@@ -83,7 +83,7 @@ import {
   stripChatGptResponseChrome,
   waitForStationaryControl,
 } from "./chatgpt-ui-helpers.mjs";
-import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash, timedOutRecollectionBinding } from "./chatgpt-flow-helpers.mjs";
+import { chatGptGenerationActive, chatGptStreamingVisible, composerFileEntryCount, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStableValueState, nextStaleStopState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { classifyChatGptJobPage, classifyGrokPage, detectProviderSignals, detectCompletionFailure, providerPageSignalsExpression, visibleBlockerInSnapshot, formatProviderTransientErrorMessage, providerTransientErrorMessage, throwIfProviderTransientError } from "./provider-page-signals.mjs";
 import { assertNotKnownBrowserUserDataPath, assertSafeBrowserLaunchArg, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
@@ -2855,7 +2855,7 @@ async function runRecollection() {
     // A job that timed out waiting for its reply is recollected through its archive anchor and,
     // on success, becomes complete; nothing is ever resent.
     const timedOut = timedOutRecollectionBinding(currentJob, explicit, basename);
-    if (currentJob.status !== "complete" && !timedOut) throw new Error("Recollection requires an already completed job.");
+    if (currentJob.status !== "complete" && !timedOut) throw new Error("Recollection requires a completed job, or one that timed out waiting for its reply after the prompt was accepted.");
     let binding = timedOut ?? currentJob.collectionBinding;
     if (timedOut) {
       // anchored positional binding; the exact identity is learned by captureBoundTurn below

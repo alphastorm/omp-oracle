@@ -63,7 +63,7 @@ Detached workers and browser helpers under `extensions/oracle/worker/`:
 - `managed-browser.mjs`: detached keeper process that spawns Chrome on `browser.chatGptManagedProfileDir`, reports `{ endpoint, browserUrl }`, and quits its child Chrome after idle grace.
 - `agent-browser-helpers.mjs`: bounded `agent-browser` command runner, per-subcommand timeouts (raising `agent_browser_timeout`), `batch` stdin framing, and `eval` stdout decoding.
 - `chatgpt-ui-helpers.mjs`: ChatGPT selectors, model-picker and Power-slider state parsers, Deep Research widget text parser, and `observedSelection` merging.
-- `chatgpt-flow-helpers.mjs`: composer attachment counting, `providerSendAccepted`, URL stability tracking, `nextStaleStopState`, `nextMissingTurnState`, and timed-out recollection binding.
+- `chatgpt-flow-helpers.mjs`: composer attachment counting, `providerSendAccepted`, URL stability tracking, `nextStaleStopState`, and `nextMissingTurnState`.
 - `provider-page-signals.mjs`: snapshot and DOM signal filtering, challenge/outage/upload/response-failure matching, and the ChatGPT and Grok job page-state classifiers.
 - `auth-flow-helpers.mjs`: `/backend-api/me` login-probe normalization, `classifyChatAuthPage`, and account-chooser candidate labels.
 - `auth-cookie-policy.mjs`: allowlist and drop rules for imported ChatGPT and Grok authentication cookies.
@@ -82,7 +82,7 @@ Shared host/worker helpers under `extensions/oracle/shared/`:
 - `relay-browser-helpers.mjs`: CDP `/json/version` readiness checks, target creation and closure, and last-tab release to `about:blank`.
 - `relay-cdp-client.mjs`: flat-session WebSocket CDP client for `Target.setAutoAttach` child-frame evaluation, `Page.downloadWillBegin`, and `Page.downloadProgress` events.
 - `managed-browser-helpers.mjs`: managed-profile canonicalization, `DevToolsActivePort` and `SingletonLock` inspection, `managedBrowserReplaced`, user leases, and keeper launch.
-- `job-lifecycle-helpers.mjs`: phase-to-status mapping, bounded `64`-entry lifecycle event log, cleanup retry schedule, and notification/wake-up reducers.
+- `job-lifecycle-helpers.mjs`: phase-to-status mapping, bounded `64`-entry lifecycle event log, cleanup retry schedule, notification/wake-up reducers, and the timed-out recollection binding (`timedOutRecollectionBinding`).
 - `job-coordination-helpers.mjs`: queue ordering, admission-blocking predicates, and shared queued-job promotion pass.
 - `job-observability-helpers.mjs`: status/read text summaries, wake-up notification payloads, and session footer strings.
 - `oracle-run-helpers.mjs`: `/oracle-run` argument parser, request-shape validator, and one-line JSON result summarizer.
@@ -341,7 +341,7 @@ Fields in `OracleJob` (`extensions/oracle/lib/jobs.ts`), grouped by responsibili
 - **Thread and prompt state:** `followUpToJobId`, `chatUrl`, `conversationId`, `promptPath`, `reasoningPath` (initialized to `reasoning.md` by `createJob`, never written by the worker), `promptSendState` (`not_sent | attempted | accepted`).
 - **Observed UI and turn metadata:** `observedSelection` (`{ at, product?, modelLabel?, effortLabel?, effortControls?, deepResearchVerified?, deepResearchIframeTitle? }`), `observedTurn` (`{ at, durationLabel?, durationSeconds? }`, for example `Worked for 15m 7s` or `Research completed in 6m`).
 - **Generation and collection:** `responsePath`, `responseFormat` (`text/plain`), `generationStatus` (`completed` once generation finishes, omitted beforehand), `collectionStatus` (`complete | partial | failed`), `collectionRequiredMissing`, `collectionOptionalMissing`, `collectionBinding` (`{ conversationId, responseIndex, messageId?, turnSha256?, frameId? }`), `responseCapturePath`.
-- **Recollection state:** `recollectionNeeded`, `recollectionError`, `recollectionPriorWorker` (`{ runtimeSessionName?, workerPid?, workerStartedAt?, cleanupPending?, cleanupWarnings? }`; `run-job.mjs --recollect` also persists `cleanupAttemptCount` and `cleanupRetryAt` in it, which the `OracleJob` type does not declare).
+- **Recollection state:** `recollectionNeeded`, `recollectionError`, `recollectionPriorWorker` (`{ runtimeSessionName?, workerPid?, workerStartedAt?, cleanupPending?, cleanupWarnings?, cleanupAttemptCount?, cleanupRetryAt? }`).
 - **Archive and artifacts:** `archivePath`, `archiveSha256`, `archiveDeletedAfterUpload`, `artifactPaths`, `artifactsManifestPath`, `artifactFailureCount`.
 - **Notification delivery:** `notifiedAt`, `notificationEntryId`, `notificationSessionKey`, `notificationSessionFile`, `wakeupAttemptCount`, `wakeupLastRequestedAt`, `notifyClaimedAt`, `notifyClaimedBy`.
 - **Wake-up settlement and observation:** `wakeupSettledAt`, `wakeupSettledSource` (`oracle_read` tool, `oracle_status` for `/oracle-status`, or `oracle_read_command` for `/oracle-read`), `wakeupSettledSessionFile`, `wakeupSettledSessionKey`, `wakeupSettledBeforeFirstAttempt`, `wakeupObservedAt`, `wakeupObservedSource`, `wakeupObservedSessionFile`, `wakeupObservedSessionKey`.
@@ -427,14 +427,14 @@ Because `chrome.debugger` extension relays do not route `Browser.setDownloadBeha
 
 ### Recollection
 
-Recollection repeats collection on a finished answer without touching the composer or sending a prompt. `oracle_read({ jobId, action: "recollect", responseIndex?, messageId? })` admits only a job whose `status` is `complete` (`Recollection requires an already completed job.`) and forwards the optional legacy binding arguments to `run-job.mjs --recollect`.
+Recollection repeats collection on a finished answer without touching the composer or sending a prompt. `oracle_read({ jobId, action: "recollect", responseIndex?, messageId? })` admits a `complete` job, or a job that timed out waiting for its reply after `promptSendState: "accepted"` (otherwise `Recollection requires a completed job, or one that timed out waiting for its reply after the prompt was accepted.`), and forwards the optional binding arguments to `run-job.mjs --recollect`.
 
 The worker runs under the per-job `recollect` lock and the global `admission` lock, and refuses immediately rather than queueing if runtime capacity or the conversation lease is busy.
 
 The worker opens a short `oracle-<uuid>` driver session (sized for macOS's `103-byte` Unix socket path limit), arms CDP frame capture before navigating, reacquires the bound turn, and re-runs collection and export capture:
 
 - **Anchored binding.** A positional-only binding locates the user turn carrying `context-<id>.tar.zst`, verifies its first reply sits at `responseIndex`, and refuses an archive shown in zero or multiple user turns.
-- **Timed-out jobs.** The worker's `--recollect` entry point also accepts a job that failed with the completion timeout after `promptSendState: "accepted"` (`timedOutRecollectionBinding`), using the same archive anchor. `oracle_read` does not reach that path, because it refuses any job that is not `complete`.
+- **Timed-out jobs.** A job that failed with `Timed out waiting for ChatGPT response completion` (or Grok) after `promptSendState: "accepted"` is recollected through the same archive anchor (`timedOutRecollectionBinding`, shared by `oracle_read` and the worker): at the reply index the timeout saved, or at an explicit `responseIndex` alone for a job recorded before that index was saved. An explicit index never moves a saved one, `messageId` is refused, and on success the job becomes `complete` without resending anything.
 - **Legacy binding.** Jobs completed before binding existed require explicit `responseIndex` and `messageId` together, which may add identity to a saved positional index without moving it or replacing a saved exact binding.
 - **Attribute drift.** A turn root missing `data-message-id` after markup drift is recollected only when its `turnSha256` matches.
 - **Non-destructive preservation.** `preserveCaptureFile` writes `<capture-file>.<sha256>.previous` before overwriting any capture or artifact file with changed bytes. If recollection fails, `recollectionError` is recorded, `bound_response_capture` is marked missing, any `messageId` learned before the failure stays persisted, and existing `response.md` and validated `artifacts/` files remain intact.

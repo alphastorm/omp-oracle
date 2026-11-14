@@ -15,10 +15,10 @@ import { composerTextDigest, composerTextDigestExpression } from '../extensions/
 import { detectCompletionFailure, throwIfProviderTransientError } from '../extensions/oracle/worker/provider-page-signals.mjs';
 import { RelayCdpClient } from '../extensions/oracle/shared/relay-cdp-client.mjs';
 import { usesSharedBrowser } from '../extensions/oracle/shared/managed-browser-helpers.mjs';
-import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings } from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
+import { appendOracleJobLifecycleEvent, applyOracleJobCleanupWarnings, timedOutRecollectionBinding } from '../extensions/oracle/shared/job-lifecycle-helpers.mjs';
 import { activateDownloadControl, captureExpression, captureDownload, collectNativeDownload, collectionOutcome, composeResearchResponse, durationLabelSeconds, observeConversationExpression, readResearchReportState, redactTransportSecrets, turnContentSha256, validateArtifactBytes } from '../extensions/oracle/worker/response-capture.mjs';
 import { CHATGPT_COMPOSER_EDITOR_SELECTOR, CHATGPT_STOP_CONTROL_SELECTOR, classifyDeepResearchTurn, deriveAssistantCompletionSignature, isChatGptComposerEntry, waitForStationaryControl } from '../extensions/oracle/worker/chatgpt-ui-helpers.mjs';
-import { chatGptGenerationActive, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStaleStopState, timedOutRecollectionBinding } from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
+import { chatGptGenerationActive, conversationIdFromUrl, isConversationPathUrl, nextMissingTurnReloadState, nextMissingTurnState, nextStaleStopState } from '../extensions/oracle/worker/chatgpt-flow-helpers.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'oracle-capture-proof-'));
 const chrome = process.env.CHROME_BIN || ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium', '/usr/bin/google-chrome'].find(existsSync);

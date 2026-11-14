@@ -25,10 +25,10 @@ history is kept below the divider.
   - `/oracle-status` and `/oracle-read` settle a wake-up only after the first attempt; before it, only `oracle_read` from the asking session does
   - a wake-up goes to the asking session while that session is live; once it is gone, another saved session in the same project can deliver it
   - a second `/oracle-auth` on the managed browser checks the login in a new tab and leaves the sign-in tab for you to close
-  - `oracle_read` recollects only a `complete` job
   - the `windows-native` smoke target is rejected by the runner as configured
   - release preparation and evidence commits go to `main` directly, not through pull requests
 - the `/oracle-auth` timeout check in `docs/TEST_PLAN.md` runs again: its cookie path sits outside the agent directory and its fake driver answers the version check. The script predated both requirements and failed before reaching the timeout it tests
+- `oracle_read` with `action: "recollect"` recovers a job that timed out waiting for its reply after the prompt was accepted, as 0.4.10 announced. The tool refused every job that was not `complete`, although the worker handled the timed-out case and the job's own status output (`recollection-needed: … run oracle_read({ jobId, action: "recollect" })`) told callers to run it. A timed-out job recorded before its reply index was saved takes `responseIndex` alone
 
 ### Security
 

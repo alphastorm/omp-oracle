@@ -193,7 +193,7 @@ export interface OracleJob {
   promptSendState?: "not_sent" | "attempted" | "accepted";
   observedSelection?: OracleObservedSelection;
   observedTurn?: { at: string; durationLabel?: string; durationSeconds?: number };
-  recollectionPriorWorker?: { runtimeSessionName?: string; workerPid?: number; workerStartedAt?: string; cleanupPending?: boolean; cleanupWarnings?: string[] };
+  recollectionPriorWorker?: { runtimeSessionName?: string; workerPid?: number; workerStartedAt?: string; cleanupPending?: boolean; cleanupWarnings?: string[]; cleanupAttemptCount?: number; cleanupRetryAt?: string };
   error?: string;
   /** Stable machine-readable code for worker failures that callers must distinguish. */
   errorCode?: string;

@@ -10,14 +10,14 @@ import { resolveNodeExecutable } from "../shared/process-helpers.mjs";
 import { sharedBrowserCleanupFields, usesSharedBrowser } from "../shared/managed-browser-helpers.mjs";
 import { readFile, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createArchive, type ArchiveCreationResult, type ArchiveSizeBreakdownRow } from "./archive.js";
 import { runOracleAuthBootstrap } from "./auth.js";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
-import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
+import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, timedOutRecollectionBinding, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import {
   coerceOracleSubmitPresetId,
@@ -130,9 +130,9 @@ const ORACLE_AUTH_PARAMS = Type.Object({
 const ORACLE_READ_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
   projectId: Type.Optional(Type.String({ minLength: 1, description: "Owning project root recorded at submission. Defaults to the current project; another project's job requires this explicit acknowledgment." })),
-  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect the saved turn of an already completed job without sending a prompt: by its message ID, its content hash, or the user turn that carries the job's archive. Default: read saved files only." })),
-  responseIndex: Type.Optional(Type.Integer({ minimum: 0, description: "For legacy jobs without a saved turn binding only: explicit zero-based assistant turn index, paired with messageId." })),
-  messageId: Type.Optional(Type.String({ minLength: 1, description: "For legacy jobs without a saved turn binding only: exact observed data-message-id of the completed assistant turn." })),
+  action: Type.Optional(StringEnum(["read", "recollect"], { description: "Recollect the reply of a completed job, or of a job that timed out waiting for its reply after the prompt was accepted, without sending a prompt: by its message ID, its content hash, or the user turn that carries the job's archive. Default: read saved files only." })),
+  responseIndex: Type.Optional(Type.Integer({ minimum: 0, description: "Only for a job without a saved turn binding: explicit zero-based assistant turn index, paired with messageId for a legacy completed job, alone for a timed-out job." })),
+  messageId: Type.Optional(Type.String({ minLength: 1, description: "Only for a legacy completed job without a saved turn binding: exact observed data-message-id of the assistant turn, paired with responseIndex." })),
 }, { additionalProperties: false });
 
 const ORACLE_CANCEL_PARAMS = Type.Object({
@@ -1267,16 +1267,21 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
   pi.registerTool({
     name: "oracle_read",
     label: "Oracle Read",
-    description: "Read saved status and outputs, optionally naming the owning projectId for an external-project job, or explicitly recollect a completed bound result without sending a prompt.",
+    description: "Read saved status and outputs, optionally naming the owning projectId for an external-project job, or recollect the reply of a completed or timed-out job without sending a prompt.",
     promptSnippet: "Read oracle job status, queue position, artifacts, and response preview by job id.",
-    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of an already completed exact bound turn; it never submits or regenerates a response."],
+    promptGuidelines: ["Use oracle_read when the user asks for saved status, output, or artifacts. Use action=recollect only to retry collection of a completed job's reply, or of a job that timed out waiting for its reply after the prompt was accepted; it never submits or regenerates a response."],
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const job = readJobForProject(params.jobId, params.projectId ?? getProjectId(ctx.cwd));
         if (params.action === "recollect") {
-          if (job.status !== "complete") throw new Error("Recollection requires an already completed job.");
-          if ((params.responseIndex === undefined) !== (params.messageId === undefined)) throw new Error("Legacy turn binding requires responseIndex and messageId together.");
+          // A job that timed out waiting for its reply after the prompt was accepted is recollected
+          // through the user turn that carries its archive; the worker applies the same binding.
+          const timedOut = job.status === "complete" ? undefined
+            : timedOutRecollectionBinding(job, params.responseIndex === undefined ? undefined : { responseIndex: params.responseIndex }, basename);
+          if (job.status !== "complete" && !timedOut) throw new Error("Recollection requires a completed job, or one that timed out waiting for its reply after the prompt was accepted.");
+          if (timedOut && params.messageId !== undefined) throw new Error("A timed-out job is recollected through the user turn that carries its archive; pass responseIndex alone, without messageId.");
+          if (!timedOut && (params.responseIndex === undefined) !== (params.messageId === undefined)) throw new Error("Legacy turn binding requires responseIndex and messageId together.");
           const explicit = params.responseIndex !== undefined || params.messageId !== undefined
             ? JSON.stringify({ responseIndex: params.responseIndex, messageId: params.messageId }) : undefined;
           // Collection-only worker run, awaited in-turn; its own deadlines end it in minutes, this backstop ends a wedged transport.
