@@ -679,6 +679,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       DEEP_RESEARCH_FRAME_WAIT_MS: 100, DEEP_RESEARCH_REPORT_EXPRESSION: 'document.body.innerText', POST_SEND_SETTLE_MS: 0,
       ARTIFACT_DOWNLOAD_TIMEOUT_MS: 1000, GROK_LABELS: { stop: 'Stop model response' },
       readFile: async (path, ...args) => {
+        if (path === join(directory, 'response.raw.txt') && options.failRawRead?.()) throw Object.assign(new Error('Injected saved raw-text read failure'), { code: 'EACCES' });
         const value = await readFile(path, ...args);
         if (path === jobPath && outcomeSaved) {
           events.readsAfterOutcome++;
@@ -893,7 +894,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
   const verifiedHtml = '<h1>Verified heading</h1><p>Original body</p>';
   const assertVerifiedReplyKept = (before, after) => {
     for (const key of ['status', 'phase', 'error', 'errorCode', 'completedAt', 'recollectionCompletionVerifiedAt',
-      'collectionBinding', 'collectionStatus', 'collectionRequiredMissing', 'collectionOptionalMissing']) {
+      'collectionBinding', 'responsePath', 'collectionStatus', 'collectionRequiredMissing', 'collectionOptionalMissing', 'artifactPaths']) {
       assert.deepEqual(after.job[key], before.job[key], key);
     }
     assert.match(after.job.recollectionError, /verified reply.*saved hash.*verified response.*kept/);
@@ -915,6 +916,63 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       const result = await f.run(); assertVerifiedReplyKept(verified, result);
       assert.equal(reads, afterAnchor ? 2 : 1, 'A changed verified reply is not a retryable hydration failure');
     }
+  });
+  const whitespaceHtml = spaces => `<pre><code class="language-python">print("a${spaces}b")</code></pre>`;
+  add('verified-reply-whitespace-change-is-refused', async change => {
+    for (const path of ['first', 'retry', 'collector']) {
+      let armed = false, reads = 0;
+      const f = await fixture({ artifact: true, page: { html: whitespaceHtml(' ') }, beforeRead: async ({ page, expression, render }) => {
+        if (!armed || !expression.includes('function captureScopedResponse')) return;
+        reads++;
+        if (path === 'retry' && reads === 1) {
+          pages.set('/c/whitespace-foreign', '<article data-message-author-role="assistant" data-message-id="bound">Foreign reply</article>');
+          await navigate(`${origin}/c/whitespace-foreign`);
+        } else if (path === 'collector' && reads === 2) {
+          page.html = whitespaceHtml('  '); await render();
+        }
+      } }, candidateRoot, change);
+      const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+      const savedText = Buffer.from(verified.files['response.raw.txt'], 'base64').toString();
+      assert(savedText.includes('print("a b")'));
+      assert.equal(turnContentSha256(savedText), turnContentSha256(savedText.replace('print("a b")', 'print("a  b")')),
+        'Whitespace changes are invisible to the legacy identity hash');
+      if (path !== 'collector') { f.page.html = whitespaceHtml('  '); await f.render(); }
+      armed = true;
+      const result = await f.run(); assertVerifiedReplyKept(verified, result);
+      assert.equal(reads, path === 'first' ? 1 : 2, path);
+    }
+  });
+  add('verified-reply-missing-raw-text-is-refused', async change => {
+    const f = await fixture({ artifact: true, page: { html: verifiedHtml } }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    await rm(join(directory, 'response.raw.txt'));
+    const files = { ...verified.files }; delete files['response.raw.txt'];
+    const captures = f.events.captures;
+    const result = await f.run(); assertVerifiedReplyKept({ job: verified.job, files }, result);
+    assert.equal(f.events.captures - captures, 1, 'An absent saved raw text is not retried or recreated');
+  });
+  add('verified-reply-unreadable-raw-text-is-refused', async change => {
+    let failRawRead = false;
+    const f = await fixture({ artifact: true, page: { html: verifiedHtml }, failRawRead: () => failRawRead }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    const captures = f.events.captures; failRawRead = true;
+    const result = await f.run(); assertVerifiedReplyKept(verified, result);
+    assert.equal(f.events.captures - captures, 1, 'An unreadable saved raw text is a permanent refusal');
+  });
+  add('verified-reply-redacted-text-recollects', async change => {
+    const text = 'Transport https://example.invalid/file?X-Amz-Signature=SYNTHETIC_SECRET';
+    const f = await fixture({ page: { text } }, candidateRoot, change);
+    const verified = await f.run(); assert.equal(verified.job.status, 'complete'); assert(verified.job.recollectionCompletionVerifiedAt);
+    const savedText = Buffer.from(verified.files['response.raw.txt'], 'base64').toString();
+    assert.equal(savedText, redactTransportSecrets(text));
+    assert.notEqual(savedText, text, 'The capture and its saved redacted form are distinguishable');
+    assert.equal(verified.job.collectionBinding.turnSha256, turnContentSha256(text));
+    const result = await f.run(); assert.equal(result.job.recollectionError, undefined);
+    assert.equal(result.job.recollectionCompletionVerifiedAt, verified.job.recollectionCompletionVerifiedAt);
+    assert.deepEqual(result.job.collectionBinding, verified.job.collectionBinding);
+    assert.equal(result.files['response.raw.txt'], verified.files['response.raw.txt']);
+    assert.equal(result.files['response.md'], verified.files['response.md']);
+    assert.equal(f.events.returns.length, 2, 'The saved form, not unredacted capture text, authorizes recollection');
   });
   add('verified-reply-equal-text-recollects', async change => {
     const f = await fixture({ artifact: true, page: { html: verifiedHtml } }, candidateRoot, change);
@@ -1035,11 +1093,14 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       ['Grok refusal', 'unsupported-timeouts-are-mutation-free', Object.assign(text => text, { lifecycle: removeLine('if (job.error === "Timed out waiting for Grok response completion"') })],
       ['Grok provider mismatch', 'grok-provider-with-chatgpt-timeout-is-refused', Object.assign(text => text, { lifecycle: once(' || job.selection?.provider === "grok"', '') })],
       ['Grok timeout-text mismatch', 'chatgpt-provider-with-grok-timeout-is-refused', Object.assign(text => text, { lifecycle: once('job.error === "Timed out waiting for Grok response completion" || ', '') })],
-      ['verified reply refusal', 'verified-reply-change-is-refused', once('job.recollectionCompletionVerifiedAt && (!binding.turnSha256 || turnSha256 !== binding.turnSha256)', 'false')],
+      ['verified reply refusal', 'verified-reply-change-is-refused', once('if (job.recollectionCompletionVerifiedAt) {', 'if (false) {')],
       ['response-file hash substitution', 'verified-reply-equal-text-recollects', once('turnSha256 !== binding.turnSha256', 'turnContentSha256(await readFile(job.responsePath, "utf8")) !== binding.turnSha256')],
       ['verified reply retry suppression', 'verified-reply-change-is-refused', removeLine('if (error instanceof OracleWorkerError && error.code === "verified_reply_changed") throw error;')],
       ['verified reply collector rethrow', 'verified-reply-change-is-refused', once('if (verifiedRecollection || (error instanceof OracleWorkerError && error.code === "verified_reply_changed"))', 'if (verifiedRecollection)')],
       ['verified reply partial-marking exclusion', 'verified-reply-change-is-refused', once('if (timedOutChat || (error instanceof OracleWorkerError && error.code === "verified_reply_changed"))', 'if (timedOutChat)')],
+      ['normalized saved-text comparison', 'verified-reply-whitespace-change-is-refused', once('!savedRawText?.equals(Buffer.from(redactTransportSecrets(captured.rawText)))', '(savedRawText ? turnContentSha256(savedRawText.toString("utf8")) !== turnContentSha256(redactTransportSecrets(captured.rawText)) : true)')],
+      ['absent saved-text refusal', 'verified-reply-missing-raw-text-is-refused', once('!savedRawText?.equals(Buffer.from(redactTransportSecrets(captured.rawText)))', '(savedRawText && !savedRawText.equals(Buffer.from(redactTransportSecrets(captured.rawText))))')],
+      ['comparison before redaction', 'verified-reply-redacted-text-recollects', once('!savedRawText?.equals(Buffer.from(redactTransportSecrets(captured.rawText)))', '!savedRawText?.equals(Buffer.from(captured.rawText))')],
     ];
     for (const [name, caseName, change] of mutations) {
       const mutated = change(await readFile(join(candidateRoot, 'extensions/oracle/worker/run-job.mjs'), 'utf8'));
@@ -1100,6 +1161,23 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       assert.equal(candidate.events.downloads, 0);
       console.log(`Differential matched: ${mode}/validated-reuse`);
     }
+    const whitespacePair = async sourceRoot => {
+      const f = await fixture({ mode: 'complete', binding: { messageId: 'bound' }, page: { html: whitespaceHtml(' ') } }, sourceRoot);
+      const before = await f.run(); assert.equal(before.job.recollectionCompletionVerifiedAt, undefined);
+      f.page.html = whitespaceHtml('  '); await f.render();
+      const after = await f.run(); assert.equal(after.job.recollectionError, undefined);
+      assert.equal(after.job.recollectionCompletionVerifiedAt, undefined);
+      assert.equal(after.job.collectionBinding.turnSha256, before.job.collectionBinding.turnSha256);
+      assert.notEqual(after.files['response.raw.txt'], before.files['response.raw.txt']);
+      assert(Buffer.from(after.files['response.raw.txt'], 'base64').toString().includes('print("a  b")'));
+      return after;
+    };
+    const baseline = await whitespacePair(process.env.PI_ORACLE_CAPTURE_BASELINE_ROOT);
+    const candidate = await whitespacePair(candidateRoot);
+    assert.deepEqual(candidate.files, baseline.files, 'differential complete/whitespace-only-change file bytes');
+    assert.deepEqual(candidate.events.returns, baseline.events.returns, 'differential complete/whitespace-only-change returns');
+    assert.equal(candidate.error, baseline.error, 'differential complete/whitespace-only-change return error');
+    console.log('Differential matched: complete/whitespace-only-change');
   } else console.log('SKIP differential: set PI_ORACLE_CAPTURE_BASELINE_ROOT to a second source root (no fetch or vendored baseline).');
   console.log(`Recollection cases: ${results.filter(result => result.passed).length} passed, ${results.filter(result => !result.passed).length} failed`);
   assert(results.every(result => result.passed), 'Recollection acceptance failed');
