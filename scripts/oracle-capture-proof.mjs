@@ -129,6 +129,7 @@ try {
       deriveAssistantCompletionSignature, nextStaleStopState, isConversationPathUrl, classifyDeepResearchTurn,
       nextMissingTurnState, nextMissingTurnReloadState, detectCompletionFailure, throwIfProviderTransientError } = completionDependencies;
     const RELOAD_RECONCILE_TIMEOUT_MS=5000, RELOAD_RECONCILE_POLL_MS=50, STALE_STOP_CONTROL_MS=120000, MISSING_TURN_RELOAD_MS=300000, MISSING_TURN_RELOAD_MAX=1;
+    const ARTIFACT_DOWNLOAD_TIMEOUT_MS=90000;
     async function snapshotText() { return ''; }
     async function readPageSignals() { return { text: '', composerPresent: true }; }
     async function collectArtifactCandidates() { return []; }
