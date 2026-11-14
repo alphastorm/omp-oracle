@@ -30,7 +30,7 @@ function fixture(t, options = {}) {
   let now = Date.parse('2026-01-02T00:00:00Z');
   let snapshot = page('FROZEN PARTIAL');
   let reloaded = false, reportReads = 0, heartbeatCalls = 0;
-  const timers = new Map();
+  const timers = new Map(), scheduled = [];
   const process = new EventEmitter();
   process.pid = 123;
   process.argv = ['node', 'worker', 'boundary', '--recollect'];
@@ -50,6 +50,7 @@ function fixture(t, options = {}) {
   };
   const timer = (fn, ms, interval) => {
     const handle = { unref() {} };
+    scheduled.push({ at: now + ms, interval });
     timers.set(handle, { fn, at: now + ms, interval });
     return handle;
   };
@@ -74,7 +75,8 @@ function fixture(t, options = {}) {
     if (binding.messageId && binding.messageId !== snapshot.messageId) throw new Error('Wrong message identity');
     if (!binding.messageId && snapshot.shifted) throw new Error('Saved index moved');
     const text = snapshot.text;
-    return { binding: { ...binding, ...(snapshot.messageId ? { messageId: snapshot.messageId } : {}) },
+    return { observation: { onConversation: snapshot.onConversation !== false, stopPresent: snapshot.generating },
+      binding: { ...binding, ...(snapshot.messageId ? { messageId: snapshot.messageId } : {}) },
       captured: { rawText: text, rawHtml: `<p>${text}</p>`, markdown: text, messageId: snapshot.messageId,
         codeBlocks: [], sources: [], candidates: options.candidates ?? [] } };
   };
@@ -89,19 +91,20 @@ function fixture(t, options = {}) {
     setInterval: (fn, ms) => timer(fn, ms, ms), clearInterval: handle => timers.delete(handle),
     setTimeout: (fn, ms) => timer(fn, ms, 0), clearTimeout: handle => timers.delete(handle),
     sleep: advance, recordHeartbeat: state => { heartbeatCalls++; options.onHeartbeat?.(state, now); },
-    withLock: async (...args) => args.at(-1)(), jobBlocksAdmission: () => false,
+    withLock: async (...args) => { if (args[1] === 'recollect') await advance(options.lockMs ?? 0); return args.at(-1)(); },
+    jobBlocksAdmission: () => false,
     assertAgentBrowserVersionSupported: async () => {},
     tryAcquireRuntimeLeaseForJob: async () => { commands.push('runtime-lease'); return true; },
     tryAcquireConversationLeaseForJob: async () => { commands.push('conversation-lease'); return true; }, readProcessStartedAt: () => 'identity',
     usesSharedBrowser: () => true, launchBrowser: async () => { await advance(options.startupMs ?? 0); },
-    cleanupRuntime: async () => { await advance(options.cleanupMs ?? 0); return []; },
+    cleanupRuntime: async () => { await advance(options.cleanupMs ?? 0); options.onCleanup?.(); return []; },
     assertManagedBrowserUnchanged: async () => {}, log: async () => {},
     isGrokJob: value => value.selection.provider === 'grok', noteOwnConversation: async () => {},
     observeTurns: async () => {
       snapshot = observations.shift() ?? snapshot;
       return { onConversation: true, stopPresent: snapshot.generating, messages: [{ text: snapshot.text }] };
     },
-    snapshotText: async () => snapshot.generating ? 'Stop model response' : '',
+    snapshotText: async () => reloaded && options.snapshotStop ? '- button "Stop generating" [ref=e1]' : snapshot.generating ? 'Stop model response' : '',
     GROK_LABELS: { stop: 'Stop model response' },
     assistantMessages: async () => { snapshot = observations.shift() ?? snapshot; return [{ text: snapshot.text }]; },
     throwIfProviderTransientError: () => {}, readPageSignals: async () => ({ text: '' }),
@@ -122,26 +125,35 @@ function fixture(t, options = {}) {
     toAsyncJsonScript: text => text, rm: async () => {},
     armDeepResearchFrameCapture: async () => {}, boundResearchFrame: async () => ({ sessionId: 'report' }),
     deepResearchCdp: { evaluate: async (_session, expression) => {
-      if (expression === 'report-text') return options.reportText ?? (++reportReads === 1
-        ? 'Research completed in 1m\n# Full report' : 'Research completed in 1m\n');
+      if (expression === 'report-text') return ++reportReads === 1 ? options.reportText ?? 'Research completed in 1m\n# Full report'
+        : options.collectionReportText ?? options.reportText ?? 'Research completed in 1m\n';
       const report = options.reportText ? parseDeepResearchWidgetText(options.reportText).report : '';
-      return { rawHtml: `<main>${report}</main>`, rawText: report, markdown: report, codeBlocks: [], sources: [], candidates: [] };
+      if (expression.includes('widgetState')) return { markdown: options.widgetMarkdown ?? options.captureMarkdown ?? report, references: [] };
+      return { rawHtml: `<main>${report}</main>`, rawText: options.captureText ?? report, markdown: options.captureMarkdown ?? report, codeBlocks: [], sources: [], candidates: [] };
     } },
+    heartbeatGate: options.heartbeatGate, deadlineWriteGate: options.deadlineWriteGate,
     AgentBrowserTimeoutError: class extends Error {},
   };
   const factory = new Function(...Object.keys(deps), `
     let currentJob=initialJob, shuttingDown=false, managedBrowserChangedError;
     async function readJob() { return currentJob; }
-    async function mutateJob(fn) { currentJob=fn(currentJob); history.push(structuredClone(currentJob)); return currentJob; }
-    async function heartbeat() { currentJob={...currentJob, heartbeatAt:new Date().toISOString()}; recordHeartbeat(currentJob); }
+    async function mutateJob(fn) {
+      const priorError = currentJob.recollectionError;
+      currentJob=fn(currentJob); history.push(structuredClone(currentJob));
+      if (currentJob.recollectionError !== priorError && currentJob.recollectionError?.includes('reached its')) await deadlineWriteGate;
+      return currentJob;
+    }
+    async function heartbeat() { currentJob={...currentJob, heartbeatAt:new Date().toISOString()}; recordHeartbeat(currentJob); await heartbeatGate; }
     ${nodes.map(node => node.getText(tree)).join('\n')}
     return { run: async () => { await runRecollection(); return currentJob; }, current: () => currentJob,
       reconcile: () => reconcileStreamedTurn(currentJob, 0, 'ORDINARY LOWER BOUND'),
+      persistIdentity: binding => persistRecollectionIdentity(binding),
+      whileHeartbeating: task => withHeartbeatWhile(task),
       ordinary: () => waitForChatCompletion(currentJob, 0), collect: async (fallbackText) => {
       await collectBoundResult(currentJob, currentJob.collectionBinding, fallbackText); return currentJob;
     } };
   `);
-  return { ...factory(...Object.values(deps)), job, history, commands, exits, now: () => now,
+  return { ...factory(...Object.values(deps)), job, history, commands, exits, scheduled, advance, now: () => now,
     heartbeats: () => heartbeatCalls, text: () => existsSync(job.responsePath) ? readFileSync(job.responsePath, 'utf8') : undefined };
 }
 
@@ -297,4 +309,126 @@ test('actual research collection earns the receipt only with the same completed 
   assert.equal(result.status, 'complete', result.recollectionError);
   assert(result.recollectionCompletionVerifiedAt);
   assert.match(run.text(), /All findings/);
+});
+
+test('reload generation observed with the capture resets stability and cannot earn a receipt', async t => {
+  const run = fixture(t, { reloads: [page('STILL PARTIAL', true), page('STILL PARTIAL', true)] });
+  const result = await run.run();
+  assert.equal(result.status, 'failed');
+  assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+  assert.equal(run.text(), undefined);
+});
+
+test('reload keeps the existing snapshot Stop fallback', async t => {
+  const run = fixture(t, { snapshotStop: true });
+  assert.equal((await run.run()).status, 'failed');
+  assert.equal(run.text(), undefined);
+});
+
+test('a foreign atomic capture observation cannot pass reload verification', async t => {
+  const run = fixture(t, { reloads: [{ ...page('FOREIGN'), onConversation: false }] });
+  assert.equal((await run.run()).status, 'failed');
+});
+
+test('repeated empty reload captures cannot earn a receipt', async t => {
+  const run = fixture(t, { reloads: [page(''), page('')] });
+  const result = await run.run();
+  assert.equal(result.status, 'failed');
+  assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+});
+
+test('research accepts DOM Markdown whose co-captured visible body is the verified report', async t => {
+  const run = fixture(t, { job: { selection: { provider: 'chatgpt', tool: 'deep_research' } },
+    reportText: 'Research completed in 1m\nFull report\nAll findings.',
+    captureText: 'Full report\nAll findings.', captureMarkdown: '# Full report\n\nAll **findings**.' });
+  const result = await run.run();
+  assert.equal(result.status, 'complete', result.recollectionError);
+  assert.equal(run.text(), '# Full report\n\nAll **findings**.');
+});
+
+test('research never saves a different or shorter DOM/widget body under the receipt', async t => {
+  for (const captureText of ['Partial report\nMissing the rest.', 'Full report']) {
+    const run = fixture(t, { job: { selection: { provider: 'chatgpt', tool: 'deep_research' } },
+      reportText: 'Research completed in 1m\nFull report\nAll findings.',
+      captureText, captureMarkdown: '# ' + captureText, widgetMarkdown: '# A different widget report' });
+    const result = await run.run();
+    assert.equal(result.status, 'complete', result.recollectionError);
+    assert.equal(run.text(), 'Full report\nAll findings.');
+    assert(result.recollectionCompletionVerifiedAt);
+    assert(result.collectionOptionalMissing.some(value => value.startsWith('artifact:research:')));
+  }
+});
+
+test('empty rich research Markdown is not substituted for the verified non-empty body', async t => {
+  const run = fixture(t, { job: { selection: { provider: 'chatgpt', tool: 'deep_research' } },
+    reportText: 'Research completed in 1m\nFull report', captureText: 'Full report', captureMarkdown: '', widgetMarkdown: '' });
+  const result = await run.run();
+  assert.equal(result.status, 'complete', result.recollectionError);
+  assert.equal(run.text(), 'Full report');
+  assert(result.collectionOptionalMissing.some(value => value.startsWith('artifact:research:')));
+});
+
+test('a different non-empty completion report at collection is refused', async t => {
+  const run = fixture(t, { job: { selection: { provider: 'chatgpt', tool: 'deep_research' } },
+    reportText: 'Research completed in 1m\nVerified report', collectionReportText: 'Research completed in 1m\nDifferent report' });
+  const result = await run.run();
+  assert.equal(result.status, 'failed');
+  assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+});
+
+test('identity persistence refuses both saved-index and saved-message replacements', async t => {
+  for (const replacement of [{ responseIndex: 1, messageId: 'bound' }, { responseIndex: 0, messageId: 'other' }]) {
+    const run = fixture(t, { job: { collectionBinding: { conversationId: 'thread', responseIndex: 0, messageId: 'bound' } } });
+    await assert.rejects(run.persistIdentity({ conversationId: 'thread', ...replacement }), /cannot replace/);
+    assert.deepEqual(run.history, []);
+  }
+});
+
+test('the entry deadline bounds the first lock before the job is known', async t => {
+  const run = fixture(t, { lockMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS + 1000 });
+  const entered = run.now();
+  await assert.rejects(run.run(), /worker deadline exit/);
+  assert.equal(run.exits[0].at, entered + budgets.RECOLLECTION_STARTUP_BUDGET_MS);
+  assert.deepEqual(run.history, [], 'a pre-admission deadline must not mutate the unknown job');
+});
+
+test('complete-job recollection clears the entry deadline and keeps its old allowance', async t => {
+  const run = fixture(t, { startupMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS + 1000,
+    job: { status: 'complete', phase: 'complete', error: undefined,
+      collectionBinding: { conversationId: 'thread', responseIndex: 0, messageId: 'bound' } } });
+  const result = await run.run();
+  assert(run.scheduled.some(item => !item.interval), 'the entry deadline was armed before reading the job');
+  assert.deepEqual(run.exits, []);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.recollectionCompletionVerifiedAt, undefined);
+});
+
+test('heartbeat wrapping drains an in-flight mutation before settling', async t => {
+  let release;
+  const heartbeatGate = new Promise(resolve => { release = resolve; });
+  const run = fixture(t, { startupMs: 10000, heartbeatGate });
+  let settled = false;
+  const pending = run.whileHeartbeating(() => run.advance(10000)).then(() => { settled = true; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+  } finally { release(); await pending; }
+});
+
+test('foreground completion drains an already-started deadline-record mutation', async t => {
+  let release, cleaned;
+  const deadlineWriteGate = new Promise(resolve => { release = resolve; });
+  const cleanupReached = new Promise(resolve => { cleaned = resolve; });
+  const run = fixture(t, { startupMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS - 500, deadlineWriteGate, onCleanup: cleaned });
+  let settled = false;
+  const pending = run.run().then(() => { settled = true; });
+  try {
+    await cleanupReached;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+  } finally { release(); await pending; }
+});
+
+test('research report waiting and watchdog arithmetic share one constant', () => {
+  assert(/const DEEP_RESEARCH_FRAME_WAIT_MS = RECOLLECTION_RESEARCH_WAIT_MS;/.test(source), 'worker must use the shared research wait constant');
 });
