@@ -2855,6 +2855,7 @@ async function runRecollection() {
     // A job that timed out waiting for its reply is recollected through its archive anchor and,
     // on success, becomes complete; nothing is ever resent.
     const timedOut = timedOutRecollectionBinding(currentJob, explicit, basename);
+    const timedOutChat = Boolean(timedOut && !isGrokJob(currentJob) && currentJob.selection.tool !== "deep_research");
     if (currentJob.status !== "complete" && !timedOut) throw new Error("Recollection requires a completed job, or one that timed out waiting for its reply after the prompt was accepted.");
     let binding = timedOut ?? currentJob.collectionBinding;
     if (timedOut) {
@@ -2937,7 +2938,13 @@ async function runRecollection() {
       await agentBrowser(currentJob, "open", currentJob.chatUrl);
       // Reacquire before collecting: an anchored binding becomes an exact one (message ID and turn
       // hash) here, and a page that shows another conversation is reopened on the job's own.
-      binding = (await acquireBoundTurn(currentJob, binding)).binding;
+      const anchoredTurn = await acquireBoundTurn(currentJob, binding);
+      if (timedOutChat) {
+        if (!anchoredTurn.captured.messageId?.trim()) throw new Error("The archive-anchored reply has no message identity; nothing was collected or resent.");
+        const savedId = currentJob.collectionBinding?.messageId;
+        if (savedId && savedId !== anchoredTurn.captured.messageId) throw new Error("The archive-anchored reply differs from the saved message identity; nothing was collected or resent.");
+      }
+      binding = anchoredTurn.binding;
       if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
       await collectBoundResult(currentJob, binding);
       await mutateJob((job) => ({ ...job, recollectionError: undefined }));
@@ -2957,7 +2964,8 @@ async function runRecollection() {
       const error = managedBrowserChangedError ?? thrown;
       const message = redactTransportSecrets(error.message || String(error));
       await log("Recollection failed: " + message);
-      await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,
+      if (timedOutChat) await mutateJob((job) => ({ ...job, recollectionError: message }));
+      else await mutateJob((job) => ({ ...job, collectionStatus: existsSync(job.responsePath || "") ? "partial" : "failed", recollectionError: message,
         ...((error instanceof OracleWorkerError || error instanceof AgentBrowserTimeoutError) ? { errorCode: error.code } : {}),
         collectionRequiredMissing: [...new Set([...(job.collectionRequiredMissing || []), "bound_response_capture"])] }));
     } finally {
