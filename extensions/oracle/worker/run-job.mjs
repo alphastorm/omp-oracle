@@ -2114,7 +2114,7 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText, binding =
       }
       if (reloaded.length > best.length) best = reloaded;
       // A reload renders the committed turn in one pass, but hydration takes a moment; require
-      // two identical non-empty reads so a half-hydrated page is never mistaken for the turn.
+      // two equal non-empty raw-text reads so a half-hydrated page is never mistaken for the turn.
       stableReads = (binding ? reloaded.trim() : reloaded) && reloaded === previous ? stableReads + 1 : 0;
       previous = reloaded;
       if (stableReads >= 1) {
@@ -2122,7 +2122,7 @@ async function reconcileStreamedTurn(job, responseIndex, streamedText, binding =
         if (!binding) break;
       }
     }
-    if (binding) throw new Error("Recollection reload did not produce two identical nonempty bound captures before its deadline.");
+    if (binding) throw new Error("Recollection reload did not produce two consecutive bound captures with equal nonempty raw text before its deadline.");
   } catch (error) {
     if (binding) throw error;
     await log(`Reload reconciliation failed, keeping the streamed read: ${error instanceof Error ? error.message : String(error)}`);
@@ -3027,9 +3027,9 @@ async function runRecollection() {
           source: "oracle:recollect",
           message: "The reply had finished in the conversation; recollected after the completion timeout, nothing was resent.",
           patch: { error: undefined, generationStatus: "completed", recollectionNeeded: undefined, responsePath: currentJob.responsePath, responseFormat: "text/plain", artifactFailureCount, completedAt: verifiedAt ?? new Date().toISOString(),
-            ...(timedOutChat ? { recollectionError: undefined, recollectionCompletionVerifiedAt: job.recollectionCompletionVerifiedAt ?? verifiedAt } : {}) },
+            ...(timedOutChat ? { recollectionError: undefined, recollectionCompletionVerifiedAt: verifiedAt } : {}) },
         }));
-        await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
+        if (currentJob.status === "complete") await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
       }
     } catch (thrown) {
       if (shuttingDown) return;
