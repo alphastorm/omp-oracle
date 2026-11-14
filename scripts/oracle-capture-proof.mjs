@@ -994,7 +994,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       { page: { html: '<h1>Rich reply</h1><p>Body</p>' } },
       { page: { html: '<pre><code class="language-markdown"># Exact\n\nBody</code></pre>' } },
       { page: { id: undefined } },
-      { page: { id: undefined }, binding: { turnSha256: turnContentSha256('Complete reply') } },
+      { page: { id: undefined, html: '<p class="rerendered">Complete reply</p>' }, binding: { turnSha256: turnContentSha256('Complete reply') } },
       { page: { id: undefined }, binding: { turnSha256: turnContentSha256('Changed reply') }, oldResponse: 'Earlier response' },
       { binding: { messageId: 'missing' }, oldResponse: 'Earlier response' },
       { page: { html: '<div data-message-id="other">Ambiguous</div>' } },
@@ -1008,6 +1008,14 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       assert.deepEqual(candidate.files, baseline.files, `differential ${mode}/${index} file bytes`);
       assert.deepEqual(candidate.events.returns, baseline.events.returns, `differential ${mode}/${index} collector returns`);
       assert.equal(candidate.error, baseline.error, `differential ${mode}/${index} return error`);
+      if (mode === 'complete' && options.research && !options.frameFailure) {
+        assert(baseline.files['response.md'], 'The completed Research fixture must actually capture a report');
+        assert.notEqual(baseline.job.collectionStatus, 'failed');
+      }
+      if (mode === 'ordinary' && options.grok) {
+        const metadata = JSON.parse(Buffer.from(baseline.files['response.capture.json'], 'base64').toString());
+        assert.equal(metadata.method, 'text_fallback', 'The Grok fixture must exercise its streamed-text fallback');
+      }
       console.log(`Differential matched: ${mode}/${index}`);
     }
     for (const mode of ['ordinary', 'complete']) {
