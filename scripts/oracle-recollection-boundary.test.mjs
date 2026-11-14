@@ -18,7 +18,8 @@ const source = readFileSync(new URL('../extensions/oracle/worker/run-job.mjs', i
 const tree = ts.createSourceFile('worker.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const names = ['runRecollection', 'waitForChatCompletion', 'reconcileStreamedTurn', 'waitForDeepResearchReport',
   'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile', 'secureWriteText', 'ensurePrivateDir',
-  'withHeartbeatWhile', 'persistRecollectionIdentity', 'activateReportExport', 'OracleWorkerError'];
+  'withHeartbeatWhile', 'persistRecollectionIdentity', 'activateReportExport', 'OracleWorkerError',
+  'cleanupRuntime', 'installSignalHandlers'];
 const nodes = tree.statements.filter(node => (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && names.includes(node.name?.text));
 assert.equal(nodes.length, names.length);
 
@@ -98,8 +99,19 @@ function fixture(t, options = {}) {
     assertAgentBrowserVersionSupported: async () => {},
     tryAcquireRuntimeLeaseForJob: async () => { commands.push('runtime-lease'); return true; },
     tryAcquireConversationLeaseForJob: async () => { commands.push('conversation-lease'); return true; }, readProcessStartedAt: () => 'identity',
-    usesSharedBrowser: () => true, launchBrowser: async () => { await advance(options.startupMs ?? 0); },
-    cleanupRuntime: async () => { await advance(options.cleanupMs ?? 0); options.onCleanup?.(); return []; },
+    usesSharedBrowser: () => true, launchBrowser: async () => {
+      await advance(options.startupMs ?? 0); options.onLaunch?.(); await options.launchGate;
+    },
+    closeBrowser: async () => {
+      commands.push('close'); options.onClose?.(); await options.closeGate;
+      await advance(options.cleanupMs ?? 0); options.onCleanup?.();
+      if (options.closeError) throw new Error(options.closeError);
+      commands.push('closed');
+    },
+    releaseManagedBrowser: async () => {},
+    releaseLease: async (_state, kind) => {
+      options.onLease?.(kind); await options.leaseGate; commands.push(`release-${kind}`);
+    },
     assertManagedBrowserUnchanged: async () => {}, log: async () => {},
     isGrokJob: value => value.selection.provider === 'grok', noteOwnConversation: async () => {},
     observeTurns: async () => {
@@ -152,14 +164,16 @@ function fixture(t, options = {}) {
         codeBlocks: [], sources: [], candidates: options.researchCandidates ?? [] };
     } },
     heartbeatGate: options.heartbeatGate, deadlineWriteGate: options.deadlineWriteGate,
+    onMutation: options.onMutation,
     AgentBrowserTimeoutError: class extends Error {},
   };
   const factory = new Function(...Object.keys(deps), `
     let currentJob=initialJob, shuttingDown=false, managedBrowserChangedError;
+    let cleaningUpRuntime=false, runtimeCleanupPromise, managedBrowserLeaseKey, heartbeatStops=new Set();
     async function readJob() { return currentJob; }
     async function mutateJob(fn) {
       const priorError = currentJob.recollectionError;
-      currentJob=fn(currentJob); history.push(structuredClone(currentJob));
+      currentJob=fn(currentJob); history.push(structuredClone(currentJob)); onMutation?.(currentJob);
       if (currentJob.recollectionError !== priorError && currentJob.recollectionError?.includes('reached its')) await deadlineWriteGate;
       return currentJob;
     }
@@ -168,12 +182,13 @@ function fixture(t, options = {}) {
     return { run: async () => { await runRecollection(); return currentJob; }, current: () => currentJob,
       reconcile: () => reconcileStreamedTurn(currentJob, 0, 'ORDINARY LOWER BOUND'),
       persistIdentity: binding => persistRecollectionIdentity(binding),
+      cleanup: () => cleanupRuntime(currentJob), installOrdinarySignals: () => installSignalHandlers(currentJob),
       whileHeartbeating: task => withHeartbeatWhile(task),
       ordinary: () => waitForChatCompletion(currentJob, 0), collect: async (fallbackText) => {
       await collectBoundResult(currentJob, currentJob.collectionBinding, fallbackText); return currentJob;
     } };
   `);
-  return { ...factory(...Object.values(deps)), job, history, commands, exits, scheduled, advance, signal: () => process.emit('SIGTERM'), now: () => now,
+  return { ...factory(...Object.values(deps)), job, history, commands, exits, scheduled, advance, signal: (signal = 'SIGTERM') => process.emit(signal), now: () => now,
     heartbeats: () => heartbeatCalls, text: () => existsSync(job.responsePath) ? readFileSync(job.responsePath, 'utf8') : undefined };
 }
 
@@ -541,4 +556,113 @@ test('stage arming cannot extend the lifetime ceiling or restart expired/interru
   assert(Math.max(...live.deadlines) <= 100);
   assert.throws(() => makeArm(9).arm(1000, 'test'), /deadline|interrupted/);
   assert.throws(() => makeArm(undefined, true).arm(1000, 'test'), /deadline|interrupted/);
+});
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+for (const stage of ['browser close', 'lease release', 'cleanup heartbeat']) {
+  test(`a signal joins normal cleanup through ${stage} before finalizing once`, async t => {
+    const entered = deferred(), gate = deferred();
+    const run = fixture(t, { observations: [page('partial', true)],
+      ...(stage === 'browser close' ? { closeGate: gate.promise, onClose: entered.resolve }
+        : stage === 'lease release' ? { leaseGate: gate.promise, onLease: entered.resolve }
+          : { cleanupMs: 10000, heartbeatGate: gate.promise, onHeartbeat: entered.resolve }) });
+    const pending = run.run();
+    try {
+      await entered.promise;
+      run.signal();
+      await tick();
+      assert.deepEqual(run.exits, [], 'the signal must await the cleanup owner, not an empty warning list');
+      assert.equal(run.current().cleanupPending, true);
+      assert.notEqual(run.current().runtimeSessionName, 'old');
+      if (stage !== 'cleanup heartbeat') assert(!run.commands.includes('release-runtime'));
+    } finally { gate.resolve(); await pending; await tick(); }
+    assert.deepEqual(run.exits.map(exit => exit.code), [0]);
+    assert.equal(run.commands.filter(command => command === 'close').length, 1);
+    assert.deepEqual(run.commands.filter(command => command.startsWith('release-')), ['release-conversation', 'release-runtime']);
+    assert.equal(run.current().runtimeSessionName, 'old');
+    assert.equal(run.current().cleanupPending, false);
+    assert.equal(run.history.filter(state => state.lastCleanupAt).length, 1, 'finalization must have one owner');
+  });
+}
+
+test('concurrent cleanup callers receive the same completed warnings', async t => {
+  const entered = deferred(), gate = deferred();
+  const run = fixture(t, { closeGate: gate.promise, onClose: entered.resolve, closeError: 'Synthetic close failure' });
+  const first = run.cleanup();
+  await entered.promise;
+  let secondSettled = false;
+  const second = run.cleanup().then(value => { secondSettled = true; return value; });
+  try { await tick(); assert.equal(secondSettled, false); }
+  finally { gate.resolve(); }
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a, b);
+  assert.match(a[0], /Synthetic close failure/);
+  assert.equal(run.commands.filter(command => command === 'close').length, 1);
+});
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  test(`ordinary ${signal} waits for the existing cleanup before exiting`, async t => {
+    const entered = deferred(), gate = deferred();
+    const run = fixture(t, { closeGate: gate.promise, onClose: entered.resolve });
+    run.installOrdinarySignals();
+    const pending = run.cleanup();
+    try {
+      await entered.promise;
+      run.signal(signal);
+      await tick();
+      assert.deepEqual(run.exits, []);
+      assert(!run.commands.includes('release-runtime'));
+    } finally { gate.resolve(); await pending; await tick(); }
+    assert.deepEqual(run.exits.map(exit => exit.code), [0]);
+    assert.equal(run.commands.filter(command => command === 'close').length, 1);
+    assert.deepEqual(run.commands.filter(command => command.startsWith('release-')), ['release-conversation', 'release-runtime']);
+  });
+}
+
+test('a complete-job signal bypasses hung foreground and bounds hung cleanup without a normal-path ceiling', async t => {
+  const launched = deferred(), foreground = deferred(), cleanup = deferred();
+  const run = fixture(t, { job: { status: 'complete', phase: 'complete', error: undefined,
+    collectionBinding: { conversationId: 'thread', responseIndex: 0, messageId: 'bound' } },
+    launchGate: foreground.promise, onLaunch: launched.resolve, closeGate: cleanup.promise });
+  const pending = run.run();
+  try {
+    await launched.promise;
+    await run.advance(11 * 60000);
+    assert.deepEqual(run.exits, [], 'without a signal this path still has no worker ceiling');
+    const signalledAt = run.now(), beats = run.heartbeats();
+    run.signal();
+    await tick();
+    assert(run.commands.includes('close'), 'cleanup must start without awaiting foreground');
+    await run.advance(budgets.RECOLLECTION_FINALIZE_RESERVE_MS - 1);
+    assert.deepEqual(run.exits, []);
+    assert.equal(run.heartbeats(), beats, 'signals stop future heartbeats');
+    run.signal('SIGINT');
+    await assert.rejects(run.advance(1), /worker deadline exit/);
+    assert.deepEqual(run.exits, [{ code: 1, at: signalledAt + budgets.RECOLLECTION_FINALIZE_RESERVE_MS }]);
+    assert.equal(run.current().cleanupPending, true);
+    assert.notEqual(run.current().runtimeSessionName, 'old');
+  } finally { foreground.resolve(); cleanup.resolve(); await pending; await tick(); }
+});
+
+test('a timeout-recovery signal never extends an earlier armed deadline', async t => {
+  const launched = deferred(), foreground = deferred(), cleanup = deferred();
+  const run = fixture(t, { startupMs: budgets.RECOLLECTION_STARTUP_BUDGET_MS - 500,
+    launchGate: foreground.promise, onLaunch: launched.resolve, closeGate: cleanup.promise });
+  const pending = run.run();
+  try {
+    await launched.promise;
+    const signalledAt = run.now();
+    run.signal();
+    await tick();
+    await assert.rejects(run.advance(500), /worker deadline exit/);
+    assert.deepEqual(run.exits, [{ code: 1, at: signalledAt + 500 }]);
+    assert.equal(run.current().cleanupPending, true);
+    assert.equal(run.current().error, originalError);
+  } finally { foreground.resolve(); cleanup.resolve(); await pending; await tick(); }
 });
