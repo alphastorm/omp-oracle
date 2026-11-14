@@ -752,7 +752,7 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
     };
     const names = ['run', 'runRecollection', 'waitForChatCompletion', 'reconcileStreamedTurn', 'waitForDeepResearchReport',
       'captureBoundTurn', 'acquireBoundTurn', 'collectBoundResult', 'flushArtifactsState', 'preserveCaptureFile',
-      'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'observeTurns', 'assistantMessages',
+      'secureWriteText', 'ensurePrivateDir', 'toJsonScript', 'toAsyncJsonScript', 'observeTurns', 'assistantMessages', 'grokAssistantMessages',
       'collectArtifactCandidates', 'returnToOwnConversation', 'noteOwnConversation', 'readJobUnlocked', 'readJob',
       'writeJobUnlocked', 'mutateJob', 'OracleWorkerError', 'isGrokJob', 'providerForJob'];
     deps.events = events;
@@ -1008,6 +1008,9 @@ async function recollectionCases({ root, origin, pages, evaluate, navigate }) {
       assert.deepEqual(candidate.files, baseline.files, `differential ${mode}/${index} file bytes`);
       assert.deepEqual(candidate.events.returns, baseline.events.returns, `differential ${mode}/${index} collector returns`);
       assert.equal(candidate.error, baseline.error, `differential ${mode}/${index} return error`);
+      if (mode === 'ordinary' && !options.frameFailure) {
+        assert.equal(baseline.events.returns.length, 1, JSON.stringify({ fixture: index, job: baseline.job, calls: baseline.events.calls }));
+      }
       if (mode === 'complete' && options.research && !options.frameFailure) {
         assert(baseline.files['response.md'], 'The completed Research fixture must actually capture a report');
         assert.notEqual(baseline.job.collectionStatus, 'failed');
