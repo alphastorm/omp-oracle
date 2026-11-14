@@ -2153,6 +2153,7 @@ async function waitForChatCompletion(job, baselineAssistantCount, recollectionBi
   let missingTurnReload;
 
   while (Date.now() < timeoutAt) {
+    if (recollectionBinding && shuttingDown) throw new Error("Recollection interrupted; nothing was resent.");
     await heartbeat();
     // A page showing another conversation never contributes text, generation state, or Retry: the
     // job reopens its own conversation and starts the stability count over, within its deadline.
@@ -2542,7 +2543,7 @@ async function collectBoundResult(job, binding, fallbackText = "", verifiedRecol
   const artifactsDir = join(jobDir, "artifacts");
   await ensurePrivateDir(artifactsDir);
   try {
-    const turn = verifiedRecollection?.verifiedTurn ?? await acquireBoundTurn(job, binding);
+    const turn = verifiedRecollection ? verifiedRecollection.verifiedTurn : await acquireBoundTurn(job, binding);
     binding = turn.binding;
     capture = turn.captured;
     if (verifiedRecollection) {
@@ -2605,6 +2606,7 @@ async function collectBoundResult(job, binding, fallbackText = "", verifiedRecol
         const at = artifacts.findIndex((item) => item.candidateId === candidateId);
         if (at >= 0) artifacts[at] = record; else artifacts.push(record);
         await flushArtifactsState(artifacts);
+        let persisting = false;
         try {
           let downloaded;
           let nativeDownloadPath;
@@ -2630,7 +2632,9 @@ async function collectBoundResult(job, binding, fallbackText = "", verifiedRecol
           }
           if (!downloaded?.bytesBase64) throw new Error("Download did not expose bytes.");
           record.state = "downloaded";
+          persisting = true;
           await flushArtifactsState(artifacts);
+          persisting = false;
           const bytes = Buffer.from(downloaded.bytesBase64, "base64");
           const suggested = downloaded.fileName || candidate.fileName || candidate.label.match(/[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,12}\b/)?.[0] || (frame ? "report.md" : "artifact");
           const fileName = basename(redactTransportSecrets(suggested)).replace(/[^A-Za-z0-9._-]/g, "_") || "artifact";
@@ -2638,9 +2642,14 @@ async function collectBoundResult(job, binding, fallbackText = "", verifiedRecol
           if (frame && (validation.detectedType !== "text/plain" || !/^#{1,6}\s+/m.test(bytes.toString("utf8")) || (capture.title && !bytes.toString("utf8").includes(capture.title)))) throw new Error("Native research export does not match the bound Markdown report.");
           const sameBytes = artifacts.find((item) => item !== record && item.sha256 === validation.sha256 && item.copiedPath && existsSync(item.copiedPath));
           const destination = sameBytes?.copiedPath || join(artifactsDir, validation.sha256 + "-" + fileName);
-          if (!sameBytes) await preserveCaptureFile(destination, bytes);
+          if (!sameBytes) {
+            persisting = true;
+            await preserveCaptureFile(destination, bytes);
+            persisting = false;
+          }
           Object.assign(record, validation, { state: "validated", fileName, copiedPath: destination, nativeMarkdown: Boolean(frame), ...(downloaded.native ? { nativeDownload: downloaded.native } : {}) });
         } catch (error) {
+          if (verifiedRecollection && persisting) throw error;
           Object.assign(record, { state: "failed", unconfirmed: true, error: redactTransportSecrets(error.message || String(error)) });
         }
         await flushArtifactsState(artifacts);
@@ -2659,6 +2668,7 @@ async function collectBoundResult(job, binding, fallbackText = "", verifiedRecol
     }
     if (capture.sources.some((item) => item.kind !== "artifact" && item.unresolved)) requiredMissing.push("unresolved_source_links");
   } catch (error) {
+    if (verifiedRecollection) throw error;
     inspection = "failed";
     // Keep whatever binding is durably persisted right now: a message ID learned by this pass and
     // saved before the failure survives, and a wrong explicit binding never replaces a saved one.
@@ -3007,14 +3017,17 @@ async function runRecollection() {
       }
       if (currentJob.selection.tool === "deep_research") await waitForDeepResearchReport(currentJob, Date.now() + DEEP_RESEARCH_FRAME_WAIT_MS, binding);
       await collectBoundResult(currentJob, binding, "", timedOutChat ? { verifiedTurn } : undefined);
-      await mutateJob((job) => ({ ...job, recollectionError: undefined }));
+      if (timedOutChat && shuttingDown) return;
+      if (!timedOutChat) await mutateJob((job) => ({ ...job, recollectionError: undefined }));
       if (timedOut) {
         const artifactFailureCount = currentJob.artifactFailureCount || 0;
-        currentJob = await mutateJob((job) => transitionOracleJobPhase(job, artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete", {
-          at: new Date().toISOString(),
+        const verifiedAt = timedOutChat ? new Date().toISOString() : undefined;
+        currentJob = await mutateJob((job) => timedOutChat && shuttingDown ? job : transitionOracleJobPhase(job, artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete", {
+          at: verifiedAt ?? new Date().toISOString(),
           source: "oracle:recollect",
           message: "The reply had finished in the conversation; recollected after the completion timeout, nothing was resent.",
-          patch: { error: undefined, generationStatus: "completed", recollectionNeeded: undefined, responsePath: currentJob.responsePath, responseFormat: "text/plain", artifactFailureCount, completedAt: new Date().toISOString() },
+          patch: { error: undefined, generationStatus: "completed", recollectionNeeded: undefined, responsePath: currentJob.responsePath, responseFormat: "text/plain", artifactFailureCount, completedAt: verifiedAt ?? new Date().toISOString(),
+            ...(timedOutChat ? { recollectionError: undefined, recollectionCompletionVerifiedAt: job.recollectionCompletionVerifiedAt ?? verifiedAt } : {}) },
         }));
         await log(`Recollected the timed-out turn ${binding.responseIndex}; job ${currentJob.id} is complete`);
       }
