@@ -59,7 +59,11 @@ test("hung command has a bounded typed timeout", { skip: process.platform === "w
   const started = Date.now();
   await assert.rejects(fake.runner.run(["snapshot", "-i"], { timeoutMs: 200 }), (error) => error.code === "agent_browser_timeout" && error.timeoutMs === 200);
   assert.ok(Date.now() - started < 3000);
-  assert.equal((await fake.calls()).length, 2);
+  // The fake logs a call when its stdin ends; a loaded host can kill the hung command before that,
+  // so its entry is optional. The status probe runs to completion and always logs.
+  const calls = (await fake.calls()).map((call) => call.args.slice(2));
+  assert.ok(calls.filter((args) => args[0] === "snapshot").length <= 1, "a timed-out command is never replayed");
+  assert.deepEqual(calls.filter((args) => args[0] !== "snapshot"), [["--json", "stream", "status"]], "a timeout checks the connection once");
 });
 
 test("numeric waits and shutdown never spawn; identity refusal prevents commands", { skip: process.platform === "win32" }, async (t) => {
