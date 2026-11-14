@@ -620,6 +620,7 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
   const events = [];
   const unsubscribe = [cdp.on('Page.downloadWillBegin', (event) => events.push(event)), cdp.on('Page.downloadProgress', (event) => events.push(event))];
   const armedRealms = [];
+  let failed = false;
   try {
     const accepted = new Set();
     for (const sessionId of sessions) {
@@ -666,6 +667,9 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
       ...(totalBytes > 0 ? { expectedSize: totalBytes } : {}),
       native: { guid: begin.params.guid, frameId: begin.params.frameId, source, totalBytes, activation },
     };
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     for (const listener of unsubscribe) listener();
     let cleanupError;
@@ -675,7 +679,7 @@ export async function collectNativeDownload({ cdp, pageSessionId, frameSessionId
     }
     // No fresh timeout for restoration. If its budget is gone, normal job cleanup closes the
     // owned document; the artifact is unconfirmed rather than spending the persistence reserve.
-    if (cleanupError) throw cleanupError;
+    if (cleanupError && !failed) throw cleanupError;
   }
 }
 
