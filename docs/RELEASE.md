@@ -113,6 +113,113 @@ Fork entries appear first, newest first, and each entry records what was observe
 
 Recorded by the fork under the `omp-oracle` name, on the maintainer's macOS workstation. Artifact run ids are stored under the gitignored `.artifacts/` root.
 
+#### 0.4.16 (2026-11-16, `29fbcfa`)
+
+Times below are UTC.
+
+- Scope, each pull request squash-merged:
+  - [#47](https://github.com/alphastorm/omp-oracle/pull/47) `606bc89`: a chat job that timed out
+    waiting for its reply completes only after a verified recollection: an archive-anchored
+    message identity, observed completion, and two consecutive reload captures with equal raw
+    text. Timed-out Deep Research and Grok recollection are refused without changing the job. A
+    later recollection of a job completed this way is refused when the reply's raw text no
+    longer equals the saved one.
+  - [#48](https://github.com/alphastorm/omp-oracle/pull/48) `781bb0c`: a follow-up reply is
+    captured and recollected when the page no longer renders the conversation's earlier
+    exchanges. The reply is identified from the job's own archive turn.
+  - Each pull request records its own evidence.
+- Preconditions: `main` was clean and even with origin. #46 and the design proposal #17 were
+  open and are not part of this release. No oracle worker, non-terminal job, or Chrome on the
+  managed profile was running.
+  - Upstream `main` was at `2871ecb`; the recorded sync is still `bf2c031` (`pi-oracle` 0.7.27).
+    Nothing is synced in this release.
+- Live check of #48 before its merge, from source at `b5ee3a1` (the pull request's head, whose
+  tree equals the squash `781bb0c`), through the normal worker on a throwaway copy of the managed
+  profile, on Oh My Pi 18.21.0:
+  - Job `1600069e` (`instant`) completed 35.4 s after creation with
+    `collectionBinding.responseIndex` 0 and its marker in the saved reply.
+  - Job `a2835e0a`, a follow-up in the same conversation, completed in 31.9 s with
+    `followUpToJobId` set, the same `chatUrl`, and `collectionBinding.responseIndex` 1. Its saved
+    reply carries the second marker and not the first.
+  - Neither job reopened the picker or took a stale-stop or missing-turn reload.
+  - The conversation was short, so the page rendered both exchanges. These jobs show that the
+    ordinary follow-up still works, not the case #48 fixes; `proof:capture` and the operator
+    recollection below cover that case.
+- Prep commit `29fbcfa` (`chore(release): prepare omp-oracle 0.4.16`) was pushed to `main`
+  before the preset proof and the gate, which both ran on it. Hosted CI passed on it (run
+  [43937330354](https://github.com/alphastorm/omp-oracle/actions/runs/43937330354)).
+- Preset proof, one runner invocation (8/8; 363 s from the first job's creation to the last
+  job's completion), through the normal worker on a fresh throwaway copy of the managed profile,
+  driven by a hosted model on Oh My Pi 18.21.0.
+  - Jobs, creation to completion: `97f52716` pro_standard 33.0 s, `30822068` pro_extended
+    35.5 s, `48618e5e` thinking_light 32.1 s, `380a6112` thinking_standard 33.2 s, `a9ea2e5d`
+    thinking_extended 33.2 s, `94b63a9c` thinking_heavy 33.6 s, `e049b242` instant 37.4 s,
+    `4d4b064e` instant_auto_switch 33.5 s.
+  - Each worker log records one slider read, the stop it set (`Pro (5 of 5)` twice,
+    `Medium (2 of 5)` twice, `High (3 of 5)`, `Extra High (4 of 5)`, `Instant (1 of 5)` twice),
+    and the composer digest match.
+  - The first job started with the slider on Instant and logged
+    `picker closed while stepping; reopened on High (3 of 5)` once before it set Pro. No job
+    took a stale-stop or missing-turn reload.
+  - `observedSelection.effortLabel` is `null` after submission, as it has been since 0.4.10;
+    `modelLabel` names the stop.
+- `release:check` passed on `29fbcfa` in 256 s: `verify:oracle` (126 helper tests), the capture
+  proof (synthetic, zero sends), the preset check, and doctor (0 failures). The workstation was
+  under heavy unrelated load during the run.
+  - Crabbox macOS: platform-build 46.4 s, real-extension 8.3 s. Ubuntu: 44.0 s and 12.3 s.
+  - Run ids `run-1794857273971-a35j0l`, `run-1794857287368-6iqu5i`,
+    `run-1794857320423-cht4ms`, `run-1794857331388-77qq2f`. Gate `pack:check`: 91 files.
+- Release: `v0.4.16` at `29fbcfa` pushed. Release run
+  [43940197026](https://github.com/alphastorm/omp-oracle/actions/runs/43940197026): `verify`
+  19:31:26–19:32:55Z, `publish` 19:33:00–19:33:11Z.
+  - `verify` pack: shasum `3503419725c94e2fb4f5520429d124c24abb90e7`, integrity
+    `sha512-s2l6Lm/GVU+ji…p3Xyhb7HhgmVA==`, 91 files.
+  - `publish` logged `Signed provenance statement`, transparency log index **3933063246**, and
+    `+ omp-oracle@0.4.16`.
+  - The [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.16) uses
+    the CHANGELOG section.
+- Registry, visible about three minutes after the publish:
+  - `dist.shasum` equals the `verify` pack shasum; `dist.fileCount` 91; `dist-tags.latest`
+    `0.4.16`.
+  - The attestation endpoint answered 404 three times over the next minute, then 200. The SLSA
+    provenance names commit `29fbcfacd95ab47147cf49a5f437fc437e288c27`, `refs/tags/v0.4.16`,
+    `.github/workflows/release.yml`, run attempt 1.
+  - Consumer check: `npm audit signatures` reported 2 packages with verified registry
+    signatures and 2 with verified attestations.
+  - An install resolves the transitive `@steipete/sweet-cookie` to 0.4.5, published the same
+    day; the 0.4.15 install had 0.4.4. Only the auth bootstrap imports it.
+- MacBook activation: `omp plugin uninstall omp-oracle` and `omp plugin install
+  omp-oracle@0.4.16` both completed. `omp plugin list` confirmed 0.4.16 on Oh My Pi 18.21.0. A
+  model-free `/oracle-run preflight` from the installed entry point reported `ready: true`; no
+  browser launched. The global agent-browser stayed at 0.41.2.
+- Second workstation: a dry run validated the plugin install. `git pull --ff-only` and
+  `bun install --frozen-lockfile` followed, leaving the worktree clean and even with origin. The
+  same preflight reported `ready: true` under Oh My Pi 18.21.0. No browser launched and nothing
+  was sent.
+- Post-install job `c1a23561` ran through the installed entry point (`pro_standard`, 32.9 s),
+  with the operator's configuration pointed at a fresh throwaway copy of the managed profile.
+  - The job completed with `extensionProvenance.packageVersion` 0.4.16 and the installed
+    `sourcePath`. The slider read `Instant (1 of 5)`, where the preset proof leaves it, and was
+    set to Pro. Both markers came back. The account's saved tier is Pro.
+  - The driving agent's feedback: preflight gave a clear readiness verdict with capacity and
+    profile details, and submit confirmed the preset and returned the job id and artifact paths
+    at once.
+- Operator recollection with the installed release, on the live managed profile:
+  - Two Pro follow-up jobs (`d6b20566`, `f1afe7cc`) submitted under 0.4.15 earlier that day had
+    finished `complete_with_artifact_errors` with no saved reply. 0.4.15 refused to recollect
+    the first: `The reply to the job archive turn is assistant turn 0, not the saved turn 1`.
+  - With 0.4.16 installed, `/oracle-run read` with `{"jobId", "action": "recollect"}` completed
+    each in under 4 s: `collectionStatus: complete`, `responseIndex` 1, and a bound message
+    identity. Each saved reply equals, byte for byte, the capture taken earlier that day from
+    the fix branch on a profile copy.
+  - Each job's phase is still `complete_with_artifact_errors`, with `artifactFailureCount` 0.
+- Sessions started before the install keep the old extension code until restarted: 3 on the
+  MacBook (including the release session) and 5 on the second workstation.
+- Not exercised: no live timed-out recollection, which is #47's path (its evidence is recorded
+  in the pull request); no live `/oracle-auth` run, no Deep Research job, no Grok job, and no
+  relay transport. `proof:capture` covers offline the research-widget capture and the follow-up
+  whose earlier exchanges are absent from the page.
+
 #### 0.4.15 (2026-11-13, `c34782c`)
 
 Times below are UTC and fall on 2026-11-14; the release date above is the maintainer's local date.
