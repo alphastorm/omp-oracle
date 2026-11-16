@@ -534,6 +534,50 @@ ${exchange('o1', 'Review this <span>context-nav.tar.zst</span>', 'own-1', text, 
     assert.equal(anchored.collectionBinding.messageId, 'own-1', 'The archive anchor yields the exact turn identity');
     assert.match(anchored.collectionBinding.turnSha256, /^[a-f0-9]{64}$/);
     assert.equal('anchorFileName' in anchored.collectionBinding, false);
+    // Structure recorded on a completed follow-up: the earlier exchange is absent, not merely
+    // missed by a selector. Only one user heading, one assistant heading, and one turn remain.
+    const windowedPage = `<div data-turn-key="follow-up"><div data-content-search-turn-key="follow-up">
+      <div><h4 data-conversation-role="user">You said:</h4><div><button aria-label="context-windowed.tar.zst"></button><span title="context-windowed.tar.zst">context-windowed.tar.zst</span><p>Synthetic follow-up</p></div></div>
+      <div><h4 data-conversation-role="assistant">ChatGPT said:</h4><div data-response-body><div data-chatgpt-selection-conversation-id="windowed" data-chatgpt-selection-message-id="windowed-reply"><p>WINDOWED REPLY</p></div></div></div>
+      </div></div>`;
+    pages.set('/c/windowed', windowedPage);
+    await navigate(`${origin}/c/windowed`);
+    assert.deepEqual(await evaluate(`({exchanges:document.querySelectorAll('[data-turn-key]').length,
+      users:document.querySelectorAll('[data-conversation-role="user"]').length,
+      assistants:document.querySelectorAll('[data-conversation-role="assistant"]').length,
+      legacy:document.querySelectorAll('[data-message-author-role="assistant"],[data-testid="assistant-message"]').length})`),
+      { exchanges: 1, users: 1, assistants: 1, legacy: 0 });
+    const windowedResults = [];
+    for (const mode of ['collect', 'recollect']) {
+      const directory = join(root, `windowed-${mode}`);
+      await mkdir(directory);
+      const windowedJob = { ...anchoredJob, conversationId: 'windowed', chatUrl: `${origin}/c/windowed`,
+        archivePath: '/synthetic/context-windowed.tar.zst', responsePath: join(directory, 'response.md'),
+        generationStatus: 'completed', collectionStatus: 'failed', recollectionNeeded: true,
+        collectionBinding: { conversationId: 'windowed', responseIndex: 1 } };
+      const harness = makeWorker(directory);
+      const result = mode === 'collect' ? await harness.collect(windowedJob, windowedJob.collectionBinding) : await harness.recollect(windowedJob);
+      windowedResults.push({ mode, saved: existsSync(windowedJob.responsePath), status: result.collectionStatus });
+      if (existsSync(windowedJob.responsePath)) {
+        assert.equal(await readFile(windowedJob.responsePath, 'utf8'), 'WINDOWED REPLY');
+        assert.equal(result.collectionBinding.responseIndex, 1, 'The send-time ordinal is provenance, not the rendered window index');
+        assert.equal(result.collectionBinding.messageId, 'windowed-reply');
+        assert.match(result.collectionBinding.turnSha256, /^[a-f0-9]{64}$/);
+        assert.equal(result.recollectionNeeded, undefined);
+        assert.equal('anchorFileName' in result.collectionBinding, false);
+      }
+    }
+    console.log('Windowed follow-up regression:', JSON.stringify(windowedResults));
+    assert.deepEqual(windowedResults, ['collect', 'recollect'].map(mode => ({ mode, saved: true, status: 'complete' })));
+    // A shifted ordinal needs one exact identity, and the anchor must delimit just one reply.
+    const shiftedBinding = { conversationId: 'windowed', responseIndex: 1, anchorFileName: 'context-windowed.tar.zst' };
+    await evaluate(`document.querySelector('[data-chatgpt-selection-message-id]').removeAttribute('data-chatgpt-selection-message-id')`);
+    await assert.rejects(evaluate(captureExpression(shiftedBinding)), /identity/);
+    await evaluate(`document.body.innerHTML=${JSON.stringify(windowedPage)};document.querySelector('[data-response-body]').insertAdjacentHTML('afterend','<h4 data-conversation-role="assistant">ChatGPT said:</h4><div data-message-id="other">Other reply</div>')`);
+    await assert.rejects(evaluate(captureExpression(shiftedBinding)), /several replies/);
+    await evaluate(`document.body.innerHTML=${JSON.stringify(windowedPage)};document.querySelector('[data-response-body]').previousElementSibling.remove();document.querySelector('[data-response-body]').remove();document.body.insertAdjacentHTML('beforeend','<div data-turn-key="later"><h4>You said:</h4><div>Later prompt</div><h4>ChatGPT said:</h4><div data-message-id="later">Later reply</div></div>')`);
+    await assert.rejects(evaluate(captureExpression(shiftedBinding)), /not rendered/);
+    await navigate(ownUrl);
     const refusedDir = join(root, 'refused-job');
     await mkdir(refusedDir);
     const refusedJob = { ...anchoredJob, collectionBinding: { conversationId: 'own', responseIndex: 0 }, responsePath: join(refusedDir, 'response.md') };

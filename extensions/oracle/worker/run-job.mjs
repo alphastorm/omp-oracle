@@ -2551,7 +2551,11 @@ async function collectBoundResult(job, binding, fallbackText = "", verifiedRecol
   const artifactsDir = join(jobDir, "artifacts");
   await ensurePrivateDir(artifactsDir);
   try {
-    const turn = verifiedRecollection ? verifiedRecollection.verifiedTurn : await acquireBoundTurn(job, binding);
+    // First capture needs the same archive anchor as recovery: earlier exchanges may unmount
+    // after completion, before the send-time assistant ordinal can be enriched with an identity.
+    const captureBinding = !isGrokJob(job) && !binding.messageId && !binding.turnSha256 && job.archivePath
+      ? { ...binding, anchorFileName: basename(job.archivePath) } : binding;
+    const turn = verifiedRecollection ? verifiedRecollection.verifiedTurn : await acquireBoundTurn(job, captureBinding);
     binding = turn.binding;
     capture = turn.captured;
     if (verifiedRecollection) {
@@ -2934,8 +2938,8 @@ async function runRecollection() {
       // anchored positional binding; the exact identity is learned by captureBoundTurn below
     } else if (!binding?.messageId && !binding?.turnSha256) {
       if (!explicit && Number.isInteger(binding?.responseIndex) && currentJob.archivePath) {
-        // A positional binding saved by a capture that failed: the user turn carrying this job's own
-        // archive identifies the exchange, and its reply must still sit at the saved index.
+        // A positional binding saved by a capture that failed: the user turn carrying this job's
+        // own archive identifies the exchange, even when earlier exchanges are no longer mounted.
         binding = { conversationId: currentJob.conversationId, responseIndex: binding.responseIndex, anchorFileName: basename(currentJob.archivePath) };
       } else {
         if (!Number.isInteger(explicit?.responseIndex) || explicit.responseIndex < 0 || !explicit.messageId) throw new Error("Legacy recollection requires an explicit responseIndex and messageId.");

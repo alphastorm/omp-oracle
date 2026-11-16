@@ -42,8 +42,8 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
     const ids = rootIds(node);
     return ids.size === 1 ? [...ids][0] : undefined;
   };
-  // A turn saved without its message ID is found again through the user turn that carries this
-  // job's own archive: that exchange is the job's, and its first reply must sit at the saved index.
+  // The archive identifies the exchange even when earlier exchanges are no longer mounted.
+  // The send-time ordinal stays provenance; a backwards shift needs an exact message identity.
   const anchoredRoot = () => {
     if (typeof archiveTurnsOf !== 'function') throw new Error('Anchored capture needs the archive-turn locator.');
     const turns = archiveTurnsOf(anchorFileName);
@@ -57,10 +57,13 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
       ...[...doc.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')].filter((node) => /^You said:/.test(node.textContent?.trim() || ''))]
       .filter((marker) => !turn.contains(marker) && follows(turn, marker))
       .reduce((earliest, marker) => (!earliest || follows(marker, earliest) ? marker : earliest), undefined);
-    const reply = responseRoots.find((candidate) => candidate && (turn.contains(candidate) || follows(turn, candidate)) && (!nextUser || follows(candidate, nextUser)));
+    const replies = responseRoots.filter((candidate) => candidate && (turn.contains(candidate) || follows(turn, candidate)) && (!nextUser || follows(candidate, nextUser)));
+    if (replies.length > 1) throw new Error('The job archive turn has several replies; refusing ambiguous anchored capture.');
+    const reply = replies[0];
     if (!reply) throw new Error('The reply to the job archive turn is not rendered.');
     const index = responseRoots.indexOf(reply);
-    if (index !== responseIndex) throw new Error(`The reply to the job archive turn is assistant turn ${index}, not the saved turn ${responseIndex}; refusing anchored recollection.`);
+    if (index > responseIndex) throw new Error(`The reply to the job archive turn is assistant turn ${index}, not the saved turn ${responseIndex}; refusing anchored recollection.`);
+    if (index < responseIndex && !rootId(reply)) throw new Error('The archive-anchored reply shifted without a unique message identity; refusing anchored capture.');
     return reply;
   };
   const matches = messageId && !report ? responseRoots.filter((node) => rootId(node) === messageId) : [];
